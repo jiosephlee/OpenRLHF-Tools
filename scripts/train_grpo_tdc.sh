@@ -17,7 +17,7 @@
 ### SLURM DIRECTIVES ###
 #SBATCH --job-name=grpo-tdc
 #SBATCH --partition=dgx-b200
-#SBATCH --output=logs/grpo_tdc_%j.out
+#SBATCH --output=%x_%j.out
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus=2                    # Default: 4 GPUs (override with --gpus=N)
@@ -280,7 +280,6 @@ echo "Saved model to: $SAVE_PATH"
 echo "Checkpoints at: $CKPT_PATH"
 echo "Ray logs at: $PERSIST_RAY_DIR/session_latest"
 if [ "$IS_SLURM" = true ]; then
-    echo "SLURM output: logs/grpo_tdc_${SLURM_JOB_ID}.out"
-    echo "SLURM error: logs/grpo_tdc_${SLURM_JOB_ID}.err"
+    echo "SLURM output: grpo-tdc_${SLURM_JOB_ID}.out"
 fi
 echo "========================================"

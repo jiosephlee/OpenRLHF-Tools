@@ -17,13 +17,13 @@
 ### SLURM DIRECTIVES ###
 #SBATCH --job-name=grpo-tdc
 #SBATCH --partition=dgx-b200
-#SBATCH --output=logs/grpo_tdc_%j.out
+#SBATCH --output=%x_%j.out
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus=2                    # Default: 4 GPUs (override with --gpus=N)
 #SBATCH --mem-per-gpu=128G
 #SBATCH --cpus-per-gpu=8
-#SBATCH --time=2:00:00
+#SBATCH --time=0:20:00
 
 set -euo pipefail
 
@@ -45,12 +45,26 @@ fi
 
 # Parse arguments
 TASK_NAME=${1:-"AMES"}
-PRETRAIN_PATH=${2:-"internlm/internlm2_5-7b-chat"}
+PRETRAIN_PATH=${2:-"zai-org/GLM-4.7-Flash"}
 LEARNING_RATE=${3:-"1e-6"}
 
-# TDC dataset paths
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+# Resolve PROJECT_ROOT by walking up from a known starting directory until
+# we find the 'openrlhf' package dir. This handles both:
+#   - SLURM: BASH_SOURCE points to spool copy, so start from SLURM_SUBMIT_DIR
+#   - Standalone: BASH_SOURCE is the real script path
+if [ "$IS_SLURM" = true ]; then
+    PROJECT_ROOT="$SLURM_SUBMIT_DIR"
+else
+    PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+while [ "$PROJECT_ROOT" != "/" ] && [ ! -d "$PROJECT_ROOT/openrlhf" ]; do
+    PROJECT_ROOT="$(dirname "$PROJECT_ROOT")"
+done
+if [ ! -d "$PROJECT_ROOT/openrlhf" ]; then
+    echo "Error: Cannot find project root (no 'openrlhf' directory found)" >&2
+    exit 1
+fi
+
 DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format"
 TRAIN_DATA="$DATA_DIR/${TASK_NAME}_train.jsonl"
 VAL_DATA="$DATA_DIR/${TASK_NAME}_val.jsonl"
@@ -177,6 +191,10 @@ for i in {1..60}; do
     sleep 1
 done
 
+# Tell ray.init() to connect to the cluster we just started,
+# instead of spawning a second local instance.
+export RAY_ADDRESS="auto"
+
 ############################
 #   PRINT CONFIGURATION    #
 ############################
@@ -244,10 +262,10 @@ python -m openrlhf.cli.train_ppo_ray \
     --generate_max_len 2048 \
     --max_samples 1000000 \
     --zero_stage 3 \
-    --bf16 \
+    --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \
     --prompt_data "$TRAIN_DATA" \
-    --input_key question \
+    --input_key messages \
     --label_key answer \
     --apply_chat_template \
     --gradient_checkpointing \
@@ -280,7 +298,6 @@ echo "Saved model to: $SAVE_PATH"
 echo "Checkpoints at: $CKPT_PATH"
 echo "Ray logs at: $PERSIST_RAY_DIR/session_latest"
 if [ "$IS_SLURM" = true ]; then
-    echo "SLURM output: logs/grpo_tdc_${SLURM_JOB_ID}.out"
-    echo "SLURM error: logs/grpo_tdc_${SLURM_JOB_ID}.err"
+    echo "SLURM output: grpo-tdc_${SLURM_JOB_ID}.out"
 fi
 echo "========================================"

@@ -2,9 +2,9 @@
 
 ## Overview
 
-Successfully converted **23 TDC datasets** to OpenAI message format for GRPO training.
+Successfully converted **26 TDC datasets** to OpenAI message format for GRPO training.
 
-**Generated:** 2026-02-09
+**Generated:** 2026-02-09 (Updated with fuzzy matching + Tox21 support)
 
 ## Successfully Converted Tasks
 
@@ -28,25 +28,42 @@ Successfully converted **23 TDC datasets** to OpenAI message format for GRPO tra
 | HIV | 31997 | 4571 | 9142 | 45710 |
 | PAMPA_NCATS | 1423 | 203 | 408 | 2034 |
 | Pgp_Broccatelli | 852 | 121 | 245 | 1218 |
+| SAbDab_Chen | 1686 | 241 | 482 | 2409 |
+| SARSCoV2_3CLPro_Diamond | 616 | 88 | 176 | 880 |
 | SARSCoV2_Vitro_Touret | 1038 | 148 | 298 | 1484 |
 | Skin_Reaction | 282 | 40 | 82 | 404 |
+| Tox21 | 54499 | 7781 | 15584 | 77864 |
 | hERG | 458 | 65 | 132 | 655 |
 | hERG_Karim | 9411 | 1344 | 2690 | 13445 |
 | herg_central | 214825 | 30689 | 61379 | 306893 |
 
-**Total Records:** ~458,000 records across all tasks
+**Total Records:** ~539,000 records across all tasks
 
 ## Failed Conversions
 
-The following tasks failed conversion (missing prompts or different schema):
+The following tasks could not be converted (raw data not available):
 
-1. **HuRI** - Missing prompt template
-2. **MHC1_IEDB** - Missing prompt template
-3. **MHC2_IEDB** - Missing prompt template
-4. **SARSCoV2_3CLPro_Diamond** - Missing prompt template
-5. **SAbDab_Chen** - Different column schema (no 'Drug' column)
-6. **Tox21** - Missing prompt template
-7. **weber** - Different column schema (no 'Drug' column)
+1. **HuRI** - Raw data directory not found
+2. **MHC1_IEDB** - Raw data directory not found
+3. **MHC2_IEDB** - Raw data directory not found
+4. **weber** - Raw data directory not found
+
+## Conversion Features
+
+### Fuzzy Prompt Matching (≤2 character edits)
+- **SARSCoV2_3CLPro_Diamond** → Matched to `SARSCOV2_3CLPro_Diamond` (casing difference)
+- Handles typos, underscores vs hyphens, and minor naming variations
+
+### Tox21 Multi-Subtask Support
+- **Tox21** has 12 subtasks identified by `task_label` column:
+  - `NR-AR`, `NR-AR-LBD`, `NR-AhR`, `NR-Aromatase`, `NR-ER`, `NR-ER-LBD`, `NR-PPAR-gamma`
+  - `SR-ARE`, `SR-ATAD5`, `SR-HSE`, `SR-MMP`, `SR-p53`
+- Each subtask maps to a specific prompt (e.g., `Tox21_NR_AR`)
+- Records are labeled with their specific subtask in the `task` field
+
+### Flexible Schema Detection
+- **Auto-detects molecule column**: `Drug`, `Antibody`, `SMILES`, `Protein`, `Peptide`
+- **SAbDab_Chen**: Uses `Antibody` column (antibody sequences) instead of `Drug`
 
 ## Data Format
 
@@ -74,15 +91,18 @@ Each record follows OpenAI message format:
 ✅ **Tool-calling ready** - Designed for GRPO with tool usage
 ✅ **Label conversion** - 0 → "(A)", 1 → "(B)"
 ✅ **OpenAI format** - Compatible with `apply_chat_template()`
+✅ **Fuzzy matching** - Handles naming variations (≤2 character edits)
+✅ **Multi-subtask support** - Tox21 subtasks mapped via `task_label`
+✅ **Flexible schemas** - Auto-detects molecule column (Drug/Antibody/etc.)
 
 ## File Locations
 
 ```
 data/tdc/
 ├── raw/                          # Original CSV files
-├── openai_format/                # Converted JSONL files (23 tasks × 3 splits)
+├── openai_format/                # Converted JSONL files (26 tasks × 3 splits)
 └── metadata/
-    ├── prompts.json              # Prompt templates
+    ├── prompts.json              # Prompt templates (703 prompts)
     ├── tools_all.json            # All 47 tool definitions
     └── tools_task_specific.json  # Task-specific tool mappings
 ```
@@ -129,10 +149,11 @@ python -m openrlhf.cli.train_ppo_ray \
 ### Property Categories
 
 - **ADME Properties:** BBB_Martins, Bioavailability_Ma, HIA_Hou, PAMPA_NCATS, Pgp_Broccatelli
-- **Toxicity:** AMES, Carcinogens_Lagunin, ClinTox, DILI, Skin_Reaction
+- **Toxicity:** AMES, Carcinogens_Lagunin, ClinTox, DILI, Skin_Reaction, Tox21 (12 subtasks)
 - **CYP Inhibition:** CYP1A2, CYP2C9, CYP2C19, CYP2D6, CYP3A4 (multiple variants)
 - **Cardiotoxicity:** hERG, hERG_Karim, herg_central
-- **Antiviral:** HIV, SARSCoV2_Vitro_Touret
+- **Antiviral:** HIV, SARSCoV2_3CLPro_Diamond, SARSCoV2_Vitro_Touret
+- **Biologics:** SAbDab_Chen (antibody developability)
 
 ## Large Files Note
 

@@ -48,10 +48,22 @@ TASK_NAME=${1:-"AMES"}
 PRETRAIN_PATH=${2:-"zai-org/GLM-4.7-Flash"}
 LEARNING_RATE=${3:-"1e-6"}
 
-# TDC dataset paths — always resolve from the script's own location,
-# so paths are correct regardless of where sbatch/bash is invoked from.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+# Resolve PROJECT_ROOT by walking up from a known starting directory until
+# we find the 'openrlhf' package dir. This handles both:
+#   - SLURM: BASH_SOURCE points to spool copy, so start from SLURM_SUBMIT_DIR
+#   - Standalone: BASH_SOURCE is the real script path
+if [ "$IS_SLURM" = true ]; then
+    PROJECT_ROOT="$SLURM_SUBMIT_DIR"
+else
+    PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+while [ "$PROJECT_ROOT" != "/" ] && [ ! -d "$PROJECT_ROOT/openrlhf" ]; do
+    PROJECT_ROOT="$(dirname "$PROJECT_ROOT")"
+done
+if [ ! -d "$PROJECT_ROOT/openrlhf" ]; then
+    echo "Error: Cannot find project root (no 'openrlhf' directory found)" >&2
+    exit 1
+fi
 
 DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format"
 TRAIN_DATA="$DATA_DIR/${TASK_NAME}_train.jsonl"

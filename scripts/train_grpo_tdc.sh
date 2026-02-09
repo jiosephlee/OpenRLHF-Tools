@@ -23,7 +23,7 @@
 #SBATCH --gpus=2                    # Default: 4 GPUs (override with --gpus=N)
 #SBATCH --mem-per-gpu=128G
 #SBATCH --cpus-per-gpu=8
-#SBATCH --time=2:00:00
+#SBATCH --time=0:20:00
 
 set -euo pipefail
 

@@ -45,7 +45,7 @@ fi
 
 # Parse arguments
 TASK_NAME=${1:-"AMES"}
-PRETRAIN_PATH=${2:-"internlm/internlm2_5-7b-chat"}
+PRETRAIN_PATH=${2:-"zai-org/GLM-4.7-Flash"}
 LEARNING_RATE=${3:-"1e-6"}
 
 # TDC dataset paths

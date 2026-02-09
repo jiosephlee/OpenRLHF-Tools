@@ -10,6 +10,26 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 
+def levenshtein_distance(s1: str, s2: str) -> int:
+    """Compute Levenshtein distance between two strings."""
+    if len(s1) < len(s2):
+        return levenshtein_distance(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+    
+    previous_row = range(len(s2) + 1)
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+    
+    return previous_row[-1]
+
+
 class TDCDatasetLoader:
     """Loader for TDC molecular property prediction datasets."""
 
@@ -78,6 +98,41 @@ class TDCDatasetLoader:
 
         return user_content
 
+    def _fuzzy_match_prompt_key(self, task_name: str, max_distance: int = 2) -> Optional[str]:
+        """
+        Find prompt key using fuzzy matching (case-insensitive, allows up to max_distance edits).
+        
+        Args:
+            task_name: Task name to match
+            max_distance: Maximum Levenshtein distance allowed
+            
+        Returns:
+            Matched prompt key or None
+        """
+        exact_match = next((k for k in self.prompts if k == task_name), None)
+        if exact_match:
+            return exact_match
+        
+        # Case-insensitive exact match
+        case_insensitive_match = next(
+            (k for k in self.prompts if k.lower() == task_name.lower()), 
+            None
+        )
+        if case_insensitive_match:
+            return case_insensitive_match
+        
+        # Fuzzy match with edit distance
+        best_match = None
+        best_distance = max_distance + 1
+        
+        for key in self.prompts:
+            dist = levenshtein_distance(key.lower(), task_name.lower())
+            if dist <= max_distance and dist < best_distance:
+                best_match = key
+                best_distance = dist
+        
+        return best_match
+
     def load_csv_to_openai_format(
         self,
         csv_path: str,
@@ -93,19 +148,32 @@ class TDCDatasetLoader:
         Returns:
             List of records with OpenAI message format
         """
-        # Get prompt template
-        if task_name not in self.prompts:
-            raise ValueError(f"No prompt template found for task: {task_name}")
-
-        prompt_template = self.prompts[task_name]
-
-        # Load CSV
+        # Load CSV first to check schema
         df = pd.read_csv(csv_path)
+        
+        # Handle Tox21 special case: use task_label column to find prompt
+        if task_name == "Tox21" and "task_label" in df.columns:
+            return self._load_tox21_csv(csv_path, df)
+        
+        # Try fuzzy matching for prompt key
+        prompt_key = self._fuzzy_match_prompt_key(task_name)
+        if not prompt_key:
+            raise ValueError(f"No prompt template found for task: {task_name}")
+        
+        if prompt_key != task_name:
+            print(f"  ℹ️  Matched '{task_name}' → '{prompt_key}'")
+        
+        prompt_template = self.prompts[prompt_key]
+        
+        # Detect molecule column (Drug, Antibody, etc.)
+        mol_column = self._detect_molecule_column(df)
+        if not mol_column:
+            raise ValueError(f"No molecule column found in CSV (tried: Drug, Antibody, SMILES)")
 
         # Convert each row
         records = []
         for _, row in df.iterrows():
-            smiles = row["Drug"]
+            smiles = row[mol_column]
             label = int(row["Y"])
 
             # Build user content with CoT instructions
@@ -127,6 +195,56 @@ class TDCDatasetLoader:
                 "task": task_name,
             })
 
+        return records
+    
+    def _detect_molecule_column(self, df: pd.DataFrame) -> Optional[str]:
+        """Detect which column contains the molecule (SMILES/sequence)."""
+        for col in ["Drug", "Antibody", "SMILES", "Protein", "Peptide"]:
+            if col in df.columns:
+                return col
+        return None
+    
+    def _load_tox21_csv(self, csv_path: str, df: pd.DataFrame) -> List[Dict]:
+        """
+        Load Tox21 CSV with task_label-specific prompts.
+        
+        Tox21 has subtasks (NR-AR, NR-ER, etc.) indicated by task_label column.
+        Each subtask maps to a prompt like Tox21_NR_AR, Tox21_NR_ER, etc.
+        """
+        records = []
+        
+        # Get unique task labels
+        task_labels = df["task_label"].unique()
+        print(f"  ℹ️  Tox21 has {len(task_labels)} subtasks: {sorted(task_labels)}")
+        
+        for _, row in df.iterrows():
+            task_label = row["task_label"]
+            
+            # Convert task_label (e.g., "NR-AR") to prompt key (e.g., "Tox21_NR_AR")
+            # Replace hyphens with underscores
+            prompt_key = f"Tox21_{task_label.replace('-', '_')}"
+            
+            if prompt_key not in self.prompts:
+                raise ValueError(f"No prompt found for Tox21 subtask: {prompt_key}")
+            
+            prompt_template = self.prompts[prompt_key]
+            smiles = row["Drug"]
+            label = int(row["Y"])
+            
+            # Build user content
+            user_content = self._build_user_content(prompt_template, smiles)
+            
+            messages = [{"role": "user", "content": user_content}]
+            answer = f"({chr(65 + label)})"
+            
+            records.append({
+                "messages": messages,
+                "answer": answer,
+                "smiles": smiles,
+                "label": label,
+                "task": f"Tox21_{task_label.replace('-', '_')}",  # Store specific subtask
+            })
+        
         return records
 
     def convert_task(

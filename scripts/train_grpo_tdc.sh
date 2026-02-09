@@ -48,14 +48,10 @@ TASK_NAME=${1:-"AMES"}
 PRETRAIN_PATH=${2:-"zai-org/GLM-4.7-Flash"}
 LEARNING_RATE=${3:-"1e-6"}
 
-# TDC dataset paths
-if [ "$IS_SLURM" = true ]; then
-    # Under SLURM, use SLURM_SUBMIT_DIR which is the directory where sbatch was run
-    PROJECT_ROOT="${SLURM_SUBMIT_DIR}"
-else
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-fi
+# TDC dataset paths — always resolve from the script's own location,
+# so paths are correct regardless of where sbatch/bash is invoked from.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format"
 TRAIN_DATA="$DATA_DIR/${TASK_NAME}_train.jsonl"

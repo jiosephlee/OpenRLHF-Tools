@@ -67,6 +67,9 @@ def train(args):
             "processed_logprobs" if args.enable_vllm_is_correction else None,
             agent_func_path=args.agent_func_path,
             remote_rm_url=args.remote_rm_url,
+            agent_max_steps=args.agent_max_steps,
+            vllm_stop_strings=args.vllm_stop_strings,
+            prompt_construction_mode=args.prompt_construction_mode,
         )
 
     actor_model = RayActorGroup(
@@ -439,6 +442,32 @@ if __name__ == "__main__":
     parser.add_argument("--value_head_prefix", type=str, default="score")
     parser.add_argument("--ref_reward_offload", action="store_true", default=False)
     parser.add_argument("--agent_func_path", type=str, default=None, help="Agent script path")
+    parser.add_argument(
+        "--agent_max_steps",
+        type=int,
+        default=5,
+        help="Maximum number of agent turns per episode"
+    )
+    parser.add_argument(
+        "--vllm_stop_strings",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Stop strings for vLLM generation (e.g., '</tool_call>')"
+    )
+    parser.add_argument(
+        "--is_vlm",
+        action="store_true",
+        default=False,
+        help="Enable Vision-Language Model support"
+    )
+    parser.add_argument(
+        "--prompt_construction_mode",
+        type=str,
+        choices=["auto", "manual"],
+        default="manual",
+        help="Prompt construction mode: 'manual' (fast) or 'auto' (robust with chat template)"
+    )
 
     # Custom dataset
     parser.add_argument("--prompt_data", type=str, default=None, help="HF dataset name or path")

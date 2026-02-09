@@ -40,6 +40,9 @@ class LLMRayActor:
         bundle_indices: list = None,
         agent_func_path: Optional[str] = None,
         remote_rm_url: Optional[str] = None,
+        agent_max_steps: int = 5,
+        vllm_stop_strings: Optional[list] = None,
+        prompt_construction_mode: str = "manual",
         **kwargs,
     ):
         self._configure_device_env(
@@ -48,6 +51,17 @@ class LLMRayActor:
             num_gpus=kwargs.pop("num_gpus"),
         )
         self._configure_vllm_env(version, vllm, kwargs.pop("full_determinism", False))
+
+        # Configure agent environment variables
+        if agent_func_path:
+            model_path = kwargs.get("model", "")
+            os.environ["OPENRLHF_MODEL_PATH"] = model_path
+            os.environ["OPENRLHF_PROMPT_CONSTRUCTION_MODE"] = prompt_construction_mode
+            os.environ["OPENRLHF_MAX_STEPS"] = str(agent_max_steps)
+
+        # Store agent config for generation
+        self.agent_max_steps = agent_max_steps
+        self.vllm_stop_strings = vllm_stop_strings
 
         # Execution mode mapping:
         # - custom agent executor: user-provided AgentExecutorBase subclass
@@ -196,6 +210,9 @@ def create_vllm_engines(
     logprobs_mode=None,
     agent_func_path: Optional[str] = None,
     remote_rm_url: Optional[str] = None,
+    agent_max_steps: int = 5,
+    vllm_stop_strings: Optional[list] = None,
+    prompt_construction_mode: str = "manual",
 ):
     """Spin up a set of vLLM Ray actors with consistent placement."""
     vllm_engines = []
@@ -245,6 +262,9 @@ def create_vllm_engines(
             {
                 "agent_func_path": agent_func_path,
                 "remote_rm_url": remote_rm_url,
+                "agent_max_steps": agent_max_steps,
+                "vllm_stop_strings": vllm_stop_strings,
+                "prompt_construction_mode": prompt_construction_mode,
             }
         )
 

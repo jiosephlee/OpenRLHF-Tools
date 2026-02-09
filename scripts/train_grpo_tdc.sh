@@ -51,15 +51,11 @@ LEARNING_RATE=${3:-"1e-6"}
 # TDC dataset paths
 if [ "$IS_SLURM" = true ]; then
     # Under SLURM, use SLURM_SUBMIT_DIR which is the directory where sbatch was run
-    SCRIPT_DIR="${SLURM_SUBMIT_DIR}/scripts"
     PROJECT_ROOT="${SLURM_SUBMIT_DIR}"
 else
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 fi
-
-echo "DEBUG: SCRIPT_DIR=$SCRIPT_DIR"
-echo "DEBUG: PROJECT_ROOT=$PROJECT_ROOT"
 
 DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format"
 TRAIN_DATA="$DATA_DIR/${TASK_NAME}_train.jsonl"

@@ -33,7 +33,7 @@ from tools import BASIC_TOOLS, get_function_by_name
 
 from openrlhf.utils.agent import AgentInstanceBase, MultiTurnAgentExecutor
 from openrlhf.utils.agent_session import AgentSession
-from openrlhf.utils.chat_protocol import GLMFlashProtocol
+from openrlhf.utils.chat_protocol import GLMFlashProtocol, InternS1Protocol
 
 
 class ToolCallAgent(AgentInstanceBase):
@@ -55,8 +55,12 @@ class ToolCallAgent(AgentInstanceBase):
             trust_remote_code=True
         )
 
-        # Create protocol
-        protocol = GLMFlashProtocol(self.tokenizer)
+        # Create protocol based on environment variable
+        protocol_name = os.environ.get("OPENRLHF_CHAT_PROTOCOL", "glm_flash")
+        if protocol_name == "intern_s1":
+            protocol = InternS1Protocol(self.tokenizer)
+        else:
+            protocol = GLMFlashProtocol(self.tokenizer)
 
         # Create tool functions dict
         tools = self._create_tools_dict()

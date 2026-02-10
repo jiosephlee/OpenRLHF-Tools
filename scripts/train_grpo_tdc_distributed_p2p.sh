@@ -1,25 +1,27 @@
 #!/bin/bash
 #
-# TDC GRPO Training Script — HYBRID (colocated) mode
+# TDC GRPO Training Script — DISTRIBUTED mode, P2P DEBUG
 #
-# Actor and vLLM share the same GPUs via sleep mode.
+# Same as train_grpo_tdc_distributed.sh but with P2P re-enabled
+# and NCCL_DEBUG=INFO to diagnose the P2P failure.
+# If this works, P2P is the fastest weight sync transport.
 #
 # Usage:
-#   # SLURM: sbatch scripts/train_grpo_tdc.sh <task_name> <model_path> [learning_rate]
-#   # Direct: bash scripts/train_grpo_tdc.sh <task_name> <model_path> [learning_rate] [num_gpus]
+#   # SLURM: sbatch scripts/train_grpo_tdc_distributed.sh <task_name> <model_path> [learning_rate]
+#   # Direct: bash scripts/train_grpo_tdc_distributed.sh <task_name> <model_path> [learning_rate] [num_gpus]
 #
 # Examples:
-#   sbatch scripts/train_grpo_tdc.sh AMES internlm/internlm2_5-7b-chat
-#   bash scripts/train_grpo_tdc.sh hERG /path/to/glm-flash-model 1e-6 4
+#   sbatch scripts/train_grpo_tdc_distributed.sh AMES zai-org/GLM-4.7-Flash
+#   bash scripts/train_grpo_tdc_distributed.sh hERG /path/to/glm-flash 1e-6 4
 #
 
 ### SLURM DIRECTIVES ###
-#SBATCH --job-name=H-grpo
+#SBATCH --job-name=P-grpo
 #SBATCH --partition=dgx-b200
 #SBATCH --output=%x_%j.out
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus=2                    # Shared GPUs (override with --gpus=N)
+#SBATCH --gpus=4                    # 2 actor + 2 vLLM
 #SBATCH --mem-per-gpu=128G
 #SBATCH --cpus-per-gpu=8
 #SBATCH --time=0:20:00
@@ -30,7 +32,7 @@ set -euo pipefail
 #   CONFIGURATION          #
 ############################
 
-# Detect if running under SLURM
+# Detect SLURM vs standalone
 if [ -n "${SLURM_JOB_ID:-}" ]; then
     echo "Running under SLURM (Job ID: $SLURM_JOB_ID)"
     IS_SLURM=true
@@ -38,7 +40,16 @@ if [ -n "${SLURM_JOB_ID:-}" ]; then
 else
     echo "Running in standalone mode"
     IS_SLURM=false
-    NUM_GPUS=${4:-4}  # Use 4th arg or default to 4
+    NUM_GPUS=${4:-4}
+fi
+
+# GPU split: actor (training) vs vLLM (inference)
+ACTOR_GPUS=2
+VLLM_GPUS=2
+TOTAL_REQUIRED=$((ACTOR_GPUS + VLLM_GPUS))
+if [ "$NUM_GPUS" -lt "$TOTAL_REQUIRED" ]; then
+    echo "Error: need at least $TOTAL_REQUIRED GPUs (${ACTOR_GPUS} actor + ${VLLM_GPUS} vLLM), got $NUM_GPUS" >&2
+    exit 1
 fi
 
 # Parse arguments
@@ -46,10 +57,7 @@ TASK_NAME=${1:-"AMES"}
 PRETRAIN_PATH=${2:-"zai-org/GLM-4.7-Flash"}
 LEARNING_RATE=${3:-"1e-6"}
 
-# Resolve PROJECT_ROOT by walking up from a known starting directory until
-# we find the 'openrlhf' package dir. This handles both:
-#   - SLURM: BASH_SOURCE points to spool copy, so start from SLURM_SUBMIT_DIR
-#   - Standalone: BASH_SOURCE is the real script path
+# Resolve PROJECT_ROOT
 if [ "$IS_SLURM" = true ]; then
     PROJECT_ROOT="$SLURM_SUBMIT_DIR"
 else
@@ -63,14 +71,12 @@ if [ ! -d "$PROJECT_ROOT/openrlhf" ]; then
     exit 1
 fi
 
+# Data paths
 DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format"
 TRAIN_DATA="$DATA_DIR/${TASK_NAME}_train.jsonl"
-VAL_DATA="$DATA_DIR/${TASK_NAME}_val.jsonl"
 
-# Create logs directory
 mkdir -p "$PROJECT_ROOT/logs"
 
-# Verify data exists
 if [ ! -f "$TRAIN_DATA" ]; then
     echo "Error: Training data not found: $TRAIN_DATA"
     echo "Available tasks:"
@@ -78,22 +84,25 @@ if [ ! -f "$TRAIN_DATA" ]; then
     exit 1
 fi
 
-# Run configuration
-RUN_ID="H-grpo-${TASK_NAME}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
+# Run ID / paths
+RUN_ID="P-grpo-${TASK_NAME}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
 SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
 CKPT_PATH="$PROJECT_ROOT/checkpoints/tdc/${TASK_NAME}/$RUN_ID"
 
-# Training hyperparameters
-TRAIN_BATCH_SIZE=$((NUM_GPUS * 16))
-VLLM_NUM_ENGINES=$((NUM_GPUS / 2))
-[ $VLLM_NUM_ENGINES -lt 1 ] && VLLM_NUM_ENGINES=1
+# ── Distributed-mode engine layout ──────────────────────────────
+# 1 vLLM engine with TP = VLLM_GPUS (each engine gets its own GPUs)
+VLLM_NUM_ENGINES=1
+VLLM_TENSOR_PARALLEL_SIZE=$VLLM_GPUS
 
-# Tool-calling configuration
+# ── Training hyperparameters ────────────────────────────────────
+TRAIN_BATCH_SIZE=$((ACTOR_GPUS * 16))
+
+# ── Tool-calling configuration ──────────────────────────────────
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_agent.py"
 AGENT_MAX_STEPS=40
-PROMPT_CONSTRUCTION_MODE="manual"  # "manual" (fast) or "auto" (robust)
+PROMPT_CONSTRUCTION_MODE="manual"
 
-# GRPO configuration
+# ── GRPO configuration ──────────────────────────────────────────
 N_SAMPLES_PER_PROMPT=8
 ADVANTAGE_ESTIMATOR="dr_grpo"
 DYNAMIC_FILTERING=true
@@ -103,7 +112,7 @@ DYNAMIC_FILTERING_REWARD_RANGE="0.2 0.8"
 #   ENVIRONMENT SETUP      #
 ############################
 
-# Ray configuration
+# Ray temp dir
 if [ "$IS_SLURM" = true ]; then
     export RAY_TMPDIR="/tmp/ray_${USER}/${SLURM_JOB_ID}"
 else
@@ -112,28 +121,31 @@ fi
 mkdir -p "$RAY_TMPDIR"
 PERSIST_RAY_DIR="$PROJECT_ROOT/logs/ray/latest"
 
-# vLLM configuration
+# vLLM
 export VLLM_NO_USAGE_STATS=1
 export VLLM_DISABLE_TELEMETRY=1
 
-# OpenRLHF environment variables (for agent)
+# Agent env vars (also set by vllm_engine.py, but export here for visibility)
 export OPENRLHF_MODEL_PATH="$PRETRAIN_PATH"
 export OPENRLHF_PROMPT_CONSTRUCTION_MODE="$PROMPT_CONSTRUCTION_MODE"
 export OPENRLHF_MAX_STEPS="$AGENT_MAX_STEPS"
 
-# NCCL/distributed training settings
+# NCCL — verbose debug to diagnose P2P
+export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
+# P2P ENABLED — let NCCL use the fast GPU-direct path.
+# If this crashes, the NCCL_DEBUG=INFO output will show exactly why.
+# export NCCL_P2P_DISABLE=1
+# Disable IB: DGX has mixed IB+RoCE NICs that NCCL can't merge.
+export NCCL_IB_DISABLE=1
 export OMP_NUM_THREADS=16
-export NCCL_NVLS_ENABLE=1
-export NCCL_IB_ADAPTIVE_ROUTING=1
-export NCCL_IB_SL=1
-export NCCL_IB_QPS_PER_CONNECTION=2
-export NCCL_IB_SPLIT_DATA_ON_QPS=0
-# export NCCL_DEBUG=INFO  # Uncomment for debugging
 
-# Uncomment if you need to specify IB adapters (adjust for your hardware)
+# IB tuning (uncomment / adjust for your cluster fabric)
+# export NCCL_IB_ADAPTIVE_ROUTING=1
+# export NCCL_IB_SL=1
+# export NCCL_IB_QPS_PER_CONNECTION=2
+# export NCCL_IB_SPLIT_DATA_ON_QPS=0
 # export NCCL_IB_HCA=mlx5_0,mlx5_1,mlx5_2,mlx5_3
 # export NCCL_SOCKET_IFNAME=bond0
-# export UCX_TLS=rc
 
 ############################
 #   RAY LOG MANAGEMENT     #
@@ -147,8 +159,7 @@ copy_ray_logs() {
     [ -L "$latest" ] && real="$(readlink -f "$latest")"
 
     echo "Copying Ray logs from: $real"
-    sync
-    sleep 2
+    sync; sleep 2
 
     mkdir -p "$PERSIST_RAY_DIR"
     rm -rf "$PERSIST_RAY_DIR/session_latest" 2>/dev/null
@@ -156,7 +167,6 @@ copy_ray_logs() {
 
     echo "Top non-empty logs (source):"
     find "$real/logs" -type f -size +0c 2>/dev/null | head -n 20 || true
-
     echo "Top non-empty logs (dest):"
     find "$PERSIST_RAY_DIR/session_latest/logs" -type f -size +0c 2>/dev/null | head -n 20 || true
 }
@@ -166,31 +176,23 @@ trap copy_ray_logs EXIT
 #   RAY INITIALIZATION     #
 ############################
 
-# Get node IP
 export RAY_NODE_IP_ADDRESS=$(hostname -I | awk '{print $1}')
-
-# Increase file descriptor limit
 ulimit -n 65535 2>/dev/null || true
 
-# Clean up any previous Ray state
 ray stop --force 2>/dev/null || true
 
-# Start Ray head node
 echo "Starting Ray head node at $RAY_NODE_IP_ADDRESS"
 ray start --head \
     --node-ip-address "$RAY_NODE_IP_ADDRESS" \
     --num-gpus "$NUM_GPUS" \
     --temp-dir "$RAY_TMPDIR" &
 
-# Wait for Ray to be ready
 echo "Waiting for Ray to be ready..."
 for i in {1..60}; do
     curl -fsS http://127.0.0.1:8265/api/version >/dev/null 2>&1 && break
     sleep 1
 done
 
-# Tell ray.init() to connect to the cluster we just started,
-# instead of spawning a second local instance.
 export RAY_ADDRESS="auto"
 
 ############################
@@ -198,7 +200,7 @@ export RAY_ADDRESS="auto"
 ############################
 
 echo "========================================"
-echo "TDC GRPO Training Configuration"
+echo "TDC GRPO Training — DISTRIBUTED mode"
 echo "========================================"
 echo "Task: $TASK_NAME"
 echo "Model: $PRETRAIN_PATH"
@@ -207,18 +209,17 @@ echo "Run ID: $RUN_ID"
 echo "----------------------------------------"
 if [ "$IS_SLURM" = true ]; then
     echo "SLURM Job ID: $SLURM_JOB_ID"
-    echo "Node ID: ${SLURM_NODEID:-0}"
-    echo "Node Name: ${SLURM_NODELIST:-$(hostname)}"
+    echo "Node: ${SLURM_NODELIST:-$(hostname)}"
     echo "----------------------------------------"
 fi
 echo "Training Data: $TRAIN_DATA"
 echo "Save Path: $SAVE_PATH"
 echo "Checkpoint Path: $CKPT_PATH"
 echo "----------------------------------------"
-echo "NUM_GPUS: $NUM_GPUS"
+echo "Actor GPUs:  $ACTOR_GPUS  (DeepSpeed ZeRO-2)"
+echo "vLLM GPUs:   $VLLM_GPUS  ($VLLM_NUM_ENGINES engine, TP=$VLLM_TENSOR_PARALLEL_SIZE)"
+echo "Total GPUs:  $NUM_GPUS"
 echo "TRAIN_BATCH_SIZE: $TRAIN_BATCH_SIZE"
-echo "VLLM_NUM_ENGINES: $VLLM_NUM_ENGINES"
-echo "RAY_NODE_IP_ADDRESS: $RAY_NODE_IP_ADDRESS"
 echo "----------------------------------------"
 echo "Agent Max Steps: $AGENT_MAX_STEPS"
 echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
@@ -235,11 +236,10 @@ python -m openrlhf.cli.train_ppo_ray \
     --reward_num_nodes 0 \
     --reward_num_gpus_per_node 0 \
     --actor_num_nodes 1 \
-    --actor_num_gpus_per_node $NUM_GPUS \
+    --actor_num_gpus_per_node $ACTOR_GPUS \
     --vllm_num_engines $VLLM_NUM_ENGINES \
-    --vllm_tensor_parallel_size $((NUM_GPUS > 1 ? 2 : 1)) \
-    --colocate_all_models \
-    --vllm_gpu_memory_utilization 0.8 \
+    --vllm_tensor_parallel_size $VLLM_TENSOR_PARALLEL_SIZE \
+    --vllm_gpu_memory_utilization 0.7 \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \
@@ -259,7 +259,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --prompt_max_len 4096 \
     --generate_max_len 8192 \
     --max_samples 1000000 \
-    --zero_stage 3 \
+    --zero_stage 2 \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \
     --prompt_data "$TRAIN_DATA" \
@@ -269,8 +269,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --gradient_checkpointing \
     --packing_samples \
     --vllm_sync_backend nccl \
-    --vllm_enable_sleep \
-    --deepspeed_enable_sleep \
     --enforce_eager \
     $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \
     --top_p 0.95 \
@@ -297,6 +295,6 @@ echo "Saved model to: $SAVE_PATH"
 echo "Checkpoints at: $CKPT_PATH"
 echo "Ray logs at: $PERSIST_RAY_DIR/session_latest"
 if [ "$IS_SLURM" = true ]; then
-    echo "SLURM output: H-grpo_${SLURM_JOB_ID}.out"
+    echo "SLURM output: P-grpo_${SLURM_JOB_ID}.out"
 fi
 echo "========================================"

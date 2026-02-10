@@ -23,7 +23,7 @@
 #SBATCH --output=%x_%j.out
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus=2                    # Shared GPUs (override with --gpus=N)
+#SBATCH --gpus=4                    # Shared GPUs (override with --gpus=N)
 #SBATCH --mem-per-gpu=128G
 #SBATCH --cpus-per-gpu=8
 #SBATCH --time=0:20:00
@@ -85,7 +85,6 @@ fi
 # Run configuration
 RUN_ID="S-grpo-${TASK_NAME}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
 SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
-CKPT_PATH="$PROJECT_ROOT/checkpoints/tdc/${TASK_NAME}/$RUN_ID"
 
 # Training hyperparameters
 TRAIN_BATCH_SIZE=$((NUM_GPUS * 16))
@@ -94,8 +93,8 @@ VLLM_NUM_ENGINES=$((NUM_GPUS / 2))
 
 # Tool-calling configuration — Intern-S1 format
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_agent.py"
-AGENT_MAX_STEPS=30
-PROMPT_CONSTRUCTION_MODE="manual"   # "manual" (fast) or "auto" (robust)
+AGENT_MAX_STEPS=40
+PROMPT_CONSTRUCTION_MODE="auto"   # "manual" (fast) or "auto" (robust)
 CHAT_PROTOCOL="intern_s1"           # Intern-S1 JSON format with <|action_start|><|plugin|> markers
 
 # GRPO configuration
@@ -232,7 +231,6 @@ if [ "$IS_SLURM" = true ]; then
 fi
 echo "Training Data: $TRAIN_DATA"
 echo "Save Path: $SAVE_PATH"
-echo "Checkpoint Path: $CKPT_PATH"
 echo "----------------------------------------"
 echo "NUM_GPUS: $NUM_GPUS"
 echo "TRAIN_BATCH_SIZE: $TRAIN_BATCH_SIZE"
@@ -262,19 +260,15 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size $((NUM_GPUS > 1 ? 2 : 1)) \
     --colocate_all_models \
-    --vllm_gpu_memory_utilization 0.8 \
+    --vllm_gpu_memory_utilization 0.7 \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \
     --eps_clip_low_high 0.2 0.272 \
-    --pretrain "$PRETRAIN_PATH" \
-    --save_path "$SAVE_PATH" \
-    --ckpt_path "$CKPT_PATH" \
     --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
-    --save_steps 20 \
     --logging_steps 1 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
-    --micro_train_batch_size 8 \
+    --micro_train_batch_size 4 \
     --micro_rollout_batch_size 16 \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
@@ -282,7 +276,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --prompt_max_len 4096 \
     --generate_max_len 8192 \
     --max_samples 1000000 \
-    --zero_stage 3 \
+    --zero_stage 0 \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \
     --prompt_data "$TRAIN_DATA" \
@@ -321,7 +315,6 @@ echo "========================================"
 echo "Training Summary"
 echo "========================================"
 echo "Saved model to: $SAVE_PATH"
-echo "Checkpoints at: $CKPT_PATH"
 echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-$TASK_NAME run=$RUN_ID"
 echo "Ray logs at: $PERSIST_RAY_DIR/session_latest"
 if [ "$IS_SLURM" = true ]; then

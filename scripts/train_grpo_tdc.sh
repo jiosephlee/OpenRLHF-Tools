@@ -191,6 +191,10 @@ for i in {1..60}; do
     sleep 1
 done
 
+# Tell ray.init() to connect to the cluster we just started,
+# instead of spawning a second local instance.
+export RAY_ADDRESS="auto"
+
 ############################
 #   PRINT CONFIGURATION    #
 ############################

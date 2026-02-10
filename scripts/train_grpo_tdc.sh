@@ -20,7 +20,7 @@
 #SBATCH --output=%x_%j.out
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus=2                    # Default: 4 GPUs (override with --gpus=N)
+#SBATCH --gpus=4                    # 2 training + 2 vLLM (override with --gpus=N)
 #SBATCH --mem-per-gpu=128G
 #SBATCH --cpus-per-gpu=8
 #SBATCH --time=0:20:00
@@ -40,8 +40,13 @@ if [ -n "${SLURM_JOB_ID:-}" ]; then
 else
     echo "Running in standalone mode"
     IS_SLURM=false
-    NUM_GPUS=${4:-4}  # Use 4th arg or default to 4
+    NUM_GPUS=${4:-4}  # Total GPUs (actor + vLLM)
 fi
+
+# Split: 2 for training (actor), 2 for vLLM
+ACTOR_GPUS=2
+VLLM_GPUS=2
+[ $NUM_GPUS -lt $((ACTOR_GPUS + VLLM_GPUS)) ] && { echo "Error: need at least $((ACTOR_GPUS + VLLM_GPUS)) GPUs (${ACTOR_GPUS} actor + ${VLLM_GPUS} vLLM)" >&2; exit 1; }
 
 # Parse arguments
 TASK_NAME=${1:-"AMES"}
@@ -85,10 +90,10 @@ RUN_ID="grpo-tdc-${TASK_NAME}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
 SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
 CKPT_PATH="$PROJECT_ROOT/checkpoints/tdc/${TASK_NAME}/$RUN_ID"
 
-# Training hyperparameters
-TRAIN_BATCH_SIZE=$((NUM_GPUS * 16))
-VLLM_NUM_ENGINES=$((NUM_GPUS / 2))
-[ $VLLM_NUM_ENGINES -lt 1 ] && VLLM_NUM_ENGINES=1
+# Training hyperparameters (based on actor GPUs only)
+TRAIN_BATCH_SIZE=$((ACTOR_GPUS * 16))
+VLLM_NUM_ENGINES=1
+VLLM_TENSOR_PARALLEL_SIZE=$VLLM_GPUS
 
 # Tool-calling configuration
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_agent.py"
@@ -217,9 +222,9 @@ echo "Training Data: $TRAIN_DATA"
 echo "Save Path: $SAVE_PATH"
 echo "Checkpoint Path: $CKPT_PATH"
 echo "----------------------------------------"
-echo "NUM_GPUS: $NUM_GPUS"
+echo "NUM_GPUS: $NUM_GPUS (actor: $ACTOR_GPUS, vLLM: $VLLM_GPUS)"
 echo "TRAIN_BATCH_SIZE: $TRAIN_BATCH_SIZE"
-echo "VLLM_NUM_ENGINES: $VLLM_NUM_ENGINES"
+echo "VLLM_NUM_ENGINES: $VLLM_NUM_ENGINES (TP=$VLLM_TENSOR_PARALLEL_SIZE)"
 echo "RAY_NODE_IP_ADDRESS: $RAY_NODE_IP_ADDRESS"
 echo "----------------------------------------"
 echo "Agent Max Steps: $AGENT_MAX_STEPS"
@@ -237,11 +242,10 @@ python -m openrlhf.cli.train_ppo_ray \
     --reward_num_nodes 0 \
     --reward_num_gpus_per_node 0 \
     --actor_num_nodes 1 \
-    --actor_num_gpus_per_node $NUM_GPUS \
+    --actor_num_gpus_per_node $ACTOR_GPUS \
     --vllm_num_engines $VLLM_NUM_ENGINES \
-    --vllm_tensor_parallel_size $((NUM_GPUS > 1 ? 2 : 1)) \
-    --colocate_all_models \
-    --vllm_gpu_memory_utilization 0.8 \
+    --vllm_tensor_parallel_size $VLLM_TENSOR_PARALLEL_SIZE \
+    --vllm_gpu_memory_utilization 0.9 \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \
@@ -261,7 +265,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --prompt_max_len 4096 \
     --generate_max_len 8192 \
     --max_samples 1000000 \
-    --zero_stage 3 \
+    --zero_stage 2 \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \
     --prompt_data "$TRAIN_DATA" \
@@ -270,8 +274,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --apply_chat_template \
     --gradient_checkpointing \
     --vllm_sync_backend nccl \
-    --vllm_enable_sleep \
-    --deepspeed_enable_sleep \
     --enforce_eager \
     $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \
     --top_p 0.95 \

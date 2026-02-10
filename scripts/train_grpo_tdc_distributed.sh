@@ -6,6 +6,7 @@
 # Modeled after examples/scripts/train_ppo_ray_slurm.sh.
 #
 # Usage:
+#   export WANDB_API_KEY=...   # required for wandb tracking
 #   # SLURM: sbatch scripts/train_grpo_tdc_distributed.sh <task_name> <model_path> [learning_rate]
 #   # Direct: bash scripts/train_grpo_tdc_distributed.sh <task_name> <model_path> [learning_rate] [num_gpus]
 #
@@ -20,10 +21,11 @@
 #SBATCH --output=%x_%j.out
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus=4                    # 2 actor + 2 vLLM
+#SBATCH --gpus=8                    # 2 actor + 2 vLLM
 #SBATCH --mem-per-gpu=128G
 #SBATCH --cpus-per-gpu=8
-#SBATCH --time=0:20:00
+#SBATCH --time=0:30:00
+#SBATCH --exclude=dgx011
 
 set -euo pipefail
 
@@ -106,6 +108,13 @@ N_SAMPLES_PER_PROMPT=8
 ADVANTAGE_ESTIMATOR="dr_grpo"
 DYNAMIC_FILTERING=true
 DYNAMIC_FILTERING_REWARD_RANGE="0.2 0.8"
+
+# ── W&B (required for tracking) ──────────────────────────────────
+if [ -z "${WANDB_API_KEY:-}" ]; then
+    echo "Error: WANDB_API_KEY is not set. Set it for wandb tracking (e.g. export WANDB_API_KEY=...)." >&2
+    exit 1
+fi
+WANDB_PROJECT="${WANDB_PROJECT:-openrlhf_tdc_grpo}"
 
 ############################
 #   ENVIRONMENT SETUP      #
@@ -223,6 +232,8 @@ echo "----------------------------------------"
 echo "Agent Max Steps: $AGENT_MAX_STEPS"
 echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
 echo "Prompt Mode: $PROMPT_CONSTRUCTION_MODE"
+echo "----------------------------------------"
+echo "W&B: project=$WANDB_PROJECT group=TDC-$TASK_NAME run=$RUN_ID"
 echo "========================================"
 
 ############################
@@ -276,7 +287,10 @@ python -m openrlhf.cli.train_ppo_ray \
     --agent_max_steps $AGENT_MAX_STEPS \
     --vllm_stop_strings "</tool_call>" \
     --prompt_construction_mode "$PROMPT_CONSTRUCTION_MODE" \
-    $([ -n "${WANDB_API_KEY:-}" ] && echo "--use_wandb $WANDB_API_KEY --wandb_group 'TDC-$TASK_NAME' --wandb_run_name '$RUN_ID'" || echo "")
+    --use_wandb 1 \
+    --wandb_project "$WANDB_PROJECT" \
+    --wandb_group "TDC-$TASK_NAME" \
+    --wandb_run_name "$RUN_ID"
 
 ############################
 #   CLEANUP                #
@@ -292,6 +306,7 @@ echo "Training Summary"
 echo "========================================"
 echo "Saved model to: $SAVE_PATH"
 echo "Checkpoints at: $CKPT_PATH"
+echo "W&B: project=$WANDB_PROJECT group=TDC-$TASK_NAME run=$RUN_ID"
 echo "Ray logs at: $PERSIST_RAY_DIR/session_latest"
 if [ "$IS_SLURM" = true ]; then
     echo "SLURM output: D-grpo_${SLURM_JOB_ID}.out"

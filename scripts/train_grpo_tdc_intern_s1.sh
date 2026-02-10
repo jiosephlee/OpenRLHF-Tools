@@ -7,6 +7,7 @@
 #   <|action_start|><|plugin|>{"name": "...", "parameters": {...}}<|action_end|>
 #
 # Usage:
+#   export WANDB_API_KEY=...   # required for wandb tracking
 #   # SLURM: sbatch scripts/train_grpo_tdc_intern_s1.sh <task_name> [model_path] [learning_rate]
 #   # Direct: bash scripts/train_grpo_tdc_intern_s1.sh <task_name> [model_path] [learning_rate] [num_gpus]
 #
@@ -102,6 +103,13 @@ N_SAMPLES_PER_PROMPT=8
 ADVANTAGE_ESTIMATOR="dr_grpo"
 DYNAMIC_FILTERING=true
 DYNAMIC_FILTERING_REWARD_RANGE="0.2 0.8"
+
+# W&B (required for tracking)
+if [ -z "${WANDB_API_KEY:-}" ]; then
+    echo "Error: WANDB_API_KEY is not set. Set it for wandb tracking (e.g. export WANDB_API_KEY=...)." >&2
+    exit 1
+fi
+WANDB_PROJECT="${WANDB_PROJECT:-openrlhf_tdc_grpo}"
 
 # Intern-S1 sampling parameters (match inference-time settings from recipe)
 TEMPERATURE=0.8
@@ -235,6 +243,8 @@ echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
 echo "Prompt Mode: $PROMPT_CONSTRUCTION_MODE"
 echo "Temperature: $TEMPERATURE"
 echo "Top-p: $TOP_P"
+echo "----------------------------------------"
+echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-$TASK_NAME run=$RUN_ID"
 echo "========================================"
 
 ############################
@@ -292,7 +302,10 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_stop_strings "<|action_end|>" "<|im_end|>" \
     --prompt_construction_mode "$PROMPT_CONSTRUCTION_MODE" \
     --chat_protocol "$CHAT_PROTOCOL" \
-    $([ -n "${WANDB_API_KEY:-}" ] && echo "--use_wandb $WANDB_API_KEY --wandb_group 'TDC-InternS1-$TASK_NAME' --wandb_run_name '$RUN_ID'" || echo "")
+    --use_wandb 1 \
+    --wandb_project "$WANDB_PROJECT" \
+    --wandb_group "TDC-InternS1-$TASK_NAME" \
+    --wandb_run_name "$RUN_ID"
 
 ############################
 #   CLEANUP                #
@@ -308,6 +321,7 @@ echo "Training Summary"
 echo "========================================"
 echo "Saved model to: $SAVE_PATH"
 echo "Checkpoints at: $CKPT_PATH"
+echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-$TASK_NAME run=$RUN_ID"
 echo "Ray logs at: $PERSIST_RAY_DIR/session_latest"
 if [ "$IS_SLURM" = true ]; then
     echo "SLURM output: S-grpo_${SLURM_JOB_ID}.out"

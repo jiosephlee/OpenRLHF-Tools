@@ -257,11 +257,11 @@ python -m openrlhf.cli.train_ppo_ray \
     --micro_rollout_batch_size 16 \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
-    --max_epochs 2 \
+    --max_epochs 1 \
     --prompt_max_len 4096 \
-    --generate_max_len 2048 \
+    --generate_max_len 8192 \
     --max_samples 1000000 \
-    --zero_stage 2 \
+    --zero_stage 3 \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \
     --prompt_data "$TRAIN_DATA" \

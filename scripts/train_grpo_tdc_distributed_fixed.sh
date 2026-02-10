@@ -74,8 +74,8 @@ run_task() {
     fi
 
     # GPU split: actor (training) vs vLLM (inference)
-    ACTOR_GPUS=2
-    VLLM_GPUS=2
+    ACTOR_GPUS=4
+    VLLM_GPUS=4
     TOTAL_REQUIRED=$((ACTOR_GPUS + VLLM_GPUS))
     if [ "$NUM_GPUS" -lt "$TOTAL_REQUIRED" ]; then
         echo "Error: need at least $TOTAL_REQUIRED GPUs (${ACTOR_GPUS} actor + ${VLLM_GPUS} vLLM), got $NUM_GPUS" >&2
@@ -274,7 +274,6 @@ run_task() {
         --eps_clip_low_high 0.2 0.272 \
         --pretrain "$PRETRAIN_PATH" \
         --save_path "$SAVE_PATH" \
-        --ckpt_path "$CKPT_PATH" \
         --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
         --save_steps 20 \
         --logging_steps 1 \
@@ -287,7 +286,7 @@ run_task() {
         --prompt_max_len 4096 \
         --generate_max_len 8192 \
         --max_samples 1000000 \
-        --zero_stage 2 \
+        --zero_stage 1 \
         --param_dtype bf16 \
         --actor_learning_rate $LEARNING_RATE \
         --prompt_data "$TRAIN_DATA" \

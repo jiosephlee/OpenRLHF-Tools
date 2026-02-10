@@ -18,9 +18,14 @@ from typing import Dict, Any
 from transformers import AutoTokenizer
 
 # Add Intern-S1-recipe to path so `from tools import ...` resolves to
-# Intern-S1-recipe/tools/__init__.py (same approach as test_tdc_via_api_F1.py)
-_PROJECT_ROOT = Path(__file__).parent.parent.parent  # openrlhf/utils -> openrlhf -> project root
+# Intern-S1-recipe/tools/__init__.py (same approach as test_tdc_via_api_F1.py).
+# Intern-S1-recipe is a git submodule — run `git submodule update --init` if missing.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # openrlhf/utils -> openrlhf -> project root
 _INTERN_S1_ROOT = _PROJECT_ROOT / "Intern-S1-recipe"
+assert (_INTERN_S1_ROOT / "tools").is_dir(), (
+    f"Intern-S1-recipe/tools not found at {_INTERN_S1_ROOT}/tools. "
+    f"Run: git submodule update --init Intern-S1-recipe"
+)
 if str(_INTERN_S1_ROOT) not in sys.path:
     sys.path.insert(0, str(_INTERN_S1_ROOT))
 

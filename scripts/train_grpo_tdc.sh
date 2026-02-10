@@ -265,7 +265,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \
     --prompt_data "$TRAIN_DATA" \
-    --input_key question \
+    --input_key messages \
     --label_key answer \
     --apply_chat_template \
     --gradient_checkpointing \

@@ -275,7 +275,7 @@ run_task() {
         --pretrain "$PRETRAIN_PATH" \
         --save_path "$SAVE_PATH" \
         --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
-        --save_steps 20 \
+        --save_steps -1 \
         --logging_steps 1 \
         --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
         --micro_train_batch_size 8 \

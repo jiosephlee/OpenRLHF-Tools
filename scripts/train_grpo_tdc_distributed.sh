@@ -98,7 +98,7 @@ TRAIN_BATCH_SIZE=$((ACTOR_GPUS * 16))
 
 # ── Tool-calling configuration ──────────────────────────────────
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_agent.py"
-AGENT_MAX_STEPS=40
+AGENT_MAX_STEPS=50
 PROMPT_CONSTRUCTION_MODE="manual"
 
 # ── GRPO configuration ──────────────────────────────────────────

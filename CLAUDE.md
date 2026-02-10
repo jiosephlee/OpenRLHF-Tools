@@ -288,12 +288,6 @@ export OPENRLHF_CHAT_PROTOCOL=qwen3
 
 ## Debugging
 
-### Check Environment Variables
-```bash
-echo $OPENRLHF_MODEL_PATH
-echo $OPENRLHF_PROMPT_CONSTRUCTION_MODE
-```
-
 ### Test Parser Directly
 ```python
 from openrlhf.utils.chat_protocol import GLMFlashProtocol
@@ -307,37 +301,6 @@ action = protocol.parse_assistant_text(text)
 print(action)
 # {'content': '', 'tool_calls': [{'name': 'calculate_qed', 'arguments': {'smiles': 'CCO'}}]}
 ```
-
-### Monitor Ray Logs
-```bash
-tail -f /tmp/ray_tmp/session_latest/logs/worker-*.out
-```
-
-### Common Issues
-
-**Issue:** `ModuleNotFoundError: No module named 'tools'`
-- **Cause:** Tool module not in Python path
-- **Fix:** Update `THERAPEUTIC_TUNING_ROOT` path in `tool_calling_agent.py`
-
-**Issue:** vLLM generates beyond `</tool_call>`
-- **Cause:** Stop strings not configured
-- **Fix:** Ensure `--vllm_stop_strings "</tool_call>"` is set
-
-**Issue:** `OPENRLHF_MODEL_PATH` environment variable not set
-- **Cause:** Agent can't load tokenizer
-- **Fix:** Verify vllm_engine.py sets this from `--pretrain` path
-
-## Performance
-
-### Abstraction Overhead
-- Expected: <5% regression vs monolithic implementation
-- Profile with: `py-spy record -o profile.svg -- python -m openrlhf.cli.train_ppo_ray ...`
-
-### Optimization Tips
-1. Use `--prompt_construction_mode manual` for production (3-5x faster than auto)
-2. Set appropriate `--agent_max_steps` (lower = faster, but may truncate complex tasks)
-3. Enable `--vllm_enable_sleep` and `--deepspeed_enable_sleep` to save resources
-
 ## Testing
 
 ### Unit Tests
@@ -362,13 +325,6 @@ Validate:
 - ✅ action_ranges tracked correctly
 - ✅ Rewards computed (check wandb)
 - ✅ No crashes in 10 samples
-
-## References
-
-- [OpenRLHF GitHub](https://github.com/OpenRLHF/OpenRLHF)
-- [vLLM GLM Tool Parser](https://github.com/vllm-project/vllm/blob/main/vllm/tool_parsers/glm47_moe_tool_parser.py)
-- [GRPO Paper](https://arxiv.org/abs/2402.03300) - Group Relative Policy Optimization
-- [GLM-4 Technical Report](https://arxiv.org/abs/2406.12793)
 
 ## Contributing
 

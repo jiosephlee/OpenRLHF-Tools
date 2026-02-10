@@ -131,6 +131,9 @@ export OPENRLHF_MAX_STEPS="$AGENT_MAX_STEPS"
 
 # NCCL — keep debug on until the init issue is resolved
 export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
+# Disable P2P: the "via P2P/CUMEM" transport crashes during ncclCommInitRank
+# when actor and vLLM are on separate placement groups. Force SHM fallback.
+export NCCL_P2P_DISABLE=1
 export OMP_NUM_THREADS=16
 
 # IB tuning (uncomment / adjust for your cluster fabric)

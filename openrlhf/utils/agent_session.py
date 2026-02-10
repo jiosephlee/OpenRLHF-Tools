@@ -114,7 +114,6 @@ class AgentSession:
                 "done": False,
                 "extra_logs": {
                     "tool_call_count": len(tool_calls),
-                    "tool_names": [tc.get("name") for tc in tool_calls]
                 }
             }
         else:

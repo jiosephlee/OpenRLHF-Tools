@@ -40,6 +40,13 @@ export NCCL_IB_HCA=mlx5_15,mlx5_10,mlx5_14,mlx5_13,mlx5_8,mlx5_7,mlx5_9,mlx5_4
 export NCCL_SOCKET_IFNAME=bond0
 export UCX_TLS=rc
 
+### W&B — capture from login shell before srun drops it ###
+if [ -z "${WANDB_API_KEY:-}" ]; then
+    echo "Error: WANDB_API_KEY is not set. Export it before sbatch." >&2
+    exit 1
+fi
+export WANDB_API_KEY
+
 ### CONDA / MODULE SETUP ###
 module load MAMBA
 export ENV_PREFIX="${ENV_PREFIX:-/vast/projects/myatskar/design-documents/conda_env/openrlhf}"
@@ -130,11 +137,7 @@ run_task() {
     DYNAMIC_FILTERING=true
     DYNAMIC_FILTERING_REWARD_RANGE="0.2 0.8"
 
-    # ── W&B (required for tracking) ──────────────────────────────────
-    if [ -z "${WANDB_API_KEY:-}" ]; then
-        echo "Error: WANDB_API_KEY is not set. Set it for wandb tracking (e.g. export WANDB_API_KEY=...)." >&2
-        exit 1
-    fi
+    # ── W&B ──────────────────────────────────────────────────────────
     WANDB_PROJECT="${WANDB_PROJECT:-openrlhf_tdc_grpo}"
 
     ############################

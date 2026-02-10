@@ -251,6 +251,7 @@ echo "========================================"
 ############################
 
 python -m openrlhf.cli.train_ppo_ray \
+    --pretrain "$PRETRAIN_PATH" \
     --ref_num_nodes 0 \
     --ref_num_gpus_per_node 0 \
     --reward_num_nodes 0 \
@@ -266,6 +267,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --kl_estimator k1 \
     --eps_clip_low_high 0.2 0.272 \
     --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
+    --save_steps -1 \
     --logging_steps 1 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
     --micro_train_batch_size 4 \

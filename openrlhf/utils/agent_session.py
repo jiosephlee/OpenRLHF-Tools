@@ -25,6 +25,7 @@ class AgentSession:
         protocol: Any,  # ChatProtocol instance
         tools: Dict[str, Callable],  # {"tool_name": callable}
         system_prompt: str,
+        tool_schemas: Optional[List[Dict[str, Any]]] = None,  # JSON tool schemas for rendering
     ):
         """Initialize agent session.
 
@@ -32,9 +33,12 @@ class AgentSession:
             protocol: ChatProtocol instance for format-specific rendering/parsing
             tools: Dictionary mapping tool names to callable functions
             system_prompt: System message for the agent
+            tool_schemas: JSON-serializable tool definitions for prompt rendering
+                          (e.g. BASIC_TOOLS). If None, tools are not included in prompt.
         """
         self.protocol = protocol
         self.tools = tools
+        self.tool_schemas = tool_schemas or []
         self.system_prompt = system_prompt
         self.history: List[Dict[str, Any]] = []
 
@@ -53,10 +57,10 @@ class AgentSession:
             {"role": "user", "content": prompt}
         ]
 
-        # Render with protocol (includes tool schemas)
+        # Render with protocol (includes tool schemas, not callables)
         return self.protocol.render_messages(
             self.history,
-            tools=self.tools,
+            tools=self.tool_schemas,
             add_generation_prompt=True
         )
 

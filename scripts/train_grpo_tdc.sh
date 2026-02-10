@@ -1,9 +1,8 @@
 #!/bin/bash
 #
-# TDC GRPO Training Script
+# TDC GRPO Training Script — HYBRID (colocated) mode
 #
-# Adapted from openrlhf-vlm-fork/batch_scripts/grpo_with_tools.sh
-# for training on TDC molecular property prediction datasets
+# Actor and vLLM share the same GPUs via sleep mode.
 #
 # Usage:
 #   # SLURM: sbatch scripts/train_grpo_tdc.sh <task_name> <model_path> [learning_rate]
@@ -20,7 +19,7 @@
 #SBATCH --output=%x_%j.out
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus=4                    # 2 training + 2 vLLM (override with --gpus=N)
+#SBATCH --gpus=2                    # Shared GPUs (override with --gpus=N)
 #SBATCH --mem-per-gpu=128G
 #SBATCH --cpus-per-gpu=8
 #SBATCH --time=0:20:00
@@ -35,18 +34,12 @@ set -euo pipefail
 if [ -n "${SLURM_JOB_ID:-}" ]; then
     echo "Running under SLURM (Job ID: $SLURM_JOB_ID)"
     IS_SLURM=true
-    # Auto-detect GPUs from SLURM allocation
     NUM_GPUS=${SLURM_GPUS_ON_NODE:-4}
 else
     echo "Running in standalone mode"
     IS_SLURM=false
-    NUM_GPUS=${4:-4}  # Total GPUs (actor + vLLM)
+    NUM_GPUS=${4:-4}  # Use 4th arg or default to 4
 fi
-
-# Split: 2 for training (actor), 2 for vLLM
-ACTOR_GPUS=2
-VLLM_GPUS=2
-[ $NUM_GPUS -lt $((ACTOR_GPUS + VLLM_GPUS)) ] && { echo "Error: need at least $((ACTOR_GPUS + VLLM_GPUS)) GPUs (${ACTOR_GPUS} actor + ${VLLM_GPUS} vLLM)" >&2; exit 1; }
 
 # Parse arguments
 TASK_NAME=${1:-"AMES"}
@@ -90,10 +83,10 @@ RUN_ID="grpo-tdc-${TASK_NAME}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
 SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
 CKPT_PATH="$PROJECT_ROOT/checkpoints/tdc/${TASK_NAME}/$RUN_ID"
 
-# Training hyperparameters (based on actor GPUs only)
-TRAIN_BATCH_SIZE=$((ACTOR_GPUS * 16))
-VLLM_NUM_ENGINES=1
-VLLM_TENSOR_PARALLEL_SIZE=$VLLM_GPUS
+# Training hyperparameters
+TRAIN_BATCH_SIZE=$((NUM_GPUS * 16))
+VLLM_NUM_ENGINES=$((NUM_GPUS / 2))
+[ $VLLM_NUM_ENGINES -lt 1 ] && VLLM_NUM_ENGINES=1
 
 # Tool-calling configuration
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_agent.py"
@@ -222,9 +215,9 @@ echo "Training Data: $TRAIN_DATA"
 echo "Save Path: $SAVE_PATH"
 echo "Checkpoint Path: $CKPT_PATH"
 echo "----------------------------------------"
-echo "NUM_GPUS: $NUM_GPUS (actor: $ACTOR_GPUS, vLLM: $VLLM_GPUS)"
+echo "NUM_GPUS: $NUM_GPUS"
 echo "TRAIN_BATCH_SIZE: $TRAIN_BATCH_SIZE"
-echo "VLLM_NUM_ENGINES: $VLLM_NUM_ENGINES (TP=$VLLM_TENSOR_PARALLEL_SIZE)"
+echo "VLLM_NUM_ENGINES: $VLLM_NUM_ENGINES"
 echo "RAY_NODE_IP_ADDRESS: $RAY_NODE_IP_ADDRESS"
 echo "----------------------------------------"
 echo "Agent Max Steps: $AGENT_MAX_STEPS"
@@ -242,10 +235,11 @@ python -m openrlhf.cli.train_ppo_ray \
     --reward_num_nodes 0 \
     --reward_num_gpus_per_node 0 \
     --actor_num_nodes 1 \
-    --actor_num_gpus_per_node $ACTOR_GPUS \
+    --actor_num_gpus_per_node $NUM_GPUS \
     --vllm_num_engines $VLLM_NUM_ENGINES \
-    --vllm_tensor_parallel_size $VLLM_TENSOR_PARALLEL_SIZE \
-    --vllm_gpu_memory_utilization 0.7 \
+    --vllm_tensor_parallel_size $((NUM_GPUS > 1 ? 2 : 1)) \
+    --colocate_all_models \
+    --vllm_gpu_memory_utilization 0.8 \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \
@@ -265,7 +259,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --prompt_max_len 4096 \
     --generate_max_len 8192 \
     --max_samples 1000000 \
-    --zero_stage 2 \
+    --zero_stage 3 \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \
     --prompt_data "$TRAIN_DATA" \
@@ -273,9 +267,11 @@ python -m openrlhf.cli.train_ppo_ray \
     --label_key answer \
     --apply_chat_template \
     --gradient_checkpointing \
-    --vllm_sync_backend nccl \
-    --enforce_eager \
     --packing_samples \
+    --vllm_sync_backend nccl \
+    --vllm_enable_sleep \
+    --deepspeed_enable_sleep \
+    --enforce_eager \
     $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \
     --top_p 0.95 \
     --temperature 1.0 \

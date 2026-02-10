@@ -134,6 +134,9 @@ export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
 # Disable P2P: the "via P2P/CUMEM" transport crashes during ncclCommInitRank
 # when actor and vLLM are on separate placement groups. Force SHM fallback.
 export NCCL_P2P_DISABLE=1
+# Disable IB: DGX has mixed IB+RoCE NICs that NCCL can't merge.
+# Intra-node weight sync only needs SHM, not IB.
+export NCCL_IB_DISABLE=1
 export OMP_NUM_THREADS=16
 
 # IB tuning (uncomment / adjust for your cluster fabric)

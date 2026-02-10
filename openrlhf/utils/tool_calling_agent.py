@@ -62,14 +62,15 @@ class ToolCallAgent(AgentInstanceBase):
         else:
             protocol = GLMFlashProtocol(self.tokenizer)
 
-        # Create tool functions dict
+        # Create tool functions dict (callables for execution)
         tools = self._create_tools_dict()
 
-        # Create session
+        # Create session with both callables and schemas
         self.session = AgentSession(
             protocol=protocol,
             tools=tools,
-            system_prompt=self._get_system_prompt()
+            system_prompt=self._get_system_prompt(),
+            tool_schemas=BASIC_TOOLS,
         )
 
     async def reset(self, states: Dict[str, Any], **kwargs) -> Dict[str, str]:

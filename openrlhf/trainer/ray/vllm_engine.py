@@ -43,6 +43,7 @@ class LLMRayActor:
         agent_max_steps: int = 5,
         vllm_stop_strings: Optional[list] = None,
         prompt_construction_mode: str = "manual",
+        chat_protocol: str = "glm_flash",
         **kwargs,
     ):
         self._configure_device_env(
@@ -57,6 +58,7 @@ class LLMRayActor:
             model_path = kwargs.get("model", "")
             os.environ["OPENRLHF_MODEL_PATH"] = model_path
             os.environ["OPENRLHF_PROMPT_CONSTRUCTION_MODE"] = prompt_construction_mode
+            os.environ["OPENRLHF_CHAT_PROTOCOL"] = chat_protocol
             os.environ["OPENRLHF_MAX_STEPS"] = str(agent_max_steps)
 
         # Store agent config for generation
@@ -213,6 +215,7 @@ def create_vllm_engines(
     agent_max_steps: int = 5,
     vllm_stop_strings: Optional[list] = None,
     prompt_construction_mode: str = "manual",
+    chat_protocol: str = "glm_flash",
 ):
     """Spin up a set of vLLM Ray actors with consistent placement."""
     vllm_engines = []
@@ -265,6 +268,7 @@ def create_vllm_engines(
                 "agent_max_steps": agent_max_steps,
                 "vllm_stop_strings": vllm_stop_strings,
                 "prompt_construction_mode": prompt_construction_mode,
+                "chat_protocol": chat_protocol,
             }
         )
 

@@ -15,7 +15,7 @@
 #
 
 ### SLURM DIRECTIVES ###
-#SBATCH --job-name=grpo-tdc-dist
+#SBATCH --job-name=D-grpo
 #SBATCH --partition=dgx-b200
 #SBATCH --output=%x_%j.out
 #SBATCH --nodes=1
@@ -84,7 +84,7 @@ if [ ! -f "$TRAIN_DATA" ]; then
 fi
 
 # Run ID / paths
-RUN_ID="grpo-tdc-${TASK_NAME}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
+RUN_ID="D-grpo-${TASK_NAME}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
 SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
 CKPT_PATH="$PROJECT_ROOT/checkpoints/tdc/${TASK_NAME}/$RUN_ID"
 
@@ -131,8 +131,7 @@ export OPENRLHF_MAX_STEPS="$AGENT_MAX_STEPS"
 
 # NCCL — keep debug on until the init issue is resolved
 export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
-# Disable P2P: the "via P2P/CUMEM" transport crashes during ncclCommInitRank
-# when actor and vLLM are on separate placement groups. Force SHM fallback.
+# Disable P2P: crashes during ncclCommInitRank for the weight sync group.
 export NCCL_P2P_DISABLE=1
 # Disable IB: DGX has mixed IB+RoCE NICs that NCCL can't merge.
 # Intra-node weight sync only needs SHM, not IB.
@@ -295,6 +294,6 @@ echo "Saved model to: $SAVE_PATH"
 echo "Checkpoints at: $CKPT_PATH"
 echo "Ray logs at: $PERSIST_RAY_DIR/session_latest"
 if [ "$IS_SLURM" = true ]; then
-    echo "SLURM output: grpo-tdc-dist_${SLURM_JOB_ID}.out"
+    echo "SLURM output: D-grpo_${SLURM_JOB_ID}.out"
 fi
 echo "========================================"

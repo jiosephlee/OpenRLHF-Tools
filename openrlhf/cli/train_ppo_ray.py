@@ -70,6 +70,7 @@ def train(args):
             agent_max_steps=args.agent_max_steps,
             vllm_stop_strings=args.vllm_stop_strings,
             prompt_construction_mode=args.prompt_construction_mode,
+            chat_protocol=args.chat_protocol,
         )
 
     actor_model = RayActorGroup(
@@ -467,6 +468,12 @@ if __name__ == "__main__":
         choices=["auto", "manual"],
         default="manual",
         help="Prompt construction mode: 'manual' (fast) or 'auto' (robust with chat template)"
+    )
+    parser.add_argument(
+        "--chat_protocol",
+        type=str,
+        default="glm_flash",
+        help="Chat protocol for tool-calling format: 'glm_flash' or 'intern_s1'"
     )
 
     # Custom dataset

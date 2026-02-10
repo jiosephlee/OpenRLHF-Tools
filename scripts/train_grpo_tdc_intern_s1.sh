@@ -1,20 +1,23 @@
 #!/bin/bash
 #
-# TDC GRPO Training Script — HYBRID (colocated) mode
+# TDC GRPO Training Script for Intern-S1-mini — HYBRID (colocated) mode
 #
 # Actor and vLLM share the same GPUs via sleep mode.
+# Uses the Intern-S1 JSON tool-calling format:
+#   <|action_start|><|plugin|>{"name": "...", "parameters": {...}}<|action_end|>
 #
 # Usage:
-#   # SLURM: sbatch scripts/train_grpo_tdc.sh <task_name> <model_path> [learning_rate]
-#   # Direct: bash scripts/train_grpo_tdc.sh <task_name> <model_path> [learning_rate] [num_gpus]
+#   # SLURM: sbatch scripts/train_grpo_tdc_intern_s1.sh <task_name> [model_path] [learning_rate]
+#   # Direct: bash scripts/train_grpo_tdc_intern_s1.sh <task_name> [model_path] [learning_rate] [num_gpus]
 #
 # Examples:
-#   sbatch scripts/train_grpo_tdc.sh AMES internlm/internlm2_5-7b-chat
-#   bash scripts/train_grpo_tdc.sh hERG /path/to/glm-flash-model 1e-6 4
+#   sbatch scripts/train_grpo_tdc_intern_s1.sh AMES
+#   sbatch scripts/train_grpo_tdc_intern_s1.sh Skin_Reaction jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05
+#   bash scripts/train_grpo_tdc_intern_s1.sh hERG jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05 1e-6 4
 #
 
 ### SLURM DIRECTIVES ###
-#SBATCH --job-name=H-grpo
+#SBATCH --job-name=S-grpo
 #SBATCH --partition=dgx-b200
 #SBATCH --output=%x_%j.out
 #SBATCH --nodes=1
@@ -43,7 +46,7 @@ fi
 
 # Parse arguments
 TASK_NAME=${1:-"AMES"}
-PRETRAIN_PATH=${2:-"zai-org/GLM-4.7-Flash"}
+PRETRAIN_PATH=${2:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}
 LEARNING_RATE=${3:-"1e-6"}
 
 # Resolve PROJECT_ROOT by walking up from a known starting directory until
@@ -79,7 +82,7 @@ if [ ! -f "$TRAIN_DATA" ]; then
 fi
 
 # Run configuration
-RUN_ID="H-grpo-${TASK_NAME}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
+RUN_ID="S-grpo-${TASK_NAME}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
 SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
 CKPT_PATH="$PROJECT_ROOT/checkpoints/tdc/${TASK_NAME}/$RUN_ID"
 
@@ -88,16 +91,21 @@ TRAIN_BATCH_SIZE=$((NUM_GPUS * 16))
 VLLM_NUM_ENGINES=$((NUM_GPUS / 2))
 [ $VLLM_NUM_ENGINES -lt 1 ] && VLLM_NUM_ENGINES=1
 
-# Tool-calling configuration
+# Tool-calling configuration — Intern-S1 format
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_agent.py"
-AGENT_MAX_STEPS=40
-PROMPT_CONSTRUCTION_MODE="manual"  # "manual" (fast) or "auto" (robust)
+AGENT_MAX_STEPS=30
+PROMPT_CONSTRUCTION_MODE="manual"   # "manual" (fast) or "auto" (robust)
+CHAT_PROTOCOL="intern_s1"           # Intern-S1 JSON format with <|action_start|><|plugin|> markers
 
 # GRPO configuration
 N_SAMPLES_PER_PROMPT=8
 ADVANTAGE_ESTIMATOR="dr_grpo"
 DYNAMIC_FILTERING=true
 DYNAMIC_FILTERING_REWARD_RANGE="0.2 0.8"
+
+# Intern-S1 sampling parameters (match inference-time settings from recipe)
+TEMPERATURE=0.8
+TOP_P=0.8
 
 ############################
 #   ENVIRONMENT SETUP      #
@@ -119,6 +127,7 @@ export VLLM_DISABLE_TELEMETRY=1
 # OpenRLHF environment variables (for agent)
 export OPENRLHF_MODEL_PATH="$PRETRAIN_PATH"
 export OPENRLHF_PROMPT_CONSTRUCTION_MODE="$PROMPT_CONSTRUCTION_MODE"
+export OPENRLHF_CHAT_PROTOCOL="$CHAT_PROTOCOL"
 export OPENRLHF_MAX_STEPS="$AGENT_MAX_STEPS"
 
 # NCCL/distributed training settings
@@ -198,10 +207,11 @@ export RAY_ADDRESS="auto"
 ############################
 
 echo "========================================"
-echo "TDC GRPO Training Configuration"
+echo "TDC GRPO Training — Intern-S1-mini"
 echo "========================================"
 echo "Task: $TASK_NAME"
 echo "Model: $PRETRAIN_PATH"
+echo "Chat Protocol: $CHAT_PROTOCOL"
 echo "Learning Rate: $LEARNING_RATE"
 echo "Run ID: $RUN_ID"
 echo "----------------------------------------"
@@ -223,6 +233,8 @@ echo "----------------------------------------"
 echo "Agent Max Steps: $AGENT_MAX_STEPS"
 echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
 echo "Prompt Mode: $PROMPT_CONSTRUCTION_MODE"
+echo "Temperature: $TEMPERATURE"
+echo "Top-p: $TOP_P"
 echo "========================================"
 
 ############################
@@ -273,13 +285,14 @@ python -m openrlhf.cli.train_ppo_ray \
     --deepspeed_enable_sleep \
     --enforce_eager \
     $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \
-    --top_p 0.95 \
-    --temperature 1.0 \
+    --top_p $TOP_P \
+    --temperature $TEMPERATURE \
     --agent_func_path "$AGENT_FUNC_PATH" \
     --agent_max_steps $AGENT_MAX_STEPS \
-    --vllm_stop_strings "</tool_call>" \
+    --vllm_stop_strings "<|action_end|>" "<|im_end|>" \
     --prompt_construction_mode "$PROMPT_CONSTRUCTION_MODE" \
-    $([ -n "${WANDB_API_KEY:-}" ] && echo "--use_wandb $WANDB_API_KEY --wandb_group 'TDC-$TASK_NAME' --wandb_run_name '$RUN_ID'" || echo "")
+    --chat_protocol "$CHAT_PROTOCOL" \
+    $([ -n "${WANDB_API_KEY:-}" ] && echo "--use_wandb $WANDB_API_KEY --wandb_group 'TDC-InternS1-$TASK_NAME' --wandb_run_name '$RUN_ID'" || echo "")
 
 ############################
 #   CLEANUP                #
@@ -297,6 +310,6 @@ echo "Saved model to: $SAVE_PATH"
 echo "Checkpoints at: $CKPT_PATH"
 echo "Ray logs at: $PERSIST_RAY_DIR/session_latest"
 if [ "$IS_SLURM" = true ]; then
-    echo "SLURM output: H-grpo_${SLURM_JOB_ID}.out"
+    echo "SLURM output: S-grpo_${SLURM_JOB_ID}.out"
 fi
 echo "========================================"

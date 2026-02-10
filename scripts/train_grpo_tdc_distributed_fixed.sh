@@ -214,6 +214,10 @@ run_task() {
         sleep 1
     done
 
+    # Tell ray.init() in train_ppo_ray.py to connect to THIS cluster
+    # instead of starting a new local instance
+    export RAY_ADDRESS="auto"
+
     ############################
     #   PRINT CONFIGURATION    #
     ############################

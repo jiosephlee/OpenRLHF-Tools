@@ -105,6 +105,7 @@ DYNAMIC_FILTERING=true
 DYNAMIC_FILTERING_REWARD_RANGE="0.2 0.8"
 
 # W&B (required for tracking)
+echo $WANDB_API_KEY
 if [ -z "${WANDB_API_KEY:-}" ]; then
     echo "Error: WANDB_API_KEY is not set. Set it for wandb tracking (e.g. export WANDB_API_KEY=...)." >&2
     exit 1

@@ -110,9 +110,9 @@ run_task() {
     RUN_ID="S-grpo-fixed-${TASK_NAME}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
     SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
 
-    # Distributed layout: split node GPUs between actor and vLLM
-    ACTOR_GPUS=$((NUM_GPUS / 2))
-    VLLM_GPUS=$((NUM_GPUS - ACTOR_GPUS))
+    # Distributed layout: fixed split (2 actor GPUs, 6 vLLM GPUs)
+    ACTOR_GPUS=2
+    VLLM_GPUS=6
     VLLM_NUM_ENGINES=$VLLM_GPUS
     VLLM_TENSOR_PARALLEL_SIZE=1
     TRAIN_BATCH_SIZE=$((ACTOR_GPUS * 16))
@@ -124,7 +124,7 @@ run_task() {
     CHAT_PROTOCOL="intern_s1"         # Intern-S1 JSON format with <|action_start|><|plugin|> markers
 
     # GRPO configuration
-    N_SAMPLES_PER_PROMPT=8
+    N_SAMPLES_PER_PROMPT=16
     ADVANTAGE_ESTIMATOR="dr_grpo"
     DYNAMIC_FILTERING=true
     DYNAMIC_FILTERING_REWARD_RANGE="0 1"

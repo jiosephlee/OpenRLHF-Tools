@@ -109,6 +109,8 @@ run_task() {
     # Run configuration (+fixed tag)
     RUN_ID="S-grpo-fixed-${TASK_NAME}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
     SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
+    PUSH_TO_HUB=""  # HF Hub repo ID (e.g. "username/my-model"), empty to skip
+    DELETE_LOCAL_AFTER_PUSH=true
 
     # Training hyperparameters
     TRAIN_BATCH_SIZE=$((NUM_GPUS * 16))
@@ -307,6 +309,8 @@ run_task() {
         --vllm_stop_strings "<|action_end|>" "<|im_end|>" \
         --prompt_construction_mode "$PROMPT_CONSTRUCTION_MODE" \
         --chat_protocol "$CHAT_PROTOCOL" \
+        $([ -n "$PUSH_TO_HUB" ] && echo "--push_to_hub $PUSH_TO_HUB" || echo "") \
+        $([ "$DELETE_LOCAL_AFTER_PUSH" = true ] && [ -n "$PUSH_TO_HUB" ] && echo "--delete_local_after_push" || echo "") \
         --use_wandb 1 \
         --wandb_project "$WANDB_PROJECT" \
         --wandb_group "TDC-InternS1-fixed-$TASK_NAME" \

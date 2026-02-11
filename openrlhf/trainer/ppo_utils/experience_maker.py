@@ -369,6 +369,8 @@ class SamplesGenerator:
             max_tokens=generate_kwargs.get("max_new_tokens", 1024),
             min_tokens=generate_kwargs.get("min_new_tokens", 1),
             skip_special_tokens=generate_kwargs.get("skip_special_tokens", False),
+            stop=self.args.vllm_stop_strings,
+            include_stop_str_in_output=True,
             logprobs=1 if self.args.enable_vllm_is_correction else None,
         )
         truncate_length = generate_kwargs.get("prompt_max_len", 1024) + generate_kwargs.get("max_new_tokens", 1024)

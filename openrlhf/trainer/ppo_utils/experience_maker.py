@@ -476,6 +476,16 @@ class SamplesGenerator:
         for start, end in tokenized_ranges:
             action_mask[start:end] = 1
 
+        # DEBUG: inspect masks and tool call responses before truncation
+        import logging as _logging
+        _logging.warning(
+            f"[DEBUG _process_response] obs_len={len(tokenized_observation)}, "
+            f"truncate_length={truncate_length}, action_ranges={tokenized_ranges}, "
+            f"action_tokens_pre_trunc={int(action_mask.sum().item())}, "
+            f"reward={reward_val}, prompt={response['prompt'][:120]!r}"
+        )
+        breakpoint()  # DEBUG: inspect action_mask, tokenized_ranges, response
+
         # Truncate everything to the configured context window.
         sequences = sequences[:truncate_length].to("cpu")
         attention_mask = attention_mask[:truncate_length].to("cpu")
@@ -796,6 +806,15 @@ class RemoteExperienceMaker:
         elif args.advantage_estimator in ["reinforce_baseline", "dr_grpo"]:
             # REINFORCE++-baseline and Dr. GRPO removed the `/std` in GRPO as `/ std` is not needed in RL variance reduction theory.
             # And `k3 KL` has a larger variance than `k1 KL` under a categorical distribution.
+            import logging as _logging
+            _logging.warning(
+                f"[DEBUG dr_grpo] rewards_shape={rewards.shape}, "
+                f"rewards_raw={rewards.tolist()}, "
+                f"rewards_finite={torch.isfinite(rewards).all().item()}, "
+                f"group_means={rewards.mean(-1).tolist()}"
+            )
+            if not torch.isfinite(rewards).all():
+                breakpoint()  # DEBUG: NaN/Inf in rewards before advantage computation
             rewards = rewards - rewards.mean(-1, keepdim=True)
         elif args.advantage_estimator == "group_norm":
             rewards = (rewards - rewards.mean(-1, keepdim=True)) / (rewards.std(-1, keepdim=True) + 1e-9)

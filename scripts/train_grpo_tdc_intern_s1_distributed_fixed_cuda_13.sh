@@ -23,7 +23,7 @@
 #SBATCH --output=%x_%j.out
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus=8
+#SBATCH --gpus=4
 #SBATCH --mem-per-gpu=128G
 #SBATCH --cpus-per-gpu=8
 #SBATCH --time=1:00:00
@@ -112,7 +112,7 @@ run_task() {
 
     # Distributed layout: fixed split (2 actor GPUs, 6 vLLM GPUs)
     ACTOR_GPUS=1
-    VLLM_GPUS=7
+    VLLM_GPUS=3
     VLLM_NUM_ENGINES=$VLLM_GPUS
     VLLM_TENSOR_PARALLEL_SIZE=1
     TRAIN_BATCH_SIZE=$((ACTOR_GPUS * 16))

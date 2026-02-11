@@ -111,8 +111,8 @@ run_task() {
     SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
 
     # Distributed layout: fixed split (2 actor GPUs, 6 vLLM GPUs)
-    ACTOR_GPUS=2
-    VLLM_GPUS=6
+    ACTOR_GPUS=1
+    VLLM_GPUS=7
     VLLM_NUM_ENGINES=$VLLM_GPUS
     VLLM_TENSOR_PARALLEL_SIZE=1
     TRAIN_BATCH_SIZE=$((ACTOR_GPUS * 16))
@@ -300,7 +300,7 @@ run_task() {
         --packing_samples \
         --vllm_sync_backend nccl \
         --async_train \
-        --async_queue_size 2 \
+        --async_queue_size 1 \
         --overlap_comm \
         --enforce_eager \
         $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \
@@ -314,7 +314,8 @@ run_task() {
         --use_wandb 1 \
         --wandb_project "$WANDB_PROJECT" \
         --wandb_group "TDC-InternS1-fixed-$TASK_NAME" \
-        --wandb_run_name "$RUN_ID"
+        --wandb_run_name "$RUN_ID" \
+        --rollout_trace_dir "$SAVE_PATH/rollout_traces"
 
     ############################
     #   CLEANUP                #

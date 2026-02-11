@@ -314,7 +314,8 @@ run_task() {
         --use_wandb 1 \
         --wandb_project "$WANDB_PROJECT" \
         --wandb_group "TDC-InternS1-fixed-$TASK_NAME" \
-        --wandb_run_name "$RUN_ID"
+        --wandb_run_name "$RUN_ID" \
+        --rollout_trace_dir "$SAVE_PATH/rollout_traces"
 
     ############################
     #   CLEANUP                #

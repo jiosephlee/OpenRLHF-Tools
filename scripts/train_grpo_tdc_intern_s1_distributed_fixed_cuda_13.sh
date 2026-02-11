@@ -35,9 +35,22 @@ export NCCL_IB_ADAPTIVE_ROUTING=1
 export NCCL_IB_SL=1
 export NCCL_IB_QPS_PER_CONNECTION=2
 export NCCL_IB_SPLIT_DATA_ON_QPS=0
-NCCL_IB_HCA=$(ls /sys/class/infiniband/ 2>/dev/null | paste -sd, -)
-[ -n "$NCCL_IB_HCA" ] && export NCCL_IB_HCA
-echo "Detected NCCL_IB_HCA: ${NCCL_IB_HCA:-<none>}"
+# GPU-affine IB NICs on DGX B200 (curated list — must all be present)
+REQUIRED_IB_HCAS=(mlx5_15 mlx5_10 mlx5_14 mlx5_13 mlx5_8 mlx5_7 mlx5_9 mlx5_4)
+AVAILABLE_IB_HCAS=$(ls /sys/class/infiniband/ 2>/dev/null)
+MISSING=()
+for hca in "${REQUIRED_IB_HCAS[@]}"; do
+    if ! echo "$AVAILABLE_IB_HCAS" | grep -qw "$hca"; then
+        MISSING+=("$hca")
+    fi
+done
+if [ ${#MISSING[@]} -gt 0 ]; then
+    echo "Error: Missing required IB HCAs: ${MISSING[*]}" >&2
+    echo "Available: $AVAILABLE_IB_HCAS" >&2
+    exit 1
+fi
+export NCCL_IB_HCA=$(IFS=,; echo "${REQUIRED_IB_HCAS[*]}")
+echo "NCCL_IB_HCA: $NCCL_IB_HCA"
 export NCCL_SOCKET_IFNAME=bond0
 export UCX_TLS=rc
 
@@ -51,7 +64,7 @@ export WANDB_API_KEY
 ### CONDA / MODULE SETUP ###
 module load MAMBA
 module load cuda/13.1.0
-export ENV_PREFIX="${ENV_PREFIX:-/vast/projects/myatskar/design-documents/conda_env/openrlhf_intern}"
+export ENV_PREFIX="${ENV_PREFIX:-/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern}"
 
 ############################
 #        TASK SCRIPT       #
@@ -201,8 +214,9 @@ run_task() {
     # Increase file descriptor limit
     ulimit -n 65535 2>/dev/null || true
 
-    # Clean up any previous Ray state
+    # Clean up any previous Ray state (including stale session files)
     ray stop --force 2>/dev/null || true
+    rm -rf "$RAY_TMPDIR"/ray/session_* 2>/dev/null || true
 
     # Start Ray head node
     echo "Starting Ray head node at $RAY_NODE_IP_ADDRESS"

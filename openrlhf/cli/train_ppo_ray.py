@@ -184,6 +184,22 @@ def train(args):
     if args.critic_pretrain and args.save_value_network and critic_model is not None:
         ray.get(critic_model.async_save_model())
 
+    # Push to HuggingFace Hub and optionally clean up
+    if args.push_to_hub:
+        from huggingface_hub import HfApi
+
+        api = HfApi()
+        api.create_repo(args.push_to_hub, private=args.push_to_hub_private, exist_ok=True)
+        api.upload_folder(
+            folder_path=args.save_path,
+            repo_id=args.push_to_hub,
+            commit_message="Upload model from OpenRLHF training",
+        )
+        if args.delete_local_after_push:
+            import shutil
+
+            shutil.rmtree(args.save_path, ignore_errors=True)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -370,6 +386,9 @@ if __name__ == "__main__":
         "--n_samples_per_prompt", type=int, default=1, help="number of responses for each prompt in generation"
     )
     parser.add_argument("--save_value_network", action="store_true", default=False, help="Save critic model")
+    parser.add_argument("--push_to_hub", type=str, default=None, help="HF Hub repo ID to push model after training (e.g. 'username/my-model')")
+    parser.add_argument("--push_to_hub_private", action="store_true", default=False, help="Make the HF Hub repo private")
+    parser.add_argument("--delete_local_after_push", action="store_true", default=False, help="Delete local save_path after successful push to Hub")
     parser.add_argument("--actor_learning_rate", type=float, default=1e-6)
     parser.add_argument("--critic_learning_rate", type=float, default=9e-6)
     parser.add_argument("--lr_warmup_ratio", type=float, default=0.03)

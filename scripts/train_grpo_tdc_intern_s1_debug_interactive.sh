@@ -4,7 +4,7 @@
 #
 # Usage:
 #   1. Get an interactive node:  srun --partition=dgx-b200 --gpus=4 --mem-per-gpu=128G --cpus-per-gpu=8 --time=1:00:00 --pty bash
-#   2. Activate env:             module load MAMBA && module load cuda/13.1.0 && micromamba activate /vast/projects/myatskar/design-documents/conda_env/openrlhf_intern
+#   2. Activate env:             module load MAMBA && module load cuda/13.1.0 && micromamba activate /vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern
 #   3. Run:                      bash scripts/train_grpo_tdc_intern_s1_debug_interactive.sh <task_name> [model_path] [learning_rate] [num_gpus]
 #
 # Example:

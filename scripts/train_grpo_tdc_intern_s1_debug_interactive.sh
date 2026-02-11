@@ -125,6 +125,7 @@ export RAY_NODE_IP_ADDRESS=$(hostname -I | awk '{print $1}')
 ulimit -n 65535 2>/dev/null || true
 
 ray stop --force 2>/dev/null || true
+rm -rf "$RAY_TMPDIR"/ray/session_* 2>/dev/null || true
 
 echo "Starting Ray head node at $RAY_NODE_IP_ADDRESS"
 ray start --head \

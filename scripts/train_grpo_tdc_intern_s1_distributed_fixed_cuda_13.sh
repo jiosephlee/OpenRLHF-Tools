@@ -214,8 +214,9 @@ run_task() {
     # Increase file descriptor limit
     ulimit -n 65535 2>/dev/null || true
 
-    # Clean up any previous Ray state
+    # Clean up any previous Ray state (including stale session files)
     ray stop --force 2>/dev/null || true
+    rm -rf "$RAY_TMPDIR"/ray/session_* 2>/dev/null || true
 
     # Start Ray head node
     echo "Starting Ray head node at $RAY_NODE_IP_ADDRESS"

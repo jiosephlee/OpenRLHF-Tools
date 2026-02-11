@@ -26,10 +26,10 @@
 #SBATCH --gpus=4
 #SBATCH --mem-per-gpu=128G
 #SBATCH --cpus-per-gpu=8
-#SBATCH --time=1:00:00
+#SBATCH --time=0:30:00
 
 ### NCCL / IB / NETWORK CONFIG (match fixed distributed script) ###
-export OMP_NUM_THREADS=8
+export OMP_NUM_THREADS=$(( ${NUM_GPUS:-4} * 2 ))
 export NCCL_NVLS_ENABLE=1
 export NCCL_IB_ADAPTIVE_ROUTING=1
 export NCCL_IB_SL=1

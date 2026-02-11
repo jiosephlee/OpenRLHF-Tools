@@ -272,7 +272,7 @@ run_task() {
         --actor_num_gpus_per_node $ACTOR_GPUS \
         --vllm_num_engines $VLLM_NUM_ENGINES \
         --vllm_tensor_parallel_size $VLLM_TENSOR_PARALLEL_SIZE \
-        --vllm_gpu_memory_utilization 0.75 \
+        --vllm_gpu_memory_utilization 0.7 \
         --advantage_estimator $ADVANTAGE_ESTIMATOR \
         --init_kl_coef 0 \
         --kl_estimator k1 \
@@ -301,7 +301,6 @@ run_task() {
         --vllm_sync_backend nccl \
         --async_train \
         --async_queue_size 1 \
-        --overlap_comm \
         --enforce_eager \
         $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \
         --top_p $TOP_P \

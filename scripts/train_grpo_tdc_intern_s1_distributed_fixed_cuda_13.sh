@@ -64,7 +64,7 @@ export WANDB_API_KEY
 ### CONDA / MODULE SETUP ###
 module load MAMBA
 module load cuda/13.1.0
-export ENV_PREFIX="${ENV_PREFIX:-/vast/projects/myatskar/design-documents/conda_env/openrlhf_intern}"
+export ENV_PREFIX="${ENV_PREFIX:-/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern}"
 
 ############################
 #        TASK SCRIPT       #

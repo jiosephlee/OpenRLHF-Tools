@@ -285,7 +285,7 @@ run_task() {
         --prompt_max_len 4096 \
         --generate_max_len 8192 \
         --max_samples 1000000 \
-        --zero_stage 0 \
+        --zero_stage 1 \
         --param_dtype bf16 \
         --actor_learning_rate $LEARNING_RATE \
         --prompt_data "$TRAIN_DATA" \
@@ -295,7 +295,8 @@ run_task() {
         --gradient_checkpointing \
         --packing_samples \
         --vllm_sync_backend nccl \
-        --vllm_enable_sleep \ #--deepspeed_enable_sleep \
+        --vllm_enable_sleep \ 
+        --deepspeed_enable_sleep \
         --enforce_eager \
         $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \
         --top_p $TOP_P \

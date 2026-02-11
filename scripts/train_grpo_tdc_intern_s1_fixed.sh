@@ -130,8 +130,8 @@ run_task() {
     WANDB_PROJECT="${WANDB_PROJECT:-openrlhf_tdc_grpo}"
 
     # Intern-S1 sampling parameters (match inference-time settings from recipe)
-    TEMPERATURE=0.8
-    TOP_P=0.8
+    TEMPERATURE=0.7
+    TOP_P=0.95
 
     ############################
     #   ENVIRONMENT SETUP      #
@@ -268,7 +268,7 @@ run_task() {
         --vllm_num_engines $VLLM_NUM_ENGINES \
         --vllm_tensor_parallel_size $((NUM_GPUS > 1 ? 2 : 1)) \
         --colocate_all_models \
-        --vllm_gpu_memory_utilization 0.7 \
+        --vllm_gpu_memory_utilization 0.8 \
         --advantage_estimator $ADVANTAGE_ESTIMATOR \
         --init_kl_coef 0 \
         --kl_estimator k1 \
@@ -277,7 +277,7 @@ run_task() {
         --save_steps -1 \
         --logging_steps 1 \
         --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
-        --micro_train_batch_size 4 \
+        --micro_train_batch_size 8 \
         --micro_rollout_batch_size 16 \
         --train_batch_size $TRAIN_BATCH_SIZE \
         --rollout_batch_size $TRAIN_BATCH_SIZE \
@@ -296,6 +296,8 @@ run_task() {
         --packing_samples \
         --vllm_sync_backend nccl \
         --vllm_enable_sleep \
+        --deepcompile \
+        --overlap_comm \
         --deepspeed_enable_sleep \
         --enforce_eager \
         $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \

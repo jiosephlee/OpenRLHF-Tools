@@ -109,12 +109,20 @@ class BasePPOTrainer(ABC):
         # Turn raw rollouts into PPO-ready trajectories with rewards.
         experiences = self.experience_maker.make_experience_batch(rollout_samples)
 
-        # Peek at the first decoded sample for quick sanity check.
+        # Periodic lightweight trace for rollout quality without full text spam.
         sample0 = [
             self.tokenizer.decode(experiences[0].sequences[0], skip_special_tokens=True),
             experiences[0].info["reward"][0].item(),
         ]
-        print(sample0)
+        trace_interval = int(os.environ.get("OPENRLHF_TRACE_INTERVAL", "10"))
+        if global_step % max(trace_interval, 1) == 0:
+            sample_preview = sample0[0][-180:].replace("\n", "\\n")
+            logger.info(
+                f"[trace] step={global_step} reward={sample0[1]:.3f} "
+                f"response_len={float(experiences[0].info['response_length'][0]):.0f} "
+                f"total_len={float(experiences[0].info['total_length'][0]):.0f} "
+                f"preview={sample_preview!r}"
+            )
 
         # Balance experiences across DP ranks if needed.
         if self.args.use_dynamic_batch:
@@ -307,7 +315,7 @@ class PPOTrainer(BasePPOTrainer):
             while True:
                 # Draw one mini-batch of prompts; stop when loader is exhausted.
                 rollout_samples, filter_pass_rate, prompts_consumed, is_exhausted = (
-                    self.samples_generator.generate_samples(**self.generate_kwargs)
+                    self.samples_generator.generate_samples(global_step=global_step, **self.generate_kwargs)
                 )
                 total_consumed_prompts += prompts_consumed
                 if is_exhausted:

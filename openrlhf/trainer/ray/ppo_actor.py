@@ -245,6 +245,15 @@ class ActorPPOTrainer(ABC):
             action_mask=experience.action_mask,
             rollout_log_probs=experience.rollout_log_probs,
         )
+        if not torch.isfinite(actor_loss):
+            action_tokens = int(experience.action_mask.sum().item())
+            raise ValueError(
+                "Non-finite actor_loss detected. "
+                f"step={step}, action_tokens={action_tokens}, "
+                f"advantages_finite={bool(torch.isfinite(advantages).all())}, "
+                f"old_log_probs_finite={bool(torch.isfinite(old_action_log_probs).all())}, "
+                f"new_log_probs_finite={bool(torch.isfinite(action_log_probs).all())}"
+            )
         experience.info["ppo_clip_ratio"] = clip_ratio.detach()
         experience.info["ppo_kl"] = ppo_kl.detach()
         if vllm_kl is not None:

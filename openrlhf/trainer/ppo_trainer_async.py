@@ -83,7 +83,7 @@ class GenerateSamplesActor:
                 ray.get(self.vllm_lock.acquire.remote())
                 try:
                     rollout_samples, filter_pass_rate, prompts_consumed, is_exhausted = (
-                        self.samples_generator.generate_samples(**self.generate_kwargs)
+                        self.samples_generator.generate_samples(global_step=total_consumed_prompts, **self.generate_kwargs)
                     )
                     total_consumed_prompts += prompts_consumed
                 finally:

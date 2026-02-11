@@ -1,4 +1,6 @@
 import heapq
+import json
+import os
 import time
 from copy import deepcopy
 from dataclasses import dataclass, fields
@@ -246,6 +248,41 @@ class SamplesGenerator:
 
         self.prompts_dataloader = prompts_dataloader
         self.eval_dataloader = eval_dataloader
+        self.rollout_trace_dir = getattr(self.args, "rollout_trace_dir", None)
+        if self.rollout_trace_dir:
+            run_name = getattr(self.args, "wandb_run_name", "run")
+            run_name = run_name.replace("/", "_")
+            run_stamp = time.strftime("%Y%m%d_%H%M%S")
+            self.rollout_trace_run_dir = os.path.join(self.rollout_trace_dir, f"{run_name}_{run_stamp}")
+            os.makedirs(self.rollout_trace_run_dir, exist_ok=True)
+            logger.info(f"Rollout traces enabled at: {self.rollout_trace_run_dir}")
+        else:
+            self.rollout_trace_run_dir = None
+
+    def _to_jsonable(self, value):
+        if isinstance(value, torch.Tensor):
+            return value.tolist()
+        if isinstance(value, dict):
+            return {k: self._to_jsonable(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._to_jsonable(v) for v in value]
+        return value
+
+    def _write_step_trace(self, step_idx: int, traces_by_engine: dict, prompts_consumed: int, filtered_count: int):
+        if not self.rollout_trace_run_dir or not traces_by_engine:
+            return
+        step_id = step_idx + 1
+        trace_path = os.path.join(self.rollout_trace_run_dir, f"step{step_id}.jsonl")
+        with open(trace_path, "w") as f:
+            for engine_idx in sorted(traces_by_engine.keys()):
+                record = {
+                    "step": step_id,
+                    "engine_idx": engine_idx,
+                    "prompts_consumed": prompts_consumed,
+                    "filtered_count": filtered_count,
+                    "trace": traces_by_engine[engine_idx],
+                }
+                f.write(json.dumps(self._to_jsonable(record), ensure_ascii=True) + "\n")
 
     @torch.no_grad()
     def generate_eval_samples(self, **generate_kwargs) -> Tuple[List[Experience], Optional[float], int, bool]:
@@ -276,6 +313,8 @@ class SamplesGenerator:
         """Produce one batch and indicate if the dataloader is exhausted."""
         if getattr(self, "_dataloader_iter", None) is None:
             self._dataloader_iter = iter(self.prompts_dataloader)
+        trace_step_idx = getattr(self, "_trace_step_idx", 0)
+        self._trace_step_idx = trace_step_idx + 1
 
         # Wake sleeping vLLM engines before dispatching.
         if self.args.vllm_enable_sleep:
@@ -285,6 +324,7 @@ class SamplesGenerator:
             dataloader_iter=self._dataloader_iter,
             num_prompts=self.args.rollout_batch_size,
             dynamic_filtering=self.args.dynamic_filtering,
+            trace_step_idx=trace_step_idx,
             **generate_kwargs,
         )
 
@@ -306,25 +346,32 @@ class SamplesGenerator:
         self, dataloader_iter, num_prompts: int, dynamic_filtering, **generate_kwargs
     ) -> Tuple[List[Experience], int, bool]:
         """Generate a batch of Experiences with optional reward filtering."""
+        step_idx = int(generate_kwargs.get("trace_step_idx", generate_kwargs.get("global_step", 0)))
         prompts_consumed = 0
         prompts, labels, exhausted = _collect_prompt_batch(dataloader_iter, num_prompts)
         # Stop early if the prompt source is fully consumed.
         if exhausted:
             return [], prompts_consumed, exhausted
 
-        pending_refs = self._dispatch_prompts_to_vllm(prompts, labels, **generate_kwargs)
+        dispatches = self._dispatch_prompts_to_vllm(prompts, labels, **generate_kwargs)
+        pending_refs = [ref for ref, _ in dispatches]
+        ref_to_engine = {ref: engine_idx for ref, engine_idx in dispatches}
         prompts_consumed += len(prompts)
 
         accepted_experiences: List[Experience] = []
         pbar = tqdm(range(num_prompts), desc="Generate samples")
+        filtered_count = 0
+        step_traces_by_engine = {}
 
         while pending_refs:
             ready_refs, pending_refs = ray.wait(pending_refs, num_returns=1, timeout=10.0)
             for ref in ready_refs:
+                engine_idx = ref_to_engine.pop(ref)
                 # Build Experience objects for each vLLM response returned from this worker.
-                experiences = [
-                    self._process_response_into_experience(response, **generate_kwargs) for response in ray.get(ref)
-                ]
+                responses = ray.get(ref)
+                if engine_idx not in step_traces_by_engine and responses:
+                    step_traces_by_engine[engine_idx] = responses[0]
+                experiences = [self._process_response_into_experience(response, **generate_kwargs) for response in responses]
 
                 # Drop experiences if the average score falls outside the allowed range.
                 if dynamic_filtering and all(e.scores is not None for e in experiences):
@@ -332,9 +379,13 @@ class SamplesGenerator:
                     avg_reward = sum(scores) / len(scores)
                     min_r, max_r = self.args.dynamic_filtering_reward_range
                     if not (min_r < avg_reward < max_r):
-                        logger.info(
-                            f"Filtered out: avg_reward={avg_reward:.2f}, threshold=({min_r:.2f}, {max_r:.2f}), scores={[f'{s:.2f}' for s in scores]}"
-                        )
+                        filtered_count += 1
+                        if filtered_count <= 3 or filtered_count % 25 == 0:
+                            logger.info(
+                                "Dynamic filtering rejected group "
+                                f"(rejected={filtered_count}, accepted={len(accepted_experiences)}/{num_prompts}, prompts_consumed={prompts_consumed}, "
+                                f"avg_reward={avg_reward:.2f}, threshold=({min_r:.2f}, {max_r:.2f}), scores={[f'{s:.2f}' for s in scores]})"
+                            )
                         experiences = []
 
                 # Accept experiences and stop once enough have been gathered.
@@ -352,12 +403,16 @@ class SamplesGenerator:
                     if exhausted:
                         for remaining_ref in pending_refs:
                             ray.cancel(remaining_ref)
+                        self._write_step_trace(step_idx, step_traces_by_engine, prompts_consumed, filtered_count)
                         return [], prompts_consumed, True
                     # Otherwise dispatch the new prompt to keep filling the queue.
                     else:
-                        new_refs = self._dispatch_prompts_to_vllm(new_prompts, new_labels, **generate_kwargs)
-                        pending_refs.extend(new_refs)
+                        new_dispatches = self._dispatch_prompts_to_vllm(new_prompts, new_labels, **generate_kwargs)
+                        for new_ref, new_engine_idx in new_dispatches:
+                            pending_refs.append(new_ref)
+                            ref_to_engine[new_ref] = new_engine_idx
 
+        self._write_step_trace(step_idx, step_traces_by_engine, prompts_consumed, filtered_count)
         return accepted_experiences, prompts_consumed, exhausted
 
     def _dispatch_prompts_to_vllm(self, prompts: List[str], labels: List[str], **generate_kwargs) -> List:
@@ -390,7 +445,8 @@ class SamplesGenerator:
         refs = []
         for idx, (prompt, label) in enumerate(zip(prompts, labels)):
             # Spread work across engines/workers in load-aware order.
-            llm_engine = self.vllm_engines[engine_indices[idx]]
+            engine_idx = engine_indices[idx]
+            llm_engine = self.vllm_engines[engine_idx]
             ref = llm_engine.generate_responses.remote(
                 prompt=prompt,
                 label=label,
@@ -399,7 +455,7 @@ class SamplesGenerator:
                 hf_tokenizer=self.tokenizer,
                 num_samples=self.args.n_samples_per_prompt,
             )
-            refs.append(ref)
+            refs.append((ref, engine_idx))
 
         return refs
 
@@ -424,6 +480,13 @@ class SamplesGenerator:
         sequences = sequences[:truncate_length].to("cpu")
         attention_mask = attention_mask[:truncate_length].to("cpu")
         action_mask = action_mask[1:truncate_length].to("cpu")
+        action_tokens = int(action_mask.sum().item())
+        if action_tokens == 0:
+            raise ValueError(
+                "Encountered rollout with zero action tokens after truncation; this will produce NaNs in PPO loss. "
+                f"prompt={response['prompt'][:200]!r}, label={response['label']!r}, "
+                f"observation_tokens={len(tokenized_observation)}, action_ranges={tokenized_ranges}, truncate_length={truncate_length}"
+            )
 
         # Align rollout logprobs with the truncated action span.
         if response["rollout_log_probs"] is not None:

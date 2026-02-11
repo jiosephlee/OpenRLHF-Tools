@@ -23,7 +23,7 @@
 #SBATCH --output=%x_%j.out
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus=8
+#SBATCH --gpus=4
 #SBATCH --mem-per-gpu=128G
 #SBATCH --cpus-per-gpu=8
 #SBATCH --time=1:00:00
@@ -111,8 +111,8 @@ run_task() {
     SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
 
     # Distributed layout: fixed split (2 actor GPUs, 6 vLLM GPUs)
-    ACTOR_GPUS=2
-    VLLM_GPUS=6
+    ACTOR_GPUS=1
+    VLLM_GPUS=3
     VLLM_NUM_ENGINES=$VLLM_GPUS
     VLLM_TENSOR_PARALLEL_SIZE=1
     TRAIN_BATCH_SIZE=$((ACTOR_GPUS * 16))
@@ -272,7 +272,7 @@ run_task() {
         --actor_num_gpus_per_node $ACTOR_GPUS \
         --vllm_num_engines $VLLM_NUM_ENGINES \
         --vllm_tensor_parallel_size $VLLM_TENSOR_PARALLEL_SIZE \
-        --vllm_gpu_memory_utilization 0.775 \
+        --vllm_gpu_memory_utilization 0.7 \
         --advantage_estimator $ADVANTAGE_ESTIMATOR \
         --init_kl_coef 0 \
         --kl_estimator k1 \
@@ -281,7 +281,7 @@ run_task() {
         --save_steps -1 \
         --logging_steps 1 \
         --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
-        --micro_train_batch_size 16 \
+        --micro_train_batch_size 8 \
         --micro_rollout_batch_size 16 \
         --train_batch_size $TRAIN_BATCH_SIZE \
         --rollout_batch_size $TRAIN_BATCH_SIZE \
@@ -300,8 +300,7 @@ run_task() {
         --packing_samples \
         --vllm_sync_backend nccl \
         --async_train \
-        --async_queue_size 2 \
-        --overlap_comm \
+        --async_queue_size 1 \
         --enforce_eager \
         $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \
         --top_p $TOP_P \
@@ -314,7 +313,8 @@ run_task() {
         --use_wandb 1 \
         --wandb_project "$WANDB_PROJECT" \
         --wandb_group "TDC-InternS1-fixed-$TASK_NAME" \
-        --wandb_run_name "$RUN_ID"
+        --wandb_run_name "$RUN_ID" \
+        --rollout_trace_dir "$SAVE_PATH/rollout_traces"
 
     ############################
     #   CLEANUP                #

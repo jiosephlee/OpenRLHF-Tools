@@ -29,13 +29,15 @@
 #SBATCH --time=1:00:00
 
 ### NCCL / IB / NETWORK CONFIG (match fixed distributed script) ###
-export OMP_NUM_THREADS=16
+export OMP_NUM_THREADS=8
 export NCCL_NVLS_ENABLE=1
 export NCCL_IB_ADAPTIVE_ROUTING=1
 export NCCL_IB_SL=1
 export NCCL_IB_QPS_PER_CONNECTION=2
 export NCCL_IB_SPLIT_DATA_ON_QPS=0
-export NCCL_IB_HCA=mlx5_15,mlx5_10,mlx5_14,mlx5_13,mlx5_8,mlx5_7,mlx5_9,mlx5_4
+NCCL_IB_HCA=$(ls /sys/class/infiniband/ 2>/dev/null | paste -sd, -)
+[ -n "$NCCL_IB_HCA" ] && export NCCL_IB_HCA
+echo "Detected NCCL_IB_HCA: ${NCCL_IB_HCA:-<none>}"
 export NCCL_SOCKET_IFNAME=bond0
 export UCX_TLS=rc
 
@@ -49,7 +51,7 @@ export WANDB_API_KEY
 ### CONDA / MODULE SETUP ###
 module load MAMBA
 module load cuda/13.1.0
-export ENV_PREFIX="${ENV_PREFIX:-/vast/projects/myatskar/design-documents/conda_env/openrlhf_tfv4}"
+export ENV_PREFIX="${ENV_PREFIX:-/vast/projects/myatskar/design-documents/conda_env/openrlhf_intern}"
 
 ############################
 #        TASK SCRIPT       #
@@ -110,9 +112,11 @@ run_task() {
     RUN_ID="S-grpo-fixed-${TASK_NAME}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
     SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
 
-    # Distributed layout: fixed split (2 actor GPUs, 6 vLLM GPUs)
-    ACTOR_GPUS=1
-    VLLM_GPUS=3
+    # Distributed layout: derive split from visible GPUs (about 25% actor, rest vLLM)
+    ACTOR_GPUS=$((NUM_GPUS / 4))
+    [ $ACTOR_GPUS -lt 1 ] && ACTOR_GPUS=1
+    VLLM_GPUS=$((NUM_GPUS - ACTOR_GPUS))
+    [ $VLLM_GPUS -ge 1 ]
     VLLM_NUM_ENGINES=$VLLM_GPUS
     VLLM_TENSOR_PARALLEL_SIZE=1
     TRAIN_BATCH_SIZE=$((ACTOR_GPUS * 16))

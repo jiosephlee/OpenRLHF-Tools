@@ -272,7 +272,7 @@ run_task() {
         --actor_num_gpus_per_node $ACTOR_GPUS \
         --vllm_num_engines $VLLM_NUM_ENGINES \
         --vllm_tensor_parallel_size $VLLM_TENSOR_PARALLEL_SIZE \
-        --vllm_gpu_memory_utilization 0.775 \
+        --vllm_gpu_memory_utilization 0.75 \
         --advantage_estimator $ADVANTAGE_ESTIMATOR \
         --init_kl_coef 0 \
         --kl_estimator k1 \
@@ -281,7 +281,7 @@ run_task() {
         --save_steps -1 \
         --logging_steps 1 \
         --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
-        --micro_train_batch_size 16 \
+        --micro_train_batch_size 8 \
         --micro_rollout_batch_size 16 \
         --train_batch_size $TRAIN_BATCH_SIZE \
         --rollout_batch_size $TRAIN_BATCH_SIZE \

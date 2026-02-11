@@ -295,7 +295,7 @@ run_task() {
         --gradient_checkpointing \
         --packing_samples \
         --vllm_sync_backend nccl \
-        --vllm_enable_sleep \ 
+        --vllm_enable_sleep \
         --deepspeed_enable_sleep \
         --enforce_eager \
         $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \

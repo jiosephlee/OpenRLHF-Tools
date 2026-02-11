@@ -78,6 +78,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --agent_max_steps $AGENT_MAX_STEPS \
     --vllm_stop_strings $STOP_STRINGS \
     --prompt_construction_mode $PROMPT_MODE \
+    --push_to_hub "" \
+    --delete_local_after_push \
     --use_wandb $WANDB_API_KEY \
     --wandb_project "openrlhf_tool_calling" \
     --wandb_run_name "grpo_tool_calling_$(date +%Y%m%d_%H%M%S)"

@@ -238,6 +238,22 @@ class ActorPPOTrainer(ABC):
         )
 
         # loss function
+        # DEBUG: inspect inputs to loss before computation
+        _mask_sum = experience.action_mask.sum().item()
+        _adv_finite = torch.isfinite(advantages).all().item()
+        _old_lp_finite = torch.isfinite(old_action_log_probs).all().item()
+        _new_lp_finite = torch.isfinite(action_log_probs).all().item()
+        _rlp_finite = torch.isfinite(experience.rollout_log_probs).all().item() if experience.rollout_log_probs is not None else True
+        import logging as _logging
+        _logging.warning(
+            f"[DEBUG pre-loss] step={step}, mask_sum={_mask_sum}, "
+            f"adv_finite={_adv_finite}, old_lp_finite={_old_lp_finite}, "
+            f"new_lp_finite={_new_lp_finite}, rollout_lp_finite={_rlp_finite}, "
+            f"adv_range=[{advantages.min().item():.4f}, {advantages.max().item():.4f}]"
+        )
+        if not (_adv_finite and _old_lp_finite and _new_lp_finite and _rlp_finite) or _mask_sum == 0:
+            breakpoint()  # DEBUG: something is already bad before loss computation
+
         actor_loss, clip_ratio, ppo_kl, vllm_kl = self.actor_loss_fn(
             action_log_probs,
             old_action_log_probs,

@@ -116,7 +116,7 @@ class BasePPOTrainer(ABC):
         ]
         trace_interval = int(os.environ.get("OPENRLHF_TRACE_INTERVAL", "10"))
         if global_step % max(trace_interval, 1) == 0:
-            sample_preview = sample0[0][-180:].replace("\n", "\\n")
+            sample_preview = sample0[0].replace("\n", "\\n")
             logger.info(
                 f"[trace] step={global_step} reward={sample0[1]:.3f} "
                 f"response_len={float(experiences[0].info['response_length'][0]):.0f} "

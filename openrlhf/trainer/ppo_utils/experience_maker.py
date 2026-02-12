@@ -494,7 +494,6 @@ class SamplesGenerator:
 
         refs = []
         for idx, (prompt, label) in enumerate(zip(prompts, labels)):
-            # Spread work across engines/workers in load-aware order.
             engine_idx = engine_indices[idx]
             llm_engine = self.vllm_engines[engine_idx]
             ref = llm_engine.generate_responses.remote(
@@ -504,6 +503,7 @@ class SamplesGenerator:
                 max_length=truncate_length,
                 hf_tokenizer=self.tokenizer,
                 num_samples=self.args.n_samples_per_prompt,
+                log_trajectory=(idx == 0),
             )
             refs.append((ref, engine_idx))
 

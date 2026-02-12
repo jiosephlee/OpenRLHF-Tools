@@ -181,8 +181,9 @@ class LLMRayActor:
         max_length: int,
         hf_tokenizer,
         num_samples: int = 1,
+        log_trajectory: bool = False,
     ):
-        """Generate N samples for a single prompt."""
+        """Generate N samples for a single prompt. log_trajectory: log init + trajectory only for first prompt in episode."""
         tasks = [
             self.executor.execute(
                 prompt=prompt,
@@ -191,6 +192,7 @@ class LLMRayActor:
                 max_length=max_length,
                 hf_tokenizer=hf_tokenizer,
                 llm_engine=self,
+                log_trajectory=log_trajectory,
             )
             for _ in range(num_samples)
         ]

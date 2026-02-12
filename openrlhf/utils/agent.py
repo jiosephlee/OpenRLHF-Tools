@@ -11,7 +11,7 @@ logger = init_logger(__name__)
 
 class AgentExecutorBase(ABC):
     @abstractmethod
-    async def execute(self, prompt, label, sampling_params, max_length: int, hf_tokenizer, llm_engine):
+    async def execute(self, prompt, label, sampling_params, max_length: int, hf_tokenizer, llm_engine, **kwargs):
         raise NotImplementedError("AgentExecutorBase.execute is not implemented")
 
 
@@ -33,13 +33,16 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
         assert issubclass(agent_instance_cls, AgentInstanceBase), "AgentInstance must inherit from AgentInstanceBase"
         self.agent_instance_cls = agent_instance_cls
 
-    async def execute(self, prompt, label, sampling_params, max_length: int, hf_tokenizer, llm_engine):
+    async def execute(self, prompt, label, sampling_params, max_length: int, hf_tokenizer, llm_engine, log_trajectory: bool = False):
         # Treat each AgentInstance as an isolated environment; bind every prompt to its own independent instance
         agent_instance = self.agent_instance_cls()
         # Initialize with reset function
         initial_states = {"observation": prompt, "label": label}
         reset_result = await agent_instance.reset(initial_states)
         observation_text = reset_result["observation"]
+        if log_trajectory:
+            obs_preview = observation_text.replace("\n", "\\n")[:200]
+            print(f"[mt] initial state observation={obs_preview!r} label={label!r}", flush=True)
 
         # Tokenize the initial observation
         current_obs_tokens = hf_tokenizer(observation_text, add_special_tokens=False, return_tensors="pt")[
@@ -104,20 +107,20 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
             environment_feedback_text = step_result["environment_feedback"]
             done = step_result["done"]
             extra_logs = step_result.get("extra_logs", {})
-            # Minimal real-time ping: tool turn vs done
-            tool_count = extra_logs.get("tool_call_count", 0)
-            if done:
-                print(f"[mt] t={turn} done", flush=True)
-            else:
-                print(f"[mt] t={turn} +{tool_count} tool(s) →", flush=True)
-            if not episode_log_emitted:
-                action_flat = action_text.replace("\n", "\\n")
-                action_head = action_flat[:120]
-                action_tail = action_flat[-120:]
-                feedback_preview = environment_feedback_text.replace("\n", "\\n")[:120]
-                print(f"[mt] t={turn} len={len(action_text)} head={action_head!r}", flush=True)
-                print(f"[mt] t={turn} tail={action_tail!r} env={feedback_preview!r}", flush=True)
-                episode_log_emitted = True
+            if log_trajectory:
+                tool_count = extra_logs.get("tool_call_count", 0)
+                if done:
+                    print(f"[mt] t={turn} done", flush=True)
+                else:
+                    print(f"[mt] t={turn} +{tool_count} tool(s) →", flush=True)
+                if not episode_log_emitted:
+                    action_flat = action_text.replace("\n", "\\n")
+                    action_head = action_flat[:200]
+                    action_tail = action_flat[-200:]
+                    feedback_preview = environment_feedback_text.replace("\n", "\\n")[:120]
+                    print(f"[mt] t={turn} len={len(action_text)} head={action_head!r}", flush=True)
+                    print(f"[mt] t={turn} tail={action_tail!r} env={feedback_preview!r}", flush=True)
+                    episode_log_emitted = True
 
             # Concatenate observation, action, and environment_feedback, then tokenize
             observation_text = observation_text + action_text + environment_feedback_text
@@ -176,7 +179,7 @@ class SingleTurnAgentExecutor(AgentExecutorBase):
             spec.loader.exec_module(reward_module)
             self.reward_func = reward_module.reward_func
 
-    async def execute(self, prompt, label, sampling_params, max_length: int, hf_tokenizer, llm_engine):
+    async def execute(self, prompt, label, sampling_params, max_length: int, hf_tokenizer, llm_engine, **kwargs):
         # Tokenize the initial observation.
         prompt_token_ids = hf_tokenizer(prompt, add_special_tokens=False, return_tensors="pt")["input_ids"][0].tolist()
 

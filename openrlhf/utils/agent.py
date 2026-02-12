@@ -41,7 +41,7 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
         reset_result = await agent_instance.reset(initial_states)
         observation_text = reset_result["observation"]
         if log_trajectory:
-            obs_preview = observation_text.replace("\n", "\\n")[:200]
+            obs_preview = observation_text.replace("\n", "\\n")[:200] + " ... " + observation_text.replace("\n", "\\n")[-200:]
             print(f"[mt] initial state observation={obs_preview!r} label={label!r}", flush=True)
 
         # Tokenize the initial observation

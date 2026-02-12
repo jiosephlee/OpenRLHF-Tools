@@ -284,7 +284,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --prompt_data "$TRAIN_DATA" \
     --input_key messages \
     --label_key answer \
-    --apply_chat_template \
     --gradient_checkpointing \
     --packing_samples \
     --vllm_sync_backend nccl \

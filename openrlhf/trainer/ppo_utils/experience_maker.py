@@ -268,6 +268,54 @@ class SamplesGenerator:
             return [self._to_jsonable(v) for v in value]
         return value
 
+    def _decode_trace(self, trace: dict) -> dict:
+        """Decode observation_tokens into human-readable text sections."""
+        obs_tokens = trace.get("observation_tokens", [])
+        action_ranges = trace.get("action_ranges", [])
+        if not obs_tokens:
+            return {}
+
+        decoded = {}
+        decoded["full_text"] = self.tokenizer.decode(obs_tokens, skip_special_tokens=False)
+
+        sections = []
+        if action_ranges:
+            first_start = action_ranges[0][0]
+            if first_start > 0:
+                sections.append({
+                    "type": "prompt",
+                    "token_range": [0, first_start],
+                    "text": self.tokenizer.decode(obs_tokens[:first_start], skip_special_tokens=False),
+                })
+
+            for i, (start, end) in enumerate(action_ranges):
+                sections.append({
+                    "type": "action",
+                    "index": i + 1,
+                    "token_range": [start, end],
+                    "text": self.tokenizer.decode(obs_tokens[start:end], skip_special_tokens=False),
+                })
+                if i + 1 < len(action_ranges):
+                    next_start = action_ranges[i + 1][0]
+                    if end < next_start:
+                        sections.append({
+                            "type": "observation",
+                            "index": i + 1,
+                            "token_range": [end, next_start],
+                            "text": self.tokenizer.decode(obs_tokens[end:next_start], skip_special_tokens=False),
+                        })
+                else:
+                    remaining = obs_tokens[end:]
+                    if remaining:
+                        sections.append({
+                            "type": "trailing",
+                            "token_range": [end, len(obs_tokens)],
+                            "text": self.tokenizer.decode(remaining, skip_special_tokens=False),
+                        })
+
+        decoded["sections"] = sections
+        return decoded
+
     def _write_step_trace(self, step_idx: int, traces_by_engine: dict, prompts_consumed: int, filtered_count: int):
         if not self.rollout_trace_run_dir or not traces_by_engine:
             return
@@ -275,12 +323,14 @@ class SamplesGenerator:
         trace_path = os.path.join(self.rollout_trace_run_dir, f"step{step_id}.jsonl")
         with open(trace_path, "w") as f:
             for engine_idx in sorted(traces_by_engine.keys()):
+                trace = traces_by_engine[engine_idx]
                 record = {
                     "step": step_id,
                     "engine_idx": engine_idx,
                     "prompts_consumed": prompts_consumed,
                     "filtered_count": filtered_count,
-                    "trace": traces_by_engine[engine_idx],
+                    "trace": trace,
+                    "decoded": self._decode_trace(trace),
                 }
                 f.write(json.dumps(self._to_jsonable(record), ensure_ascii=True) + "\n")
 
@@ -475,16 +525,6 @@ class SamplesGenerator:
         action_mask = torch.zeros_like(attention_mask)
         for start, end in tokenized_ranges:
             action_mask[start:end] = 1
-
-        # DEBUG: inspect masks and tool call responses before truncation
-        import logging as _logging
-        _logging.warning(
-            f"[DEBUG _process_response] obs_len={len(tokenized_observation)}, "
-            f"truncate_length={truncate_length}, action_ranges={tokenized_ranges}, "
-            f"action_tokens_pre_trunc={int(action_mask.sum().item())}, "
-            f"reward={reward_val}, prompt={response['prompt'][:120]!r}"
-        )
-        breakpoint()  # DEBUG: inspect action_mask, tokenized_ranges, response
 
         # Truncate everything to the configured context window.
         sequences = sequences[:truncate_length].to("cpu")

@@ -1,3 +1,5 @@
+import json
+
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
@@ -10,6 +12,11 @@ def preprocess_data(data, input_template=None, input_key="input", label_key=None
         prompt = apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
     else:
         prompt = data[input_key]
+        if isinstance(prompt, list):
+            # Messages format without --apply_chat_template (e.g. agent-based training
+            # where the agent handles chat template application with tool schemas).
+            # Serialize as JSON so the agent can parse and merge with its own system prompt.
+            prompt = json.dumps(prompt, ensure_ascii=False)
         if input_template:
             prompt = input_template.format(prompt)
 

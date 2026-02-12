@@ -64,7 +64,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --prompt_data $DATA_PATH \
     --input_key "question" \
     --label_key "answer" \
-    --apply_chat_template \
     --gradient_checkpointing \
     --vllm_sync_backend nccl \
     --vllm_enable_sleep \

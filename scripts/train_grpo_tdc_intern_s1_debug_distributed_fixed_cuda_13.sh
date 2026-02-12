@@ -1,18 +1,14 @@
 #!/bin/bash
 #
-# INTERACTIVE DEBUG version of the Intern-S1 GRPO training script (FIXED, CUDA 13).
-#
-# Hybrid (colocated) mode — Actor and vLLM share the same GPUs via sleep mode.
-# Uses the Intern-S1 JSON tool-calling format:
-#   <|action_start|><|plugin|>{"name": "...", "parameters": {...}}<|action_end|>
+# INTERACTIVE DEBUG version of the Intern-S1 GRPO training script.
 #
 # Usage:
-#   1. Get an interactive node:  srun --partition=dgx-b200 --gpus=2 --mem-per-gpu=128G --cpus-per-gpu=4 --time=1:00:00 --pty bash
-#   2. Activate env:             module load MAMBA && module load cuda/13.1.0 && micromamba activate /vast/projects/myatskar/design-documents/conda_env/openrlhf_tfv4
-#   3. Run:                      bash scripts/train_grpo_tdc_intern_s1_fixed_cuda_13_interactive.sh <task_name> [model_path] [learning_rate]
+#   1. Get an interactive node:  srun --partition=dgx-b200 --gpus=4 --mem-per-gpu=128G --cpus-per-gpu=8 --time=1:00:00 --pty bash
+#   2. Activate env:             module load MAMBA && module load cuda/13.1.0 && micromamba activate /vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern
+#   3. Run:                      bash scripts/train_grpo_tdc_intern_s1_debug_interactive.sh <task_name> [model_path] [learning_rate] [num_gpus]
 #
 # Example:
-#   bash scripts/train_grpo_tdc_intern_s1_fixed_cuda_13_interactive.sh AMES jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05 1e-6
+#   bash scripts/train_grpo_tdc_intern_s1_debug_interactive.sh AMES jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05 1e-6 4
 #
 
 set -euo pipefail
@@ -20,17 +16,32 @@ set -euo pipefail
 ### ARGS ###
 TASK_NAME=${1:-"AMES"}
 PRETRAIN_PATH=${2:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}
-LEARNING_RATE=${3:-"5e-7"}
+LEARNING_RATE=${3:-"1e-6"}
 NUM_GPUS=$SLURM_GPUS_ON_NODE
 
 # ### NCCL / IB / NETWORK CONFIG ###
-# export OMP_NUM_THREADS=16
+# export OMP_NUM_THREADS=$(( NUM_GPUS * 2 ))
 # export NCCL_NVLS_ENABLE=1
 # export NCCL_IB_ADAPTIVE_ROUTING=1
 # export NCCL_IB_SL=1
 # export NCCL_IB_QPS_PER_CONNECTION=2
 # export NCCL_IB_SPLIT_DATA_ON_QPS=0
-# export NCCL_IB_HCA=mlx5_15,mlx5_10,mlx5_14,mlx5_13,mlx5_8,mlx5_7,mlx5_9,mlx5_4
+# # GPU-affine IB NICs on DGX B200 (curated list — must all be present)
+# REQUIRED_IB_HCAS=(mlx5_15 mlx5_10 mlx5_14 mlx5_13 mlx5_8 mlx5_7 mlx5_9 mlx5_4)
+# AVAILABLE_IB_HCAS=$(ls /sys/class/infiniband/ 2>/dev/null)
+# MISSING=()
+# for hca in "${REQUIRED_IB_HCAS[@]}"; do
+#     if ! echo "$AVAILABLE_IB_HCAS" | grep -qw "$hca"; then
+#         MISSING+=("$hca")
+#     fi
+# done
+# if [ ${#MISSING[@]} -gt 0 ]; then
+#     echo "Error: Missing required IB HCAs: ${MISSING[*]}" >&2
+#     echo "Available: $AVAILABLE_IB_HCAS" >&2
+#     exit 1
+# fi
+# export NCCL_IB_HCA=$(IFS=,; echo "${REQUIRED_IB_HCAS[*]}")
+# echo "NCCL_IB_HCA: $NCCL_IB_HCA"
 # export NCCL_SOCKET_IFNAME=bond0
 # export UCX_TLS=rc
 
@@ -39,6 +50,7 @@ if [ -z "${WANDB_API_KEY:-}" ]; then
     echo "Error: WANDB_API_KEY is not set." >&2
     exit 1
 fi
+# export WANDB_API_KEY
 
 ### PROJECT ROOT ###
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -64,12 +76,15 @@ if [ ! -f "$TRAIN_DATA" ]; then
 fi
 
 ### RUN CONFIG ###
-RUN_ID="S-grpo-fixed-debug-${TASK_NAME}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
+RUN_ID="S-grpo-debug-${TASK_NAME}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
 SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
 
-### GPU LAYOUT (colocated — shared GPUs) ###
-TRAIN_BATCH_SIZE=$((NUM_GPUS * 4))
-VLLM_NUM_ENGINES=$NUM_GPUS
+### GPU LAYOUT ###
+ACTOR_GPUS=1
+VLLM_GPUS=$((NUM_GPUS - ACTOR_GPUS))
+VLLM_NUM_ENGINES=$VLLM_GPUS
+VLLM_TENSOR_PARALLEL_SIZE=1
+TRAIN_BATCH_SIZE=$((ACTOR_GPUS * 16))
 
 ### TOOL-CALLING CONFIG ###
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_agent.py"
@@ -78,7 +93,7 @@ PROMPT_CONSTRUCTION_MODE="auto"
 CHAT_PROTOCOL="intern_s1"
 
 ### GRPO CONFIG ###
-N_SAMPLES_PER_PROMPT=8
+N_SAMPLES_PER_PROMPT=16
 ADVANTAGE_ESTIMATOR="dr_grpo"
 DYNAMIC_FILTERING=true
 DYNAMIC_FILTERING_REWARD_RANGE="0 1"
@@ -126,7 +141,7 @@ export RAY_ADDRESS="auto"
 
 ### PRINT CONFIG ###
 echo "========================================"
-echo "TDC GRPO Training — Intern-S1-mini (FIXED INTERACTIVE DEBUG)"
+echo "TDC GRPO Training — Intern-S1-mini (INTERACTIVE DEBUG)"
 echo "========================================"
 echo "Task: $TASK_NAME"
 echo "Model: $PRETRAIN_PATH"
@@ -137,18 +152,11 @@ echo "----------------------------------------"
 echo "Training Data: $TRAIN_DATA"
 echo "Save Path: $SAVE_PATH"
 echo "----------------------------------------"
-echo "NUM_GPUS: $NUM_GPUS (colocated — shared between actor and vLLM)"
+echo "NUM_GPUS: $NUM_GPUS  ACTOR: $ACTOR_GPUS  VLLM: $VLLM_GPUS"
 echo "TRAIN_BATCH_SIZE: $TRAIN_BATCH_SIZE"
 echo "VLLM_NUM_ENGINES: $VLLM_NUM_ENGINES"
 echo "----------------------------------------"
-echo "Agent Max Steps: $AGENT_MAX_STEPS"
-echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
-echo "Prompt Mode: $PROMPT_CONSTRUCTION_MODE"
-echo "Temperature: $TEMPERATURE"
-echo "Top-p: $TOP_P"
-echo "----------------------------------------"
 echo "masked_mean debug dir: $OPENRLHF_MASKED_MEAN_DEBUG_DIR"
-echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-fixed-$TASK_NAME run=$RUN_ID"
 echo "========================================"
 
 ### TRAINING ###
@@ -159,11 +167,10 @@ python -m openrlhf.cli.train_ppo_ray \
     --reward_num_nodes 0 \
     --reward_num_gpus_per_node 0 \
     --actor_num_nodes 1 \
-    --actor_num_gpus_per_node $NUM_GPUS \
+    --actor_num_gpus_per_node $ACTOR_GPUS \
     --vllm_num_engines $VLLM_NUM_ENGINES \
-    --vllm_tensor_parallel_size 1 \
-    --colocate_all_models \
-    --vllm_gpu_memory_utilization 0.8 \
+    --vllm_tensor_parallel_size $VLLM_TENSOR_PARALLEL_SIZE \
+    --vllm_gpu_memory_utilization 0.7 \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \
@@ -172,27 +179,25 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_steps -1 \
     --logging_steps 1 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
-    --micro_train_batch_size 2 \
-    --micro_rollout_batch_size 4 \
+    --micro_train_batch_size 8 \
+    --micro_rollout_batch_size 16 \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs 1 \
     --prompt_max_len 8192 \
-    --generate_max_len 2048 \
+    --generate_max_len 1536 \
     --max_samples 1000000 \
-    --zero_stage 1 \
+    --zero_stage 0 \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \
     --prompt_data "$TRAIN_DATA" \
     --input_key messages \
     --label_key answer \
-    --apply_chat_template \
     --gradient_checkpointing \
     --packing_samples \
     --vllm_sync_backend nccl \
-    --vllm_enable_sleep \
-    --overlap_comm \
-    --deepspeed_enable_sleep \
+    --async_train \
+    --async_queue_size 1 \
     --enforce_eager \
     $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \
     --top_p $TOP_P \
@@ -204,7 +209,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --chat_protocol "$CHAT_PROTOCOL" \
     --use_wandb 1 \
     --wandb_project "$WANDB_PROJECT" \
-    --wandb_group "TDC-InternS1-fixed-$TASK_NAME" \
+    --wandb_group "TDC-InternS1-debug-$TASK_NAME" \
     --wandb_run_name "$RUN_ID" \
     --rollout_trace_dir "$SAVE_PATH/rollout_traces"
 

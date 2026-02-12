@@ -46,16 +46,35 @@ class AgentSession:
         """Reset session and format initial prompt with tools.
 
         Args:
-            prompt: Initial user question/task
+            prompt: Either a plain text question, or a JSON-serialized list of
+                    OpenAI-format messages (e.g. [{"role": "user", "content": "..."}]).
+                    When JSON messages are provided, they are merged with the
+                    agent's system prompt and tool schemas.
 
         Returns:
             Formatted prompt string ready for LLM generation
         """
-        # Reset conversation history
-        self.history = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": prompt}
-        ]
+        # Try to parse as JSON messages list (from data pipeline without --apply_chat_template)
+        input_messages = None
+        if prompt.startswith("["):
+            try:
+                parsed = json.loads(prompt)
+                if isinstance(parsed, list) and all(isinstance(m, dict) for m in parsed):
+                    input_messages = parsed
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Build conversation history: agent system prompt + input messages
+        self.history = [{"role": "system", "content": self.system_prompt}]
+
+        if input_messages:
+            # Merge input messages (skip any system messages from data — agent provides its own)
+            for msg in input_messages:
+                if msg.get("role") != "system":
+                    self.history.append(msg)
+        else:
+            # Plain text prompt — wrap as user message
+            self.history.append({"role": "user", "content": prompt})
 
         # Render with protocol (includes tool schemas, not callables)
         return self.protocol.render_messages(

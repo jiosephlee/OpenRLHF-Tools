@@ -22,7 +22,7 @@ TASK_NAME=${1:-"BBB_Martins"}
 PRETRAIN_PATH=${2:-"zai-org/GLM-4.7-Flash"}
 LEARNING_RATE=${3:-"2e-6"}
 NUM_GPUS=$SLURM_GPUS_ON_NODE
-DEBUG_TRACES=${4:-"0"}
+DEBUG_TRACES=${4:-"1"}
 
 # ### NCCL / IB / NETWORK CONFIG ###
 # export OMP_NUM_THREADS=16
@@ -70,7 +70,7 @@ SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
 HUB_REPO_ID="jiosephlee/grpo-tdc-glm-flash-${TASK_NAME}"
 
 ### GPU LAYOUT (colocated — shared GPUs) ###
-TRAIN_BATCH_SIZE=$((NUM_GPUS * 4))
+TRAIN_BATCH_SIZE=$((NUM_GPUS * 2))
 VLLM_NUM_ENGINES=$((NUM_GPUS))
 
 ### TOOL-CALLING CONFIG ###
@@ -172,7 +172,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size 1 \
     --colocate_all_models \
-    --vllm_gpu_memory_utilization 0.525 \
+    --vllm_gpu_memory_utilization 0.6 \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \
@@ -182,7 +182,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --logging_steps 1 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
     --micro_train_batch_size 2 \
-    --micro_rollout_batch_size 8 \
+    --micro_rollout_batch_size 4 \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs 1 \

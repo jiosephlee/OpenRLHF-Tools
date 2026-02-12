@@ -83,13 +83,6 @@ class GLMFlashProtocol(ChatProtocol):
     Observation format: <|observation|>\\n<tool_response>result</tool_response>\\n<|assistant|>\\n
     """
 
-    # Try importing vLLM's official tool parser
-    try:
-        from vllm.tool_parsers.glm47_moe_tool_parser import Glm47MoeModelToolParser
-        VLLM_PARSER_AVAILABLE = True
-    except ImportError:
-        VLLM_PARSER_AVAILABLE = False
-
     def __init__(self, tokenizer):
         """Initialize GLM Flash protocol.
 
@@ -161,21 +154,9 @@ class GLMFlashProtocol(ChatProtocol):
         Returns:
             Dict with 'function_name' and 'arguments', or None if no tool call found
         """
-        # Try vLLM parser first (model-agnostic, officially supported)
-        if self.VLLM_PARSER_AVAILABLE and self.tokenizer is not None:
-            try:
-                from vllm.tool_parsers.glm47_moe_tool_parser import Glm47MoeModelToolParser
-                parser = Glm47MoeModelToolParser(self.tokenizer)
-                parsed = parser.extract_tool_calls(text)
-                if parsed:
-                    return {
-                        "function_name": parsed[0]['name'],
-                        "arguments": parsed[0]['arguments']
-                    }
-            except Exception as e:
-                print(f"vLLM parser failed: {e}, falling back to regex")
-
-        # Fallback: Regex parser (using official vLLM patterns)
+        # Regex parser (based on official vLLM patterns).
+        # Note: vLLM's Glm47MoeModelToolParser.extract_tool_calls() now requires
+        # a ChatCompletionRequest arg we don't have here, so we use regex directly.
         func_detail_regex = re.compile(
             r"<tool_call>(.*?)(<arg_key>.*?)?</tool_call>", re.DOTALL
         )

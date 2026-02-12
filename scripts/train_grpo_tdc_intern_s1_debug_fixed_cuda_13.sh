@@ -67,6 +67,7 @@ fi
 ### RUN CONFIG ###
 RUN_ID="S-grpo-fixed-debug-${TASK_NAME}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
 SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
+HUB_REPO_ID="jiosephlee/grpo-tdc-intern-s1-${TASK_NAME}"
 
 ### GPU LAYOUT (colocated — shared GPUs) ###
 TRAIN_BATCH_SIZE=$((NUM_GPUS * 8))
@@ -180,8 +181,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_steps -1 \
     --logging_steps 1 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
-    --micro_train_batch_size 8 \
-    --micro_rollout_batch_size 16 \
+    --micro_train_batch_size 4 \
+    --micro_rollout_batch_size 8 \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs 1 \
@@ -214,6 +215,9 @@ python -m openrlhf.cli.train_ppo_ray \
     --wandb_project "$WANDB_PROJECT" \
     --wandb_group "TDC-InternS1-fixed-$TASK_NAME" \
     --wandb_run_name "$RUN_ID" \
+    --save_path "$SAVE_PATH" \
+    --push_to_hub "$HUB_REPO_ID" \
+    --delete_local_after_push \
     --rollout_trace_dir "$SAVE_PATH/rollout_traces"
 
 ### CLEANUP ###

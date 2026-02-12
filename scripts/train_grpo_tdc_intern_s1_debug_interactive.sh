@@ -19,38 +19,38 @@ PRETRAIN_PATH=${2:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet
 LEARNING_RATE=${3:-"1e-6"}
 NUM_GPUS=${4:-4}
 
-### NCCL / IB / NETWORK CONFIG ###
-export OMP_NUM_THREADS=$(( NUM_GPUS * 2 ))
-export NCCL_NVLS_ENABLE=1
-export NCCL_IB_ADAPTIVE_ROUTING=1
-export NCCL_IB_SL=1
-export NCCL_IB_QPS_PER_CONNECTION=2
-export NCCL_IB_SPLIT_DATA_ON_QPS=0
-# GPU-affine IB NICs on DGX B200 (curated list — must all be present)
-REQUIRED_IB_HCAS=(mlx5_15 mlx5_10 mlx5_14 mlx5_13 mlx5_8 mlx5_7 mlx5_9 mlx5_4)
-AVAILABLE_IB_HCAS=$(ls /sys/class/infiniband/ 2>/dev/null)
-MISSING=()
-for hca in "${REQUIRED_IB_HCAS[@]}"; do
-    if ! echo "$AVAILABLE_IB_HCAS" | grep -qw "$hca"; then
-        MISSING+=("$hca")
-    fi
-done
-if [ ${#MISSING[@]} -gt 0 ]; then
-    echo "Error: Missing required IB HCAs: ${MISSING[*]}" >&2
-    echo "Available: $AVAILABLE_IB_HCAS" >&2
-    exit 1
-fi
-export NCCL_IB_HCA=$(IFS=,; echo "${REQUIRED_IB_HCAS[*]}")
-echo "NCCL_IB_HCA: $NCCL_IB_HCA"
-export NCCL_SOCKET_IFNAME=bond0
-export UCX_TLS=rc
+# ### NCCL / IB / NETWORK CONFIG ###
+# export OMP_NUM_THREADS=$(( NUM_GPUS * 2 ))
+# export NCCL_NVLS_ENABLE=1
+# export NCCL_IB_ADAPTIVE_ROUTING=1
+# export NCCL_IB_SL=1
+# export NCCL_IB_QPS_PER_CONNECTION=2
+# export NCCL_IB_SPLIT_DATA_ON_QPS=0
+# # GPU-affine IB NICs on DGX B200 (curated list — must all be present)
+# REQUIRED_IB_HCAS=(mlx5_15 mlx5_10 mlx5_14 mlx5_13 mlx5_8 mlx5_7 mlx5_9 mlx5_4)
+# AVAILABLE_IB_HCAS=$(ls /sys/class/infiniband/ 2>/dev/null)
+# MISSING=()
+# for hca in "${REQUIRED_IB_HCAS[@]}"; do
+#     if ! echo "$AVAILABLE_IB_HCAS" | grep -qw "$hca"; then
+#         MISSING+=("$hca")
+#     fi
+# done
+# if [ ${#MISSING[@]} -gt 0 ]; then
+#     echo "Error: Missing required IB HCAs: ${MISSING[*]}" >&2
+#     echo "Available: $AVAILABLE_IB_HCAS" >&2
+#     exit 1
+# fi
+# export NCCL_IB_HCA=$(IFS=,; echo "${REQUIRED_IB_HCAS[*]}")
+# echo "NCCL_IB_HCA: $NCCL_IB_HCA"
+# export NCCL_SOCKET_IFNAME=bond0
+# export UCX_TLS=rc
 
 ### W&B ###
 if [ -z "${WANDB_API_KEY:-}" ]; then
     echo "Error: WANDB_API_KEY is not set." >&2
     exit 1
 fi
-export WANDB_API_KEY
+# export WANDB_API_KEY
 
 ### PROJECT ROOT ###
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

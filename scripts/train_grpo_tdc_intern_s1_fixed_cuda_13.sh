@@ -113,7 +113,7 @@ run_task() {
     DELETE_LOCAL_AFTER_PUSH=true
 
     # Training hyperparameters
-    TRAIN_BATCH_SIZE=$((NUM_GPUS * 16))
+    TRAIN_BATCH_SIZE=$((NUM_GPUS * 4))
     NUM_GPUS=$SLURM_GPUS_ON_NODE
     VLLM_NUM_ENGINES=$NUM_GPUS
 
@@ -279,8 +279,8 @@ run_task() {
         --save_steps -1 \
         --logging_steps 1 \
         --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
-        --micro_train_batch_size 8 \
-        --micro_rollout_batch_size 16 \
+        --micro_train_batch_size 2 \
+        --micro_rollout_batch_size 4 \
         --train_batch_size $TRAIN_BATCH_SIZE \
         --rollout_batch_size $TRAIN_BATCH_SIZE \
         --max_epochs 1 \

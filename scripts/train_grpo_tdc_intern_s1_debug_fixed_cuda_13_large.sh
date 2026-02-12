@@ -19,7 +19,7 @@ set -euo pipefail
 
 ### ARGS ###
 PRETRAIN_PATH=${1:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}
-LEARNING_RATE=${2:-"5e-7"}
+LEARNING_RATE=${2:-"1e-6"}
 NUM_GPUS=$SLURM_GPUS_ON_NODE
 DEBUG_TRACES=${3:-"0"}
 
@@ -77,7 +77,7 @@ SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_LABEL}/$RUN_ID"
 HUB_REPO_ID="jiosephlee/grpo-tdc-intern-s1-${TASK_LABEL}"
 
 ### GPU LAYOUT (colocated — shared GPUs) ###
-TRAIN_BATCH_SIZE=$((NUM_GPUS * 8))
+TRAIN_BATCH_SIZE=$((NUM_GPUS * 4))
 VLLM_NUM_ENGINES=$NUM_GPUS
 
 ### TOOL-CALLING CONFIG ###
@@ -188,7 +188,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_steps -1 \
     --logging_steps 1 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
-    --micro_train_batch_size 4 \
+    --micro_train_batch_size 2 \
     --micro_rollout_batch_size 8 \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \

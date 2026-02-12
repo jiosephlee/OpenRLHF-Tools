@@ -251,8 +251,6 @@ class ActorPPOTrainer(ABC):
             f"new_lp_finite={_new_lp_finite}, rollout_lp_finite={_rlp_finite}, "
             f"adv_range=[{advantages.min().item():.4f}, {advantages.max().item():.4f}]"
         )
-        if not (_adv_finite and _old_lp_finite and _new_lp_finite and _rlp_finite) or _mask_sum == 0:
-            breakpoint()  # DEBUG: something is already bad before loss computation
 
         actor_loss, clip_ratio, ppo_kl, vllm_kl = self.actor_loss_fn(
             action_log_probs,
@@ -263,12 +261,20 @@ class ActorPPOTrainer(ABC):
         )
         if not torch.isfinite(actor_loss):
             action_tokens = int(experience.action_mask.sum().item())
-            raise ValueError(
+            _logging.warning(
                 "Non-finite actor_loss detected. "
                 f"step={step}, action_tokens={action_tokens}, "
+                f"action_mask={experience.action_mask.tolist()}, "
                 f"advantages_finite={bool(torch.isfinite(advantages).all())}, "
                 f"old_log_probs_finite={bool(torch.isfinite(old_action_log_probs).all())}, "
                 f"new_log_probs_finite={bool(torch.isfinite(action_log_probs).all())}"
+            )
+            _logging.warning(
+                "Non-finite actor_loss detected. "
+                f"step={step}, action_tokens={action_tokens}, "
+                f"advantages_finite={advantages.tolist()}, "
+                f"old_log_probs_finite={old_action_log_probs.tolist()}, "
+                f"new_log_probs_finite={action_log_probs.tolist()}"
             )
         experience.info["ppo_clip_ratio"] = clip_ratio.detach()
         experience.info["ppo_kl"] = ppo_kl.detach()

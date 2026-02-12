@@ -71,7 +71,9 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
             rollout_log_probs = None
 
         # Execute multiple steps of interaction
+        turn = 0
         while True:
+            turn += 1
             # Next sampling budget
             sampling_params.max_tokens = max_length - len(current_obs_tokens)
             # No budget to generate, break
@@ -102,6 +104,13 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
             environment_feedback_text = step_result["environment_feedback"]
             done = step_result["done"]
             extra_logs = step_result.get("extra_logs", {})
+
+            # Minimal real-time ping: tool turn vs done
+            tool_count = extra_logs.get("tool_call_count", 0)
+            if done:
+                print(f"[mt] t={turn} done", flush=True)
+            else:
+                print(f"[mt] t={turn} +{tool_count} tool(s) →", flush=True)
 
             # Concatenate observation, action, and environment_feedback, then tokenize
             observation_text = observation_text + action_text + environment_feedback_text

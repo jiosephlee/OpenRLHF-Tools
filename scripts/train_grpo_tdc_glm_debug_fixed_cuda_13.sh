@@ -71,7 +71,7 @@ HUB_REPO_ID="jiosephlee/grpo-tdc-glm-flash-${TASK_NAME}"
 
 ### GPU LAYOUT (colocated — shared GPUs) ###
 TRAIN_BATCH_SIZE=$((NUM_GPUS * 4))
-VLLM_NUM_ENGINES=$((NUM_GPUS / 2))
+VLLM_NUM_ENGINES=$((NUM_GPUS))
 
 ### TOOL-CALLING CONFIG ###
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
@@ -170,9 +170,9 @@ python -m openrlhf.cli.train_ppo_ray \
     --actor_num_nodes 1 \
     --actor_num_gpus_per_node $NUM_GPUS \
     --vllm_num_engines $VLLM_NUM_ENGINES \
-    --vllm_tensor_parallel_size 2 \
+    --vllm_tensor_parallel_size 1 \
     --colocate_all_models \
-    --vllm_gpu_memory_utilization 0.835 \
+    --vllm_gpu_memory_utilization 0.525 \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \

@@ -85,14 +85,6 @@ class ToolCallingTurn(AgentInstanceBase):
         """Parse tool calls, execute, return upstream-contract dict."""
         action_text = state_dict["action_text"]
         label = state_dict.get("label", "")
-
-        # Diagnostic: check which markers are present in the decoded text
-        has_start = "<|action_start|>" in action_text
-        has_plugin = "<|plugin|>" in action_text
-        has_end = "<|action_end|>" in action_text
-        has_combined = "<|action_start|><|plugin|>" in action_text
-        print(f"[step] markers: start={has_start} plugin={has_plugin} end={has_end} combined={has_combined}", flush=True)
-
         action = self.protocol.parse_assistant_text(action_text)
         tool_calls = action.get("tool_calls", [])
 

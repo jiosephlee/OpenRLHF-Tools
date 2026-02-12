@@ -180,24 +180,16 @@ class Actor(nn.Module):
         output["logits"] = output["logits"].to(torch.float32)
         logits = output["logits"]
         debug_logits = os.environ.get("OPENRLHF_DEBUG_LOGITS", "0") == "1"
-        logits_finite = torch.isfinite(logits)
-        logits_all_finite = bool(logits_finite.all().item())
-        if debug_logits or (not logits_all_finite):
-            finite_logits = logits[logits_finite]
-            finite_min = finite_logits.min().item() if finite_logits.numel() > 0 else float("nan")
-            finite_max = finite_logits.max().item() if finite_logits.numel() > 0 else float("nan")
-            logits_str = str(logits)
-            if len(logits_str) > 220:
-                logits_excerpt = f"{logits_str[:100]} ... {logits_str[-100:]}"
-            else:
-                logits_excerpt = logits_str
+        # Use scalar reductions only — boolean indexing / str(logits) would copy the full tensor (~18 GiB)
+        logits_all_finite = bool(torch.isfinite(logits).all().item())
+        if debug_logits or not logits_all_finite:
+            nonfinite_count = 0 if logits_all_finite else int((~torch.isfinite(logits)).sum().item())
             logger.warning(
                 f"[DEBUG logits] shape={tuple(logits.shape)}, dtype={logits.dtype}, finite={logits_all_finite}, "
-                f"nonfinite_count={(~logits_finite).sum().item()}, finite_min={finite_min:.4f}, finite_max={finite_max:.4f}"
+                f"nonfinite_count={nonfinite_count}, min={logits.min().item():.4f}, max={logits.max().item():.4f}"
             )
-            logger.warning(f"[DEBUG logits excerpt] {logits_excerpt}")
         if not logits_all_finite:
-            bad_idx = (~logits_finite).nonzero(as_tuple=False)[0]
+            bad_idx = (~torch.isfinite(logits)).nonzero(as_tuple=False)[0]
             b_idx, s_idx, v_idx = bad_idx.tolist()
             token_id = int(sequences[b_idx, s_idx].item())
             label_id = int(rolled_sequences[b_idx, s_idx].item())

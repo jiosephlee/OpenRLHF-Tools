@@ -517,6 +517,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--apply_chat_template", action="store_true", default=False, help="Use HF tokenizer chat template"
     )
+    parser.add_argument(
+        "--tdc_tools",
+        type=str,
+        default=None,
+        help="Path to JSON mapping {task_name: [tool_schemas]} for per-task tool injection into apply_chat_template",
+    )
 
     # wandb parameters
     parser.add_argument("--use_wandb", type=str, default=None)

@@ -36,10 +36,8 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
     async def execute(self, prompt, label, sampling_params, max_length: int, hf_tokenizer, llm_engine):
         # Treat each AgentInstance as an isolated environment; bind every prompt to its own independent instance
         agent_instance = self.agent_instance_cls()
-        print(f"agent_instance: {agent_instance}")
         # Initialize with reset function
         initial_states = {"observation": prompt, "label": label}
-        print(f"initial_states: {initial_states}")
         reset_result = await agent_instance.reset(initial_states)
         observation_text = reset_result["observation"]
 
@@ -73,6 +71,7 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
 
         # Execute multiple steps of interaction
         turn = 0
+        episode_log_emitted = False
         while True:
             turn += 1
             # Next sampling budget
@@ -105,13 +104,17 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
             environment_feedback_text = step_result["environment_feedback"]
             done = step_result["done"]
             extra_logs = step_result.get("extra_logs", {})
-
             # Minimal real-time ping: tool turn vs done
             tool_count = extra_logs.get("tool_call_count", 0)
             if done:
                 print(f"[mt] t={turn} done", flush=True)
             else:
                 print(f"[mt] t={turn} +{tool_count} tool(s) →", flush=True)
+            if not episode_log_emitted:
+                action_preview = action_text.replace("\n", "\\n")[:100]
+                feedback_preview = environment_feedback_text.replace("\n", "\\n")[:100]
+                print(f"[mt] t={turn} action={action_preview!r} env={feedback_preview!r}", flush=True)
+                episode_log_emitted = True
 
             # Concatenate observation, action, and environment_feedback, then tokenize
             observation_text = observation_text + action_text + environment_feedback_text

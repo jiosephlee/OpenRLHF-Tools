@@ -280,7 +280,7 @@ class ActorPPOTrainer(ABC):
         )
         if not torch.isfinite(actor_loss):
             action_tokens = int(experience.action_mask.sum().item())
-            _logging.warning(
+            raise RuntimeError(
                 "Non-finite actor_loss detected. "
                 f"step={step}, action_tokens={action_tokens}, "
                 f"advantages_finite={bool(torch.isfinite(advantages).all())}, "

@@ -4,12 +4,17 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 
 
-def preprocess_data(data, input_template=None, input_key="input", label_key=None, apply_chat_template=None) -> str:
+def preprocess_data(data, input_template=None, input_key="input", label_key=None, apply_chat_template=None, tools_map=None) -> str:
     if apply_chat_template:
         chat = data[input_key]
         if isinstance(chat, str):
             chat = [{"role": "user", "content": chat}]
-        prompt = apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
+        kwargs = dict(tokenize=False, add_generation_prompt=True)
+        if tools_map is not None:
+            # Per-task tool lookup: data["task"] → tool list, fallback to __default__
+            task = data.get("task", "__default__")
+            kwargs["tools"] = tools_map.get(task, tools_map.get("__default__", []))
+        prompt = apply_chat_template(chat, **kwargs)
     else:
         prompt = data[input_key]
         if isinstance(prompt, list):
@@ -55,11 +60,18 @@ class PromptDataset(Dataset):
         if apply_chat_template:
             apply_chat_template = self.tokenizer.apply_chat_template
 
+        # Load per-task tool schemas: {task_name: [tool_schemas], "__default__": [...]}
+        tools_map = None
+        tdc_tools_path = getattr(self.strategy.args, "tdc_tools", None)
+        if tdc_tools_path:
+            with open(tdc_tools_path) as f:
+                tools_map = json.load(f)
+
         self.prompts = []
         self.labels = []
         self.datasources = []
         for data in tqdm(dataset, desc="Preprocessing data", disable=not self.strategy.is_rank_0()):
-            prompt, label = preprocess_data(data, input_template, input_key, label_key, apply_chat_template)
+            prompt, label = preprocess_data(data, input_template, input_key, label_key, apply_chat_template, tools_map=tools_map)
             self.prompts.append(prompt)
             self.labels.append(label)
             self.datasources.append(data.get("datasource", "default"))

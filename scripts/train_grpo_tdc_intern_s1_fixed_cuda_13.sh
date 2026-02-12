@@ -23,10 +23,10 @@
 #SBATCH --output=%x_%j.out
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus=4                    # Shared GPUs (override with --gpus=N)
+#SBATCH --gpus=2                 # Shared GPUs (override with --gpus=N)
 #SBATCH --mem-per-gpu=128G
-#SBATCH --cpus-per-gpu=8
-#SBATCH --time=1:00:00
+#SBATCH --cpus-per-gpu=4
+#SBATCH --time=0:20:00
 
 ### NCCL / IB / NETWORK CONFIG (match fixed distributed script) ###
 export OMP_NUM_THREADS=16
@@ -66,10 +66,10 @@ run_task() {
         echo "Running under SLURM (Job ID: $SLURM_JOB_ID)"
         IS_SLURM=true
         NUM_GPUS=${SLURM_GPUS_ON_NODE:-4}
-    else
-        echo "Running in standalone mode"
+    else 
         IS_SLURM=false
-        NUM_GPUS=${4:-4}
+        echo "Slurm is not identified"
+        exit 1
     fi
 
     # Parse arguments
@@ -114,8 +114,8 @@ run_task() {
 
     # Training hyperparameters
     TRAIN_BATCH_SIZE=$((NUM_GPUS * 16))
-    VLLM_NUM_ENGINES=$((NUM_GPUS / 2))
-    [ $VLLM_NUM_ENGINES -lt 1 ] && VLLM_NUM_ENGINES=1
+    NUM_GPUS=$SLURM_GPUS_ON_NODE
+    VLLM_NUM_ENGINES=$NUM_GPUS
 
     # Tool-calling configuration — Intern-S1 format
     AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_agent.py"
@@ -267,8 +267,8 @@ run_task() {
         --reward_num_gpus_per_node 0 \
         --actor_num_nodes 1 \
         --actor_num_gpus_per_node $NUM_GPUS \
-        --vllm_num_engines $VLLM_NUM_ENGINES \
-        --vllm_tensor_parallel_size $((NUM_GPUS > 1 ? 2 : 1)) \
+        --vllm_num_engines $NUM_GPUS \
+        --vllm_tensor_parallel_size 1 \
         --colocate_all_models \
         --vllm_gpu_memory_utilization 0.8 \
         --advantage_estimator $ADVANTAGE_ESTIMATOR \

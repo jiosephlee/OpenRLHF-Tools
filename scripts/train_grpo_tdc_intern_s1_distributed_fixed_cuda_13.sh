@@ -23,10 +23,10 @@
 #SBATCH --output=%x_%j.out
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus=4
+#SBATCH --gpus=2
 #SBATCH --mem-per-gpu=128G
-#SBATCH --cpus-per-gpu=8
-#SBATCH --time=0:30:00
+#SBATCH --cpus-per-gpu=4
+#SBATCH --time=0:20:00
 
 ### NCCL / IB / NETWORK CONFIG (match fixed distributed script) ###
 export OMP_NUM_THREADS=$(( ${NUM_GPUS:-4} * 2 ))
@@ -35,22 +35,7 @@ export NCCL_IB_ADAPTIVE_ROUTING=1
 export NCCL_IB_SL=1
 export NCCL_IB_QPS_PER_CONNECTION=2
 export NCCL_IB_SPLIT_DATA_ON_QPS=0
-# GPU-affine IB NICs on DGX B200 (curated list — must all be present)
-REQUIRED_IB_HCAS=(mlx5_15 mlx5_10 mlx5_14 mlx5_13 mlx5_8 mlx5_7 mlx5_9 mlx5_4)
-AVAILABLE_IB_HCAS=$(ls /sys/class/infiniband/ 2>/dev/null)
-MISSING=()
-for hca in "${REQUIRED_IB_HCAS[@]}"; do
-    if ! echo "$AVAILABLE_IB_HCAS" | grep -qw "$hca"; then
-        MISSING+=("$hca")
-    fi
-done
-if [ ${#MISSING[@]} -gt 0 ]; then
-    echo "Error: Missing required IB HCAs: ${MISSING[*]}" >&2
-    echo "Available: $AVAILABLE_IB_HCAS" >&2
-    exit 1
-fi
-export NCCL_IB_HCA=$(IFS=,; echo "${REQUIRED_IB_HCAS[*]}")
-echo "NCCL_IB_HCA: $NCCL_IB_HCA"
+export NCCL_IB_HCA=mlx5_15,mlx5_10,mlx5_14,mlx5_13,mlx5_8,mlx5_7,mlx5_9,mlx5_4
 export NCCL_SOCKET_IFNAME=bond0
 export UCX_TLS=rc
 
@@ -59,7 +44,6 @@ if [ -z "${WANDB_API_KEY:-}" ]; then
     echo "Error: WANDB_API_KEY is not set. Export it before sbatch." >&2
     exit 1
 fi
-export WANDB_API_KEY
 
 ### CONDA / MODULE SETUP ###
 module load MAMBA
@@ -126,10 +110,8 @@ run_task() {
     SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
 
     # Distributed layout: derive split from visible GPUs (about 25% actor, rest vLLM)
-    ACTOR_GPUS=$((NUM_GPUS / 4))
-    [ $ACTOR_GPUS -lt 1 ] && ACTOR_GPUS=1
-    VLLM_GPUS=$((NUM_GPUS - ACTOR_GPUS))
-    [ $VLLM_GPUS -ge 1 ]
+    ACTOR_GPUS=1
+    VLLM_GPUS=$((NUM_GPUS - 1))
     VLLM_NUM_ENGINES=$VLLM_GPUS
     VLLM_TENSOR_PARALLEL_SIZE=1
     TRAIN_BATCH_SIZE=$((ACTOR_GPUS * 16))
@@ -211,12 +193,10 @@ run_task() {
     PY_EXE=$(micromamba run -p "$ENV_PREFIX" which python)
     export RAY_PYTHON_EXECUTABLE="$PY_EXE"
 
-    # Increase file descriptor limit
-    ulimit -n 65535 2>/dev/null || true
-
-    # Clean up any previous Ray state (including stale session files)
-    ray stop --force 2>/dev/null || true
-    rm -rf "$RAY_TMPDIR"/ray/session_* 2>/dev/null || true
+    # (Optional) increase fd limit; helps with raylet sockets
+    ulimit -n 65535
+    # Clean up any previous Ray state
+    ray stop --force || true
 
     # Start Ray head node
     echo "Starting Ray head node at $RAY_NODE_IP_ADDRESS"

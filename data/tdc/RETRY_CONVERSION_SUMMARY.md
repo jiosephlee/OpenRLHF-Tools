@@ -162,7 +162,7 @@ loader.convert_task("Tox21", "data/tdc/raw", "data/tdc/openai_format")
 python -m openrlhf.cli.train_ppo_ray \
     --pretrain internlm/internlm2_5-7b-chat \
     --prompt_data data/tdc/openai_format/Tox21_train.jsonl \
-    --agent_func_path openrlhf/utils/tool_calling_agent.py \
+    --agent_func_path openrlhf/utils/tool_calling_turn.py \
     --agent_max_steps 40 \
     --n_samples_per_prompt 8
 ```

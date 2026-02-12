@@ -128,7 +128,7 @@ run_task() {
     TRAIN_BATCH_SIZE=$((ACTOR_GPUS * 16))
 
     # ── Tool-calling configuration ──────────────────────────────────
-    AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_agent.py"
+    AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
     AGENT_MAX_STEPS=50
     PROMPT_CONSTRUCTION_MODE="manual"
 
@@ -292,6 +292,7 @@ run_task() {
         --prompt_data "$TRAIN_DATA" \
         --input_key messages \
         --label_key answer \
+        --apply_chat_template \
         --gradient_checkpointing \
         --packing_samples \
         --vllm_sync_backend nccl \

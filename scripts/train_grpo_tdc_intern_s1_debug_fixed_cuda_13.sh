@@ -72,7 +72,7 @@ TRAIN_BATCH_SIZE=$((NUM_GPUS * 4))
 VLLM_NUM_ENGINES=$NUM_GPUS
 
 ### TOOL-CALLING CONFIG ###
-AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_agent.py"
+AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
 AGENT_MAX_STEPS=40
 PROMPT_CONSTRUCTION_MODE="auto"
 CHAT_PROTOCOL="intern_s1"
@@ -98,6 +98,8 @@ export OPENRLHF_MODEL_PATH="$PRETRAIN_PATH"
 export OPENRLHF_PROMPT_CONSTRUCTION_MODE="$PROMPT_CONSTRUCTION_MODE"
 export OPENRLHF_CHAT_PROTOCOL="$CHAT_PROTOCOL"
 export OPENRLHF_MAX_STEPS="$AGENT_MAX_STEPS"
+export OPENRLHF_DEBUG_LOGITS=1
+export OPENRLHF_DEBUG_NAN_GUARD=1
 
 # Enable masked_mean debug dumps
 export OPENRLHF_MASKED_MEAN_DEBUG_DIR="/tmp/debug_masked_mean_${USER}"
@@ -186,6 +188,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --prompt_data "$TRAIN_DATA" \
     --input_key messages \
     --label_key answer \
+    --apply_chat_template \
     --gradient_checkpointing \
     --packing_samples \
     --vllm_sync_backend nccl \

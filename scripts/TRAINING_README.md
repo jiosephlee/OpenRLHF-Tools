@@ -144,7 +144,7 @@ GENERATE_MAX_LEN=2048
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| `AGENT_FUNC_PATH` | `openrlhf/utils/tool_calling_agent.py` | Agent implementation |
+| `AGENT_FUNC_PATH` | `openrlhf/utils/tool_calling_turn.py` | Agent implementation |
 | `AGENT_MAX_STEPS` | 40 | Max tool-calling turns per rollout |
 | `PROMPT_CONSTRUCTION_MODE` | manual | Prompt reconstruction mode (manual/auto) |
 
@@ -478,7 +478,7 @@ done
 - **Original script**: `openrlhf-vlm-fork/batch_scripts/grpo_with_tools.sh`
 - **TDC datasets**: `data/tdc/openai_format/`
 - **Tool definitions**: `data/tdc/metadata/tools_*.json`
-- **Agent implementation**: `openrlhf/utils/tool_calling_agent.py`
+- **Agent implementation**: `openrlhf/utils/tool_calling_turn.py`
 - **Reward model**: `openrlhf/utils/tdc_reward_model.py`
 
 ## Related Documentation

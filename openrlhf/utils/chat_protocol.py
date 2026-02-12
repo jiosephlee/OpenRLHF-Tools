@@ -305,6 +305,11 @@ class InternS1Protocol(ChatProtocol):
     _START = "<|action_start|><|plugin|>"
     _END = "<|action_end|>"
 
+    # vLLM's detokenizer may insert whitespace between special tokens,
+    # so we match with optional \s* between the two markers.
+    _START_RE = re.compile(r"<\|action_start\|>\s*<\|plugin\|>")
+    _END_RE = re.compile(r"<\|action_end\|>")
+
     _TOOL_INSTRUCTION = (
         'Your response should consist of a reasoning step (**thought**) '
         'followed immediately by a function call in valid JSON format. '
@@ -356,26 +361,29 @@ class InternS1Protocol(ChatProtocol):
         Extracts all ``<|action_start|><|plugin|>...json...<|action_end|>``
         blocks.  Text outside these blocks is treated as content.  Accepts
         both ``parameters`` and ``arguments`` as the key for function args.
+
+        Uses regex to tolerate whitespace that vLLM's detokenizer may insert
+        between special tokens.
         """
         tool_calls: List[Dict[str, Any]] = []
         content_parts: List[str] = []
 
         pos = 0
         while True:
-            s = text.find(self._START, pos)
-            if s == -1:
+            start_m = self._START_RE.search(text, pos)
+            if start_m is None:
                 content_parts.append(text[pos:])
                 break
 
-            content_parts.append(text[pos:s])
+            content_parts.append(text[pos:start_m.start()])
 
-            e = text.find(self._END, s + len(self._START))
-            if e == -1:
+            end_m = self._END_RE.search(text, start_m.end())
+            if end_m is None:
                 # Incomplete block — treat as plain text
-                content_parts.append(text[s:])
+                content_parts.append(text[start_m.start():])
                 break
 
-            action = text[s + len(self._START):e].strip()
+            action = text[start_m.end():end_m.start()].strip()
             # Skip to first '{' in case of stray characters
             j = action.find("{")
             if j != -1:
@@ -388,16 +396,16 @@ class InternS1Protocol(ChatProtocol):
                     try:
                         action_dict = json.loads(_repair_invalid_json_escapes(action))
                     except Exception:
-                        content_parts.append(text[s:e + len(self._END)])
-                        pos = e + len(self._END)
+                        content_parts.append(text[start_m.start():end_m.end()])
+                        pos = end_m.end()
                         continue
                 else:
-                    content_parts.append(text[s:e + len(self._END)])
-                    pos = e + len(self._END)
+                    content_parts.append(text[start_m.start():end_m.end()])
+                    pos = end_m.end()
                     continue
             except Exception:
-                content_parts.append(text[s:e + len(self._END)])
-                pos = e + len(self._END)
+                content_parts.append(text[start_m.start():end_m.end()])
+                pos = end_m.end()
                 continue
 
             name = action_dict.get("name")
@@ -405,7 +413,7 @@ class InternS1Protocol(ChatProtocol):
             if name:
                 tool_calls.append({"name": name, "arguments": args})
 
-            pos = e + len(self._END)
+            pos = end_m.end()
 
         content = "".join(content_parts).strip()
 

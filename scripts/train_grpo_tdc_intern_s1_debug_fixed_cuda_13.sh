@@ -22,6 +22,7 @@ TASK_NAME=${1:-"AMES"}
 PRETRAIN_PATH=${2:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}
 LEARNING_RATE=${3:-"5e-7"}
 NUM_GPUS=$SLURM_GPUS_ON_NODE
+DEBUG_TRACES=${4:-"0"}
 
 # ### NCCL / IB / NETWORK CONFIG ###
 # export OMP_NUM_THREADS=16
@@ -68,7 +69,7 @@ RUN_ID="S-grpo-fixed-debug-${TASK_NAME}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_
 SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
 
 ### GPU LAYOUT (colocated — shared GPUs) ###
-TRAIN_BATCH_SIZE=$((NUM_GPUS * 2))
+TRAIN_BATCH_SIZE=$((NUM_GPUS * 8))
 VLLM_NUM_ENGINES=$NUM_GPUS
 
 ### TOOL-CALLING CONFIG ###
@@ -98,8 +99,9 @@ export OPENRLHF_MODEL_PATH="$PRETRAIN_PATH"
 export OPENRLHF_PROMPT_CONSTRUCTION_MODE="$PROMPT_CONSTRUCTION_MODE"
 export OPENRLHF_CHAT_PROTOCOL="$CHAT_PROTOCOL"
 export OPENRLHF_MAX_STEPS="$AGENT_MAX_STEPS"
+export DEBUG_TRACES="$DEBUG_TRACES"
 export OPENRLHF_DEBUG_LOGITS=0
-export OPENRLHF_DEBUG_NAN_GUARD=1
+export OPENRLHF_DEBUG_NAN_GUARD=0
 
 # Enable masked_mean debug dumps
 export OPENRLHF_MASKED_MEAN_DEBUG_DIR="/tmp/debug_masked_mean_${USER}"
@@ -178,8 +180,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_steps -1 \
     --logging_steps 1 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
-    --micro_train_batch_size 2 \
-    --micro_rollout_batch_size 4 \
+    --micro_train_batch_size 8 \
+    --micro_rollout_batch_size 16 \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs 1 \

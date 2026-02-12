@@ -1,4 +1,5 @@
 import asyncio
+import os
 from abc import ABC, abstractmethod
 from copy import deepcopy
 
@@ -7,6 +8,8 @@ import aiohttp
 from openrlhf.utils.logging_utils import init_logger
 
 logger = init_logger(__name__)
+
+_DEBUG_TRACES = os.environ.get("DEBUG_TRACES", "0") == "1"
 
 
 class AgentExecutorBase(ABC):
@@ -40,7 +43,7 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
         initial_states = {"observation": prompt, "label": label}
         reset_result = await agent_instance.reset(initial_states)
         observation_text = reset_result["observation"]
-        if log_trajectory:
+        if _DEBUG_TRACES and log_trajectory:
             obs_preview = observation_text.replace("\n", "\\n")[:200] + " ... " + observation_text.replace("\n", "\\n")[-200:]
             print(f"[mt] initial state observation={obs_preview!r} label={label!r}", flush=True)
 
@@ -107,7 +110,7 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
             environment_feedback_text = step_result["environment_feedback"]
             done = step_result["done"]
             extra_logs = step_result.get("extra_logs", {})
-            if log_trajectory:
+            if _DEBUG_TRACES and log_trajectory:
                 tool_count = extra_logs.get("tool_call_count", 0)
                 if done:
                     print(f"[mt] t={turn} done", flush=True)

@@ -292,6 +292,7 @@ run_task() {
         --input_key messages \
         --label_key answer \
         --apply_chat_template \
+        --tdc_tools "$PROJECT_ROOT/data/tdc/metadata/tools_per_task.json" \
         --gradient_checkpointing \
         --packing_samples \
         --vllm_sync_backend nccl \

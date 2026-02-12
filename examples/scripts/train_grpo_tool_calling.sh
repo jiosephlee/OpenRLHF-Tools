@@ -65,6 +65,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --input_key "question" \
     --label_key "answer" \
     --apply_chat_template \
+    --tdc_tools "$PROJECT_ROOT/data/tdc/metadata/tools_per_task.json" \
     --gradient_checkpointing \
     --vllm_sync_backend nccl \
     --vllm_enable_sleep \

@@ -70,7 +70,7 @@ SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
 HUB_REPO_ID="jiosephlee/grpo-tdc-intern-s1-${TASK_NAME}"
 
 ### GPU LAYOUT (colocated — shared GPUs) ###
-TRAIN_BATCH_SIZE=$((NUM_GPUS * 8))
+TRAIN_BATCH_SIZE=$((NUM_GPUS * 4))
 VLLM_NUM_ENGINES=$NUM_GPUS
 
 ### TOOL-CALLING CONFIG ###
@@ -172,7 +172,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size 1 \
     --colocate_all_models \
-    --vllm_gpu_memory_utilization 0.825 \
+    --vllm_gpu_memory_utilization 0.835 \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \

@@ -1,3 +1,5 @@
+import logging
+import os
 from typing import Optional
 
 import deepspeed
@@ -11,6 +13,8 @@ from transformers.integrations.deepspeed import HfDeepSpeedConfig
 
 from .ring_attn_utils import gather_and_pad_tensor, unpad_and_slice_tensor
 from .utils import compute_entropy, log_probs_from_logits
+
+logger = logging.getLogger(__name__)
 
 
 class Actor(nn.Module):
@@ -174,6 +178,41 @@ class Actor(nn.Module):
         output = self.model(sequences, attention_mask=foward_attention_mask, position_ids=position_ids)
         # https://github.com/OpenRLHF/OpenRLHF/pull/634
         output["logits"] = output["logits"].to(torch.float32)
+        logits = output["logits"]
+        debug_logits = os.environ.get("OPENRLHF_DEBUG_LOGITS", "0") == "1"
+        logits_finite = torch.isfinite(logits)
+        logits_all_finite = bool(logits_finite.all().item())
+        if debug_logits or (not logits_all_finite):
+            finite_logits = logits[logits_finite]
+            finite_min = finite_logits.min().item() if finite_logits.numel() > 0 else float("nan")
+            finite_max = finite_logits.max().item() if finite_logits.numel() > 0 else float("nan")
+            logits_str = str(logits)
+            if len(logits_str) > 220:
+                logits_excerpt = f"{logits_str[:100]} ... {logits_str[-100:]}"
+            else:
+                logits_excerpt = logits_str
+            logger.warning(
+                f"[DEBUG logits] shape={tuple(logits.shape)}, dtype={logits.dtype}, finite={logits_all_finite}, "
+                f"nonfinite_count={(~logits_finite).sum().item()}, finite_min={finite_min:.4f}, finite_max={finite_max:.4f}"
+            )
+            logger.warning(f"[DEBUG logits excerpt] {logits_excerpt}")
+        if not logits_all_finite:
+            bad_idx = (~logits_finite).nonzero(as_tuple=False)[0]
+            b_idx, s_idx, v_idx = bad_idx.tolist()
+            token_id = int(sequences[b_idx, s_idx].item())
+            label_id = int(rolled_sequences[b_idx, s_idx].item())
+            if attention_mask is not None:
+                attn_val = int(attention_mask[b_idx, s_idx].item())
+            else:
+                attn_val = -1
+            if action_mask is not None:
+                action_slice = action_mask[b_idx, -min(16, action_mask.shape[1]) :].int().tolist()
+            else:
+                action_slice = []
+            logger.warning(
+                f"[DEBUG logits nonfinite] b={b_idx}, s={s_idx}, v={v_idx}, input_token={token_id}, label_token={label_id}, "
+                f"attention_mask_val={attn_val}, action_mask_tail={action_slice}"
+            )
 
         if return_entropy:
             assert return_output
@@ -192,6 +231,15 @@ class Actor(nn.Module):
             return output
 
         log_probs = log_probs_from_logits(output["logits"], rolled_sequences, temperature=self.temperature)
+        log_probs_finite = torch.isfinite(log_probs)
+        if debug_logits or (not bool(log_probs_finite.all().item())):
+            finite_log_probs = log_probs[log_probs_finite]
+            finite_lp_min = finite_log_probs.min().item() if finite_log_probs.numel() > 0 else float("nan")
+            finite_lp_max = finite_log_probs.max().item() if finite_log_probs.numel() > 0 else float("nan")
+            logger.warning(
+                f"[DEBUG log_probs] shape={tuple(log_probs.shape)}, finite={bool(log_probs_finite.all().item())}, "
+                f"nonfinite_count={(~log_probs_finite).sum().item()}, finite_min={finite_lp_min:.4f}, finite_max={finite_lp_max:.4f}"
+            )
 
         if self.packing_samples:
             log_probs = gather_and_pad_tensor(log_probs, ring_attn_group, ring_attn_pad_len, indices, batch, seqlen)
@@ -200,7 +248,8 @@ class Actor(nn.Module):
         if not return_action_log_probs and return_logprobs:
             return (log_probs, output) if return_output else log_probs
 
-        action_log_probs = log_probs[:, -action_mask.shape[1] :] * action_mask.float()
+        action_log_probs = log_probs[:, -action_mask.shape[1] :]
+        action_log_probs = torch.where(action_mask.bool(), action_log_probs, torch.zeros_like(action_log_probs))
 
         return (action_log_probs, output) if return_output else action_log_probs
 

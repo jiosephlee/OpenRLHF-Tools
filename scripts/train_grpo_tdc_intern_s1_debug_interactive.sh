@@ -17,7 +17,7 @@ set -euo pipefail
 TASK_NAME=${1:-"AMES"}
 PRETRAIN_PATH=${2:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}
 LEARNING_RATE=${3:-"1e-6"}
-NUM_GPUS=${4:-4}
+NUM_GPUS=$SLURM_GPUS_ON_NODE
 
 # ### NCCL / IB / NETWORK CONFIG ###
 # export OMP_NUM_THREADS=$(( NUM_GPUS * 2 ))

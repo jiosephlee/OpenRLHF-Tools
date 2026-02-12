@@ -111,9 +111,12 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
             else:
                 print(f"[mt] t={turn} +{tool_count} tool(s) →", flush=True)
             if not episode_log_emitted:
-                action_preview = action_text.replace("\n", "\\n")[:100]
-                feedback_preview = environment_feedback_text.replace("\n", "\\n")[:100]
-                print(f"[mt] t={turn} action={action_preview!r} env={feedback_preview!r}", flush=True)
+                action_flat = action_text.replace("\n", "\\n")
+                action_head = action_flat[:120]
+                action_tail = action_flat[-120:]
+                feedback_preview = environment_feedback_text.replace("\n", "\\n")[:120]
+                print(f"[mt] t={turn} len={len(action_text)} head={action_head!r}", flush=True)
+                print(f"[mt] t={turn} tail={action_tail!r} env={feedback_preview!r}", flush=True)
                 episode_log_emitted = True
 
             # Concatenate observation, action, and environment_feedback, then tokenize

@@ -20,7 +20,7 @@ set -euo pipefail
 ### ARGS ###
 TASK_NAME=${1:-"BBB_Martins"}
 PRETRAIN_PATH=${2:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}
-LEARNING_RATE=${3:-"1e-6"}
+LEARNING_RATE=${3:-"2e-6"}
 NUM_GPUS=$SLURM_GPUS_ON_NODE
 DEBUG_TRACES=${4:-"0"}
 
@@ -185,7 +185,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --micro_rollout_batch_size 8 \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
-    --max_epochs 2 \
+    --max_epochs 1 \
     --prompt_max_len 8192 \
     --generate_max_len 2048 \
     --max_samples 1000000 \

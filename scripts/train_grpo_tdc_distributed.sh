@@ -237,6 +237,12 @@ echo "W&B: project=$WANDB_PROJECT group=TDC-$TASK_NAME run=$RUN_ID"
 echo "========================================"
 
 ############################
+#   GENERATE TOOLS JSON    #
+############################
+TDC_TOOLS_JSON="$PROJECT_ROOT/data/tdc/metadata/tools_per_task.json"
+python "$PROJECT_ROOT/scripts/generate_tools_json.py" "$TDC_TOOLS_JSON"
+
+############################
 #   TRAINING COMMAND       #
 ############################
 
@@ -276,7 +282,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --input_key messages \
     --label_key answer \
     --apply_chat_template \
-    --tdc_tools "$PROJECT_ROOT/data/tdc/metadata/tools_per_task.json" \
+    --tdc_tools "$TDC_TOOLS_JSON" \
     --gradient_checkpointing \
     --packing_samples \
     --vllm_sync_backend nccl \

@@ -32,6 +32,10 @@ for i in {1..60}; do
     sleep 1
 done
 
+### Generate per-task tools JSON (from Intern-S1-recipe source of truth) ###
+TDC_TOOLS_JSON="$PROJECT_ROOT/data/tdc/metadata/tools_per_task.json"
+python "$PROJECT_ROOT/scripts/generate_tools_json.py" "$TDC_TOOLS_JSON"
+
 ### Training ###
 python -m openrlhf.cli.train_ppo_ray \
     --ref_num_nodes 0 \
@@ -65,7 +69,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --input_key "question" \
     --label_key "answer" \
     --apply_chat_template \
-    --tdc_tools "$PROJECT_ROOT/data/tdc/metadata/tools_per_task.json" \
+    --tdc_tools "$TDC_TOOLS_JSON" \
     --gradient_checkpointing \
     --vllm_sync_backend nccl \
     --vllm_enable_sleep \

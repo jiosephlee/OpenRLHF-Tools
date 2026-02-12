@@ -112,7 +112,7 @@ class ToolCallingTurn(AgentInstanceBase):
             "rewards": torch.tensor(reward),
             "done": True,
             "scores": reward,
-            "extra_logs": {},
+            "extra_logs": {"tool_call_count": 0},
         }
 
     # ------------------------------------------------------------------

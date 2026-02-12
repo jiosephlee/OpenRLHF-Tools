@@ -284,8 +284,8 @@ run_task() {
         --train_batch_size $TRAIN_BATCH_SIZE \
         --rollout_batch_size $TRAIN_BATCH_SIZE \
         --max_epochs 1 \
-        --prompt_max_len 4096 \
-        --generate_max_len 8192 \
+        --prompt_max_len 8192 \
+        --generate_max_len 2048 \
         --max_samples 1000000 \
         --zero_stage 1 \
         --param_dtype bf16 \

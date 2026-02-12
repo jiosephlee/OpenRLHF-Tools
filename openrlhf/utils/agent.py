@@ -36,9 +36,10 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
     async def execute(self, prompt, label, sampling_params, max_length: int, hf_tokenizer, llm_engine):
         # Treat each AgentInstance as an isolated environment; bind every prompt to its own independent instance
         agent_instance = self.agent_instance_cls()
-
+        print(f"agent_instance: {agent_instance}")
         # Initialize with reset function
         initial_states = {"observation": prompt, "label": label}
+        print(f"initial_states: {initial_states}")
         reset_result = await agent_instance.reset(initial_states)
         observation_text = reset_result["observation"]
 

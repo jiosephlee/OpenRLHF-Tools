@@ -87,7 +87,7 @@ VLLM_TENSOR_PARALLEL_SIZE=1
 TRAIN_BATCH_SIZE=$((ACTOR_GPUS * 16))
 
 ### TOOL-CALLING CONFIG ###
-AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_agent.py"
+AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
 AGENT_MAX_STEPS=40
 PROMPT_CONSTRUCTION_MODE="auto"
 CHAT_PROTOCOL="intern_s1"
@@ -193,6 +193,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --prompt_data "$TRAIN_DATA" \
     --input_key messages \
     --label_key answer \
+    --apply_chat_template \
     --gradient_checkpointing \
     --packing_samples \
     --vllm_sync_backend nccl \

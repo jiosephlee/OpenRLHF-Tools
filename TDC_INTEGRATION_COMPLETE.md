@@ -187,7 +187,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --prompt_data data/tdc/openai_format/AMES_train.jsonl \
     --input_key "question" \
     --label_key "answer" \
-    --agent_func_path openrlhf/utils/tool_calling_agent.py \
+    --agent_func_path openrlhf/utils/tool_calling_turn.py \
     --agent_max_steps 40 \
     --n_samples_per_prompt 8 \
     --advantage_estimator dr_grpo \

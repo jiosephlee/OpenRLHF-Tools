@@ -11,7 +11,7 @@ DATA_PATH=${2:-"PATH_TO_YOUR_DATA"}  # JSON dataset with questions
 SAVE_PATH="./checkpoint_grpo_tool_calling"
 
 # Tool-calling configuration
-AGENT_SCRIPT="openrlhf/utils/tool_calling_agent.py"
+AGENT_SCRIPT="openrlhf/utils/tool_calling_turn.py"
 AGENT_MAX_STEPS=40  # Max turns per episode
 STOP_STRINGS="</tool_call>"  # Stop generation at tool call boundary
 PROMPT_MODE="manual"  # "manual" (fast) or "auto" (robust)
@@ -64,6 +64,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --prompt_data $DATA_PATH \
     --input_key "question" \
     --label_key "answer" \
+    --apply_chat_template \
     --gradient_checkpointing \
     --vllm_sync_backend nccl \
     --vllm_enable_sleep \

@@ -27,7 +27,7 @@ Pipeline Trace: scripts/train_grpo_tdc.sh
 
   1. Sets agent env vars: OPENRLHF_MODEL_PATH, OPENRLHF_PROMPT_CONSTRUCTION_MODE, OPENRLHF_MAX_STEPS
   2. Calls _load_agent_executor(agent_func_path):
-    - Dynamically imports tool_calling_agent.py
+    - Dynamically imports tool_calling_turn.py
     - Finds the AgentExecutor class (subclass of MultiTurnAgentExecutor)
     - Returns AgentExecutor() instance
   3. Creates the AsyncLLMEngine (vLLM)
@@ -69,8 +69,8 @@ Pipeline Trace: scripts/train_grpo_tdc.sh
 
   This is the core multi-turn loop for each sample:
 
-  agent = ToolCallAgent()                      # Fresh instance per sample
-  observation = agent.reset(prompt, label)      # → AgentSession.initialize()
+  agent = ToolCallingTurn()                     # Fresh instance per sample
+  observation = agent.reset(prompt, label)      # → ToolCallingTurn.reset()
   current_tokens = tokenize(observation)
   action_ranges = []
 
@@ -82,7 +82,7 @@ Pipeline Trace: scripts/train_grpo_tdc.sh
       action_ranges.append((len(current_tokens), len(current_tokens) + len(action_tokens)))
 
       # 3. Agent processes action, executes tools
-      result = agent.step(action_text, label)   # → AgentSession.step()
+      result = agent.step(action_text, label)   # → ToolCallingTurn.step()
 
       # 4. Concatenate: current_tokens + action_tokens + env_feedback_tokens
       current_tokens = current_tokens + action_tokens + tokenize(env_feedback)
@@ -95,17 +95,17 @@ Pipeline Trace: scripts/train_grpo_tdc.sh
   return {observation_tokens, action_ranges, reward, rollout_log_probs}
 
   ---
-  Phase 7: Inside the Agent — ToolCallAgent → AgentSession → GLMFlashProtocol
+  Phase 7: Inside the Agent — ToolCallingTurn → GLMFlashProtocol
 
-  ToolCallAgent.__init__() (tool_calling_agent.py):
+  ToolCallingTurn.__init__() (tool_calling_turn.py):
   - Loads tokenizer from OPENRLHF_MODEL_PATH
   - Creates GLMFlashProtocol(tokenizer) — handles XML tool format
-  - Creates AgentSession(protocol, tools, system_prompt)
+  - Builds tools dict and initialises conversation history
 
-  AgentSession.step(action_text, label) (agent_session.py):
+  ToolCallingTurn.step(state_dict) (tool_calling_turn.py):
   1. GLMFlashProtocol.parse_assistant_text(action_text) — parses <tool_call>func<arg_key>k</arg_key><arg_value>v</arg_value></tool_call>
-  2. If tool call found: executes the tool function, renders feedback via protocol.render_messages(), returns {feedback, reward=0, done=False}
-  3. If no tool call (final answer): computes reward, returns {feedback="", reward=score, done=True}
+  2. If tool call found: executes the tool function, renders feedback via protocol.render_messages(), returns {environment_feedback, rewards=0, done=False}
+  3. If no tool call (final answer): computes reward, returns {environment_feedback="", rewards=score, done=True}
 
   ---
   Phase 8: Building Experience Objects
@@ -170,16 +170,14 @@ Pipeline Trace: scripts/train_grpo_tdc.sh
               ├─ [ROLLOUT] SamplesGenerator
               │    └─ LLMRayActor.generate_responses()
               │         └─ MultiTurnAgentExecutor.execute()  ← multi-turn loop
-              │              ├─ ToolCallAgent.reset()
-              │              │    └─ AgentSession.initialize()
-              │              │         └─ GLMFlashProtocol.render_messages()
+              │              ├─ ToolCallingTurn.reset()
+              │              │    └─ GLMFlashProtocol.render_messages()
               │              └─ loop:
               │                   ├─ vLLM generate → action_tokens
               │                   ├─ action_ranges.append((start, end))
-              │                   ├─ ToolCallAgent.step()
-              │                   │    └─ AgentSession.step()
-              │                   │         ├─ GLMFlashProtocol.parse_assistant_text()
-              │                   │         └─ execute tool / compute reward
+              │                   ├─ ToolCallingTurn.step()
+              │                   │    ├─ GLMFlashProtocol.parse_assistant_text()
+              │                   │    └─ execute tool / compute reward
               │                   └─ concat tokens, accumulate log probs
               │
               ├─ [EXPERIENCE] _process_response_into_experience()

@@ -89,7 +89,7 @@ VLLM_NUM_ENGINES=$((NUM_GPUS / 2))
 [ $VLLM_NUM_ENGINES -lt 1 ] && VLLM_NUM_ENGINES=1
 
 # Tool-calling configuration
-AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_agent.py"
+AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
 AGENT_MAX_STEPS=40
 PROMPT_CONSTRUCTION_MODE="manual"  # "manual" (fast) or "auto" (robust)
 
@@ -265,6 +265,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --prompt_data "$TRAIN_DATA" \
     --input_key messages \
     --label_key answer \
+    --apply_chat_template \
     --gradient_checkpointing \
     --packing_samples \
     --vllm_sync_backend nccl \

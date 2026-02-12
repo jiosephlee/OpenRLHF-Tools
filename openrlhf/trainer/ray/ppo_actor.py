@@ -215,8 +215,27 @@ class ActorPPOTrainer(ABC):
                 status_mean[k] /= len(status_list)
         return status_mean
 
+    def _assert_finite_actor_state(self, step: int, stage: str, check_grad: bool) -> None:
+        model = self.actor.model.module if hasattr(self.actor.model, "module") else self.actor.model
+        for name, param in model.named_parameters():
+            if not torch.isfinite(param.data).all():
+                nonfinite = int((~torch.isfinite(param.data)).sum().item())
+                raise RuntimeError(
+                    f"Non-finite actor parameter detected at step={step}, stage={stage}, "
+                    f"name={name}, shape={tuple(param.shape)}, nonfinite_count={nonfinite}, dtype={param.dtype}"
+                )
+            if check_grad and param.grad is not None and not torch.isfinite(param.grad).all():
+                nonfinite = int((~torch.isfinite(param.grad)).sum().item())
+                raise RuntimeError(
+                    f"Non-finite actor gradient detected at step={step}, stage={stage}, "
+                    f"name={name}, shape={tuple(param.grad.shape)}, nonfinite_count={nonfinite}, dtype={param.grad.dtype}"
+                )
+
     def training_step(self, experience: Experience, kl_ctl: float, step: int) -> Dict[str, float]:
         self.actor.train()
+        nan_guard = os.environ.get("OPENRLHF_DEBUG_NAN_GUARD", "0") == "1"
+        if nan_guard:
+            self._assert_finite_actor_state(step, stage="pre_forward", check_grad=False)
 
         sequences = experience.sequences
         action_mask = experience.action_mask
@@ -266,14 +285,9 @@ class ActorPPOTrainer(ABC):
                 f"step={step}, action_tokens={action_tokens}, "
                 f"advantages_finite={bool(torch.isfinite(advantages).all())}, "
                 f"old_log_probs_finite={bool(torch.isfinite(old_action_log_probs).all())}, "
-                f"new_log_probs_finite={bool(torch.isfinite(action_log_probs).all())}"
-            )
-            _logging.warning(
-                "Non-finite actor_loss detected. "
-                f"step={step}, action_tokens={action_tokens}, "
-                f"advantages_finite={advantages.tolist()}, "
-                f"old_log_probs_finite={str(old_action_log_probs.tolist())[:100]} ... {str(old_action_log_probs.tolist())[-100:]}, "
-                f"new_log_probs_finite={str(action_log_probs.tolist())[:100]} ... {str(action_log_probs.tolist())[-100:]}"
+                f"new_log_probs_finite={bool(torch.isfinite(action_log_probs).all())}, "
+                f"old_log_probs_excerpt={str(old_action_log_probs)[:100]} ... {str(old_action_log_probs)[-100:]}, "
+                f"new_log_probs_excerpt={str(action_log_probs)[:100]} ... {str(action_log_probs)[-100:]}"
             )
         experience.info["ppo_clip_ratio"] = clip_ratio.detach()
         experience.info["ppo_kl"] = ppo_kl.detach()
@@ -312,11 +326,15 @@ class ActorPPOTrainer(ABC):
             loss = loss * self.replay_buffer.dynamic_loss_scale[step]
 
         self.strategy.backward(loss, self.actor, self.actor_optim)
+        if nan_guard:
+            self._assert_finite_actor_state(step, stage="post_backward", check_grad=True)
         if self.args.use_dynamic_batch:
             if self.replay_buffer.dynamic_optimizer_step[step]:
                 self.strategy.optimizer_step(self.actor_optim, self.actor, self.actor_scheduler, name="actor")
         else:
             self.strategy.optimizer_step(self.actor_optim, self.actor, self.actor_scheduler, name="actor")
+        if nan_guard:
+            self._assert_finite_actor_state(step, stage="post_optimizer", check_grad=False)
 
         if self.ema_model:
             if self.args.use_dynamic_batch:

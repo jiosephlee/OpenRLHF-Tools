@@ -52,6 +52,29 @@ class ChatProtocol(ABC):
         """
         pass
 
+    @abstractmethod
+    def render_tool_feedback(self, tool_results: List[Dict[str, str]]) -> str:
+        """Render the bridge text between end-of-LLM-generation and next turn.
+
+        This is always manual string construction because the multi-turn loop
+        in agent.py works by concatenation::
+
+            observation_text = observation_text + action_text + feedback_text
+
+        ``action_text`` comes straight from vLLM (no closing tags), so the
+        feedback must:
+          1. Close the assistant turn (if the format requires it)
+          2. Render each tool/environment response
+          3. Open the next assistant turn (generation prompt)
+
+        Args:
+            tool_results: List of dicts with "name" and "content" keys
+
+        Returns:
+            Bridge text ready for concatenation
+        """
+        pass
+
 
 class GLMFlashProtocol(ChatProtocol):
     """GLM Flash XML format protocol.
@@ -121,6 +144,14 @@ class GLMFlashProtocol(ChatProtocol):
                 "content": text,
                 "tool_calls": []
             }
+
+    def render_tool_feedback(self, tool_results: List[Dict[str, str]]) -> str:
+        """GLM Flash bridge: no explicit assistant close needed."""
+        feedback = ""
+        for tr in tool_results:
+            feedback += f"<|observation|>\n<tool_response>{tr['content']}</tool_response>\n"
+        feedback += "<|assistant|>\n"
+        return feedback
 
     def _parse_glm_flash_tool_call(self, text: str) -> Optional[Dict[str, Any]]:
         """Parse GLM Flash tool call format using vLLM parser or regex fallback.
@@ -381,6 +412,14 @@ class InternS1Protocol(ChatProtocol):
         if tool_calls:
             return {"content": content, "tool_calls": tool_calls}
         return {"content": content or text, "tool_calls": []}
+
+    def render_tool_feedback(self, tool_results: List[Dict[str, str]]) -> str:
+        """Intern-S1 bridge: must close the assistant turn first."""
+        feedback = "<|im_end|>\n"  # close the open assistant turn
+        for tr in tool_results:
+            feedback += f"<|im_start|>environment name=<|plugin|>\n\n{tr['content']}<|im_end|>\n"
+        feedback += "<|im_start|>assistant\n\n<think>\n"
+        return feedback
 
     # ------------------------------------------------------------------
     # Manual rendering

@@ -7,7 +7,7 @@ This implementation extends OpenRLHF with multi-turn tool-calling support for Gr
 **Key Features:**
 - ✅ Multi-turn agent-based rollouts with tool execution
 - ✅ Token-level masking (only LLM actions contribute to loss, observations excluded)
-- ✅ Clean abstraction layer (AgentSession + ChatProtocol)
+- ✅ Clean abstraction layer (ToolCallingTurn + ChatProtocol)
 - ✅ GLM Flash XML tool format support
 - ✅ Extensible protocol system for new formats
 
@@ -15,22 +15,26 @@ This implementation extends OpenRLHF with multi-turn tool-calling support for Gr
 
 ### Core Components
 
-#### 1. AgentSession (`openrlhf/utils/agent_session.py`)
-Coordinates multi-turn conversations with inline tool execution and reward computation.
+#### 1. ToolCallingTurn (`openrlhf/utils/tool_calling_turn.py`)
+Single-class agent that directly implements `AgentInstanceBase`. Handles conversation
+history, tool execution, reward computation, and format rendering — no intermediate
+session object.
 
 **Key Methods:**
 ```python
-class AgentSession:
-    async def initialize(self, prompt: str) -> str
-        # Reset history, format with tools, return prompt
+class ToolCallingTurn(AgentInstanceBase):
+    async def reset(self, states) -> dict
+        # Parse prompt (plain text or JSON messages), build history, render via protocol
+        # Returns: {"observation": formatted_prompt}
 
-    async def step(self, action_text: str, label: str) -> dict
-        # Parse action, execute tools, compute reward
-        # Returns: {"feedback": str, "reward": float, "done": bool}
+    async def step(self, state_dict) -> dict
+        # Parse tool calls, execute tools, compute reward
+        # Returns: {"environment_feedback", "rewards", "done", "scores", "extra_logs"}
 ```
 
-**Simplifications:**
-- No heavyweight Environment/RewardPipeline abstractions
+**Design:**
+- ~180 lines — merges former ToolCallAgent + AgentSession into one class
+- Uses MultiTurnAgentExecutor with factory pattern (zero-arg init)
 - Inline tool execution via simple dict: `{"tool_name": callable}`
 - Inline reward computation (placeholder for actual reward model)
 
@@ -51,32 +55,6 @@ class ChatProtocol(ABC):
 - Tool format: `<tool_call>func_name<arg_key>key</arg_key><arg_value>value</arg_value></tool_call>`
 - Uses vLLM's official parser (with regex fallback)
 - Supports manual (fast) and auto (robust) prompt construction modes
-
-#### 3. ToolCallAgent (`openrlhf/utils/tool_calling_agent.py`)
-Agent implementation using AgentSession and ChatProtocol.
-
-**Clean Design:**
-- 160 lines (vs 350+ in monolithic version)
-- Uses MultiTurnAgentExecutor with factory pattern (zero-arg init)
-- Delegates all logic to session and protocol
-
-```python
-class ToolCallAgent(AgentInstanceBase):
-    def __init__(self):
-        protocol = GLMFlashProtocol(tokenizer)
-        self.session = AgentSession(protocol, tools, system_prompt)
-
-    async def reset(self, states):
-        return {"observation": await self.session.initialize(states["observation"])}
-
-    async def step(self, state_dict):
-        result = await self.session.step(state_dict["action_text"], state_dict["label"])
-        return {
-            "environment_feedback": result["feedback"],
-            "rewards": torch.tensor(result["reward"]),
-            "done": result["done"]
-        }
-```
 
 ### Multi-Turn Flow
 
@@ -102,22 +80,20 @@ class ToolCallAgent(AgentInstanceBase):
 │  • Computes rollout_log_probs                                   │
 └─────────────────────────────────────────────────────────────────┘
                              ↓
-         ┌────────────────────────────────────┐
-         │                                    │
-         ↓                                    ↓
-┌─────────────────┐              ┌──────────────────────┐
-│  ToolCallAgent  │──────────────│   AgentSession       │
-│  • reset()      │              │   • initialize()     │
-│  • step()       │              │   • step()           │
-└─────────────────┘              │   • _execute_tool()  │
-                                 │   • _compute_reward()│
-                                 └──────────────────────┘
-                                            ↓
-                                 ┌──────────────────────┐
-                                 │   ChatProtocol       │
-                                 │   • render_messages()│
-                                 │   • parse_text()     │
-                                 └──────────────────────┘
+              ┌──────────────────────────────┐
+              │   ToolCallingTurn            │
+              │   (tool_calling_turn.py)     │
+              │   • reset()                  │
+              │   • step()                   │
+              │   • _execute_tool()          │
+              │   • _compute_reward()        │
+              └──────────────────────────────┘
+                             ↓
+              ┌──────────────────────────────┐
+              │   ChatProtocol               │
+              │   • render_messages()        │
+              │   • parse_assistant_text()   │
+              └──────────────────────────────┘
 ```
 
 ### Token-Level Masking
@@ -182,7 +158,7 @@ bash examples/scripts/train_grpo_tool_calling.sh /path/to/model /path/to/data
 ### CLI Arguments
 
 **Tool-Calling Specific:**
-- `--agent_func_path`: Path to agent implementation (e.g., `openrlhf/utils/tool_calling_agent.py`)
+- `--agent_func_path`: Path to agent implementation (e.g., `openrlhf/utils/tool_calling_turn.py`)
 - `--agent_max_steps`: Max turns per episode (default: 5, recommend: 20-40 for complex tasks)
 - `--vllm_stop_strings`: Stop generation tokens (e.g., `"</tool_call>"`)
 - `--prompt_construction_mode`: Prompt mode - `"manual"` (fast) or `"auto"` (robust)
@@ -191,7 +167,7 @@ bash examples/scripts/train_grpo_tool_calling.sh /path/to/model /path/to/data
 ```bash
 python -m openrlhf.cli.train_ppo_ray \
     --pretrain /path/to/glm-flash-model \
-    --agent_func_path openrlhf/utils/tool_calling_agent.py \
+    --agent_func_path openrlhf/utils/tool_calling_turn.py \
     --agent_max_steps 40 \
     --vllm_stop_strings "</tool_call>" \
     --prompt_construction_mode manual \
@@ -305,8 +281,8 @@ print(action)
 
 ### Unit Tests
 ```bash
-# Test AgentSession
-pytest tests/test_agent_session.py -v
+# Test ToolCallingTurn
+pytest tests/test_tool_calling_turn.py -v
 
 # Test ChatProtocol
 pytest tests/test_chat_protocol.py -v
@@ -315,7 +291,7 @@ pytest tests/test_chat_protocol.py -v
 ### Integration Test (Small-Scale)
 ```bash
 python -m openrlhf.cli.train_ppo_ray \
-    --agent_func_path openrlhf/utils/tool_calling_agent.py \
+    --agent_func_path openrlhf/utils/tool_calling_turn.py \
     --max_samples 10 \
     # ... other args
 ```

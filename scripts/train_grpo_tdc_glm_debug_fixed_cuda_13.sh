@@ -71,7 +71,7 @@ HUB_REPO_ID="jiosephlee/grpo-tdc-glm-flash-${TASK_NAME}"
 
 ### GPU LAYOUT (colocated — shared GPUs) ###
 TRAIN_BATCH_SIZE=$((NUM_GPUS * 4))
-VLLM_NUM_ENGINES=$NUM_GPUS / 2
+VLLM_NUM_ENGINES=$NUM_GPUS // 2
 
 ### TOOL-CALLING CONFIG ###
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"

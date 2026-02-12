@@ -9,20 +9,23 @@
 # Usage:
 #   1. Get an interactive node:  srun --partition=dgx-b200 --gpus=2 --mem-per-gpu=128G --cpus-per-gpu=4 --time=1:00:00 --pty bash
 #   2. Activate env:             module load MAMBA && module load cuda/13.1.0 && micromamba activate /vast/projects/myatskar/design-documents/conda_env/openrlhf_tfv4
-#   3. Run:                      bash scripts/train_grpo_tdc_intern_s1_fixed_cuda_13_interactive.sh <task_name> [model_path] [learning_rate]
+#   3. Run:                      bash scripts/train_grpo_tdc_intern_s1_debug_fixed_cuda_13_large.sh [model_path] [learning_rate]
 #
 # Example:
-#   bash scripts/train_grpo_tdc_intern_s1_fixed_cuda_13_interactive.sh AMES jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05 1e-6
+#   bash scripts/train_grpo_tdc_intern_s1_debug_fixed_cuda_13_large.sh jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05 5e-7
 #
 
 set -euo pipefail
 
 ### ARGS ###
-TASK_NAME=${1:-"AMES,BBB_Martins,"}
-PRETRAIN_PATH=${2:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}
-LEARNING_RATE=${3:-"5e-7"}
+PRETRAIN_PATH=${1:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}
+LEARNING_RATE=${2:-"1e-6"}
 NUM_GPUS=$SLURM_GPUS_ON_NODE
-DEBUG_TRACES=${4:-"0"}
+DEBUG_TRACES=${3:-"0"}
+
+### MULTI-TASK: AMES, BBB_Martins, Bioavailability_Ma, hERG ###
+TASK_NAMES=(DILI CYP2D6_Substrate_CarbonMangels ClinTox BBB_Martins Bioavailability_Ma hERG)
+TASK_LABEL="multi4"
 
 # ### NCCL / IB / NETWORK CONFIG ###
 # export OMP_NUM_THREADS=16
@@ -53,24 +56,28 @@ fi
 
 ### DATA ###
 DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format"
-TRAIN_DATA="$DATA_DIR/${TASK_NAME}_train.jsonl"
-VAL_DATA="$DATA_DIR/${TASK_NAME}_val.jsonl"
 mkdir -p "$PROJECT_ROOT/logs"
 
-if [ ! -f "$TRAIN_DATA" ]; then
-    echo "Error: Training data not found: $TRAIN_DATA"
-    echo "Available tasks:"
-    ls "$DATA_DIR" | grep "_train.jsonl" | sed 's/_train.jsonl//' | sort
-    exit 1
-fi
+TRAIN_PARTS=()
+for t in "${TASK_NAMES[@]}"; do
+    f="$DATA_DIR/${t}_train.jsonl"
+    if [ ! -f "$f" ]; then
+        echo "Error: Training data not found: $f"
+        echo "Available tasks:"
+        ls "$DATA_DIR" 2>/dev/null | grep "_train.jsonl" | sed 's/_train.jsonl//' | sort
+        exit 1
+    fi
+    TRAIN_PARTS+=("$f")
+done
+IFS=,; TRAIN_DATA="${TRAIN_PARTS[*]}"; unset IFS
 
 ### RUN CONFIG ###
-RUN_ID="S-grpo-fixed-debug-${TASK_NAME}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
-SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
-HUB_REPO_ID="jiosephlee/grpo-tdc-intern-s1-${TASK_NAME}"
+RUN_ID="S-grpo-fixed-debug-${TASK_LABEL}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
+SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_LABEL}/$RUN_ID"
+HUB_REPO_ID="jiosephlee/grpo-tdc-intern-s1-${TASK_LABEL}"
 
 ### GPU LAYOUT (colocated — shared GPUs) ###
-TRAIN_BATCH_SIZE=$((NUM_GPUS * 8))
+TRAIN_BATCH_SIZE=$((NUM_GPUS * 4))
 VLLM_NUM_ENGINES=$NUM_GPUS
 
 ### TOOL-CALLING CONFIG ###
@@ -133,7 +140,7 @@ export RAY_ADDRESS="auto"
 echo "========================================"
 echo "TDC GRPO Training — Intern-S1-mini (FIXED INTERACTIVE DEBUG)"
 echo "========================================"
-echo "Task: $TASK_NAME"
+echo "Tasks: ${TASK_NAMES[*]}"
 echo "Model: $PRETRAIN_PATH"
 echo "Chat Protocol: $CHAT_PROTOCOL"
 echo "Learning Rate: $LEARNING_RATE"
@@ -153,7 +160,7 @@ echo "Temperature: $TEMPERATURE"
 echo "Top-p: $TOP_P"
 echo "----------------------------------------"
 echo "masked_mean debug dir: $OPENRLHF_MASKED_MEAN_DEBUG_DIR"
-echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-fixed-$TASK_NAME run=$RUN_ID"
+echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-fixed-$TASK_LABEL run=$RUN_ID"
 echo "========================================"
 
 ### GENERATE PER-TASK TOOLS JSON (from Intern-S1-recipe source of truth) ###
@@ -172,7 +179,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size 1 \
     --colocate_all_models \
-    --vllm_gpu_memory_utilization 0.825 \
+    --vllm_gpu_memory_utilization 0.85 \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \
@@ -213,7 +220,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --chat_protocol "$CHAT_PROTOCOL" \
     --use_wandb 1 \
     --wandb_project "$WANDB_PROJECT" \
-    --wandb_group "TDC-InternS1-fixed-$TASK_NAME" \
+    --wandb_group "TDC-InternS1-fixed-$TASK_LABEL" \
     --wandb_run_name "$RUN_ID" \
     --save_path "$SAVE_PATH" \
     --push_to_hub "$HUB_REPO_ID" \

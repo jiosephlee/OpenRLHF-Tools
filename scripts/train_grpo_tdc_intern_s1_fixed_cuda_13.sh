@@ -23,9 +23,9 @@
 #SBATCH --output=%x_%j.out
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus=42                   # Shared GPUs (override with --gpus=N)
+#SBATCH --gpus=2                 # Shared GPUs (override with --gpus=N)
 #SBATCH --mem-per-gpu=128G
-#SBATCH --cpus-per-gpu=8
+#SBATCH --cpus-per-gpu=4
 #SBATCH --time=0:20:00
 
 ### NCCL / IB / NETWORK CONFIG (match fixed distributed script) ###

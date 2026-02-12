@@ -142,7 +142,7 @@ class ToolCallingTurn(AgentInstanceBase):
                 "arguments": arguments,
             })
 
-    _ANSWER_RE = re.compile(r"Answer\s*:\s*\(\s*([A-Za-z])\s*\)")
+    _ANSWER_RE = re.compile(r"Answer\s*:\s*\(?\s*([A-Za-z])\s*\)?")
 
     def _compute_reward(self, generated_text: str, label: Optional[str]) -> float:
         """Reward = 1.0 iff the model's Answer: (X) after </think> matches the label."""

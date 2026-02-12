@@ -109,7 +109,13 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
             final_scores = step_result.get("scores", total_reward)
             environment_feedback_text = step_result["environment_feedback"]
             done = step_result["done"]
-            extra_logs = step_result.get("extra_logs", {})
+            # Accumulate extra_logs across turns (sum numeric values)
+            step_extra = step_result.get("extra_logs", {})
+            for k, v in step_extra.items():
+                if isinstance(v, (int, float)):
+                    extra_logs[k] = extra_logs.get(k, 0) + v
+                else:
+                    extra_logs[k] = v
             if _DEBUG_TRACES and log_trajectory:
                 tool_count = extra_logs.get("tool_call_count", 0)
                 if done:

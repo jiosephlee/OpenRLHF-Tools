@@ -18,7 +18,7 @@
 set -euo pipefail
 
 ### ARGS ###
-TASK_NAME=${1:-"AMES"}
+TASK_NAME=${1:-"AMES,BBB_Martins,"}
 PRETRAIN_PATH=${2:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}
 LEARNING_RATE=${3:-"5e-7"}
 NUM_GPUS=$SLURM_GPUS_ON_NODE

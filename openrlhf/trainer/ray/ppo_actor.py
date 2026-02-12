@@ -264,7 +264,6 @@ class ActorPPOTrainer(ABC):
             _logging.warning(
                 "Non-finite actor_loss detected. "
                 f"step={step}, action_tokens={action_tokens}, "
-                f"action_mask={experience.action_mask.tolist()}, "
                 f"advantages_finite={bool(torch.isfinite(advantages).all())}, "
                 f"old_log_probs_finite={bool(torch.isfinite(old_action_log_probs).all())}, "
                 f"new_log_probs_finite={bool(torch.isfinite(action_log_probs).all())}"
@@ -273,8 +272,8 @@ class ActorPPOTrainer(ABC):
                 "Non-finite actor_loss detected. "
                 f"step={step}, action_tokens={action_tokens}, "
                 f"advantages_finite={advantages.tolist()}, "
-                f"old_log_probs_finite={old_action_log_probs.tolist()}, "
-                f"new_log_probs_finite={action_log_probs.tolist()}"
+                f"old_log_probs_finite={str(old_action_log_probs.tolist())[:100]} ... {str(old_action_log_probs.tolist())[-100:]}, "
+                f"new_log_probs_finite={str(action_log_probs.tolist())[:100]} ... {str(action_log_probs.tolist())[-100:]}"
             )
         experience.info["ppo_clip_ratio"] = clip_ratio.detach()
         experience.info["ppo_kl"] = ppo_kl.detach()

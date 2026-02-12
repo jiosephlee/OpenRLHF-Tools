@@ -139,7 +139,8 @@ def masked_mean(tensor: torch.Tensor, mask: Optional[torch.Tensor], dim: int = N
             f"masked_mean received zero denominator (dim={dim}, tensor_shape={tuple(tensor.shape)}, "
             f"mask_shape={tuple(mask.shape)}, nonzero_mask_tokens={nonzero}, debug_file={debug_file})"
         )
-    return (tensor * mask).sum(dim=dim) / denom
+    masked_tensor = torch.where(mask.bool(), tensor, torch.zeros_like(tensor))
+    return masked_tensor.sum(dim=dim) / denom
 
 
 def masked_normalize(tensor: torch.Tensor, mask: torch.Tensor, dim: int = 1, eps: float = 1e-8) -> torch.Tensor:

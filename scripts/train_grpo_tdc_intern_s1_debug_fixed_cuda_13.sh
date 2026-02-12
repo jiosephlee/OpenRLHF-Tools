@@ -152,7 +152,7 @@ echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-fixed-$TASK_NAME run=$RUN_I
 echo "========================================"
 
 ### TRAINING ###
-python -m pdb -m openrlhf.cli.train_ppo_ray \
+python -m openrlhf.cli.train_ppo_ray \
     --pretrain "$PRETRAIN_PATH" \
     --ref_num_nodes 0 \
     --ref_num_gpus_per_node 0 \

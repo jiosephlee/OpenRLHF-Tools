@@ -853,8 +853,6 @@ class RemoteExperienceMaker:
                 f"rewards_finite={torch.isfinite(rewards).all().item()}, "
                 f"group_means={rewards.mean(-1).tolist()}"
             )
-            if not torch.isfinite(rewards).all():
-                breakpoint()  # DEBUG: NaN/Inf in rewards before advantage computation
             rewards = rewards - rewards.mean(-1, keepdim=True)
         elif args.advantage_estimator == "group_norm":
             rewards = (rewards - rewards.mean(-1, keepdim=True)) / (rewards.std(-1, keepdim=True) + 1e-9)

@@ -147,18 +147,18 @@ run_task() {
         --save_path ./saves/$DATASET/final/$RUN_ID \
         --ckpt_path ./saves/$DATASET/checkpoint/$RUN_ID \
         --remote_rm_url ./models/reward_grpo.py \
-        --save_steps 20 \
+        --save_steps -1 \
         --logging_steps 1 \
         --n_samples_per_prompt 8 \
-        --micro_train_batch_size 8 \
-        --micro_rollout_batch_size 16 \
+        --micro_train_batch_size 16 \
+        --micro_rollout_batch_size 32 \
         --train_batch_size $TRAIN_BATCH_SIZE \
         --rollout_batch_size $TRAIN_BATCH_SIZE \
-        --max_epochs 2 \
+        --max_epochs 1 \
         --prompt_max_len 4096 \
         --generate_max_len 2048 \
         --max_samples 1_000_000 \
-        --zero_stage 3 \
+        --zero_stage 2 \
         --bf16 \
         --actor_learning_rate $LEARNING_RATE \
         --prompt_data generations_rollouts/$DATASET/train/rollouts/$DATA_SPLIT.json \
@@ -171,7 +171,8 @@ run_task() {
         --deepspeed_enable_sleep \
         --enforce_eager \
         --dynamic_filtering \
-        --dynamic_filtering_reward_range 0.2 0.8 \
+        --dynamic_filtering_reward_range 0 1 \
+        --enable_prefix_caching \ # This could be huge
         --top_p 0.95 \
         --temperature 1.0 \
         --use_wandb $WANDB_API_KEY \

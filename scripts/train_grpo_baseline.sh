@@ -126,8 +126,9 @@ CUDA_VISIBLE_DEVICES=0,1 python -m openrlhf.cli.train_ppo_ray \
     --save_steps -1 \
     --logging_steps 1 \
     --n_samples_per_prompt 8 \
-    --micro_train_batch_size 4 \
-    --micro_rollout_batch_size 8 \
+    --micro_train_batch_size 2 \
+    --micro_rollout_batch_size 4 \
+    --use_dynamic_batch \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs 1 \

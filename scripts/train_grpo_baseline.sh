@@ -106,7 +106,7 @@ echo "W&B:              project=$WANDB_PROJECT run=$RUN_ID"
 echo "========================================"
 
 ### TRAINING ###
-python -m openrlhf.cli.train_ppo_ray \
+CUDA_VISIBLE_DEVICES=0,1 python -m openrlhf.cli.train_ppo_ray \
     --pretrain "$MODEL" \
     --ref_num_nodes 1 \
     --ref_num_gpus_per_node $NUM_GPUS \
@@ -115,7 +115,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size 1 \
     --colocate_all_models \
-    --vllm_gpu_memory_utilization 0.9 \
+    --vllm_gpu_memory_utilization 0.94 \
     --advantage_estimator group_norm \
     --init_kl_coef 0 \
     --kl_estimator k1 \
@@ -126,14 +126,15 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_steps -1 \
     --logging_steps 1 \
     --n_samples_per_prompt 8 \
-    --micro_train_batch_size 4 \
-    --micro_rollout_batch_size 8 \
+    --micro_train_batch_size 2 \
+    --micro_rollout_batch_size 4 \
+    --use_dynamic_batch \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs 1 \
     --prompt_max_len 2048 \
-    --generate_max_len 8192 \
-    --max_samples 160 \
+    --generate_max_len 16384 \
+    --max_samples 640 \
     --zero_stage 1 \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \
@@ -146,9 +147,9 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_sync_backend nccl \
     --vllm_enable_sleep \
     --deepspeed_enable_sleep \
-    --enforce_eager \
+    --enable_prefix_caching \
     --eval_dataset OpenRLHF/aime-2024 \
-    --eval_steps 5 \
+    --eval_steps 4 \
     --eval_temperature 0.7 \
     --eval_n_samples_per_prompt 4 \
     --save_path "$SAVE_PATH" \

@@ -56,7 +56,7 @@ if [ -z "${WANDB_API_KEY:-}" ]; then
 fi
 
 ### GPU LAYOUT (colocated — shared GPUs) ###
-TRAIN_BATCH_SIZE=$((NUM_GPUS * 16))
+TRAIN_BATCH_SIZE=$((NUM_GPUS * 8))
 VLLM_NUM_ENGINES=$NUM_GPUS
 
 ### ENVIRONMENT VARIABLES ###
@@ -106,7 +106,7 @@ echo "W&B:              project=$WANDB_PROJECT run=$RUN_ID"
 echo "========================================"
 
 ### TRAINING ###
-python -m openrlhf.cli.train_ppo_ray \
+CUDA_VISIBLE_DEVICES=0,1 python -m openrlhf.cli.train_ppo_ray \
     --pretrain "$MODEL" \
     --ref_num_nodes 1 \
     --ref_num_gpus_per_node $NUM_GPUS \
@@ -126,8 +126,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_steps -1 \
     --logging_steps 1 \
     --n_samples_per_prompt 8 \
-    --micro_train_batch_size 16 \
-    --micro_rollout_batch_size 16 \
+    --micro_train_batch_size 4 \
+    --micro_rollout_batch_size 8 \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs 1 \
@@ -146,7 +146,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_sync_backend nccl \
     --vllm_enable_sleep \
     --deepspeed_enable_sleep \
-    --enforce_eager \
     --enable_prefix_caching \
     --eval_dataset OpenRLHF/aime-2024 \
     --eval_steps 5 \

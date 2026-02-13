@@ -56,7 +56,7 @@ if [ -z "${WANDB_API_KEY:-}" ]; then
 fi
 
 ### GPU LAYOUT (colocated — shared GPUs) ###
-TRAIN_BATCH_SIZE=$((NUM_GPUS * 8))
+TRAIN_BATCH_SIZE=$((NUM_GPUS * 16))
 VLLM_NUM_ENGINES=$NUM_GPUS
 
 ### ENVIRONMENT VARIABLES ###
@@ -126,14 +126,14 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_steps -1 \
     --logging_steps 1 \
     --n_samples_per_prompt 8 \
-    --micro_train_batch_size 16 \
+    --micro_train_batch_size 32 \
     --micro_rollout_batch_size 32 \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs 1 \
     --prompt_max_len 2048 \
     --generate_max_len 8192 \
-    --max_samples 320 \
+    --max_samples 640 \
     --zero_stage 1 \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \

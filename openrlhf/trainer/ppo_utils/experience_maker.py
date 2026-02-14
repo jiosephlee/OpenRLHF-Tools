@@ -249,16 +249,13 @@ class SamplesGenerator:
 
         self.prompts_dataloader = prompts_dataloader
         self.eval_dataloader = eval_dataloader
-        self.rollout_trace_dir = getattr(self.args, "rollout_trace_dir", None)
-        if self.rollout_trace_dir:
-            run_name = getattr(self.args, "wandb_run_name", "run")
-            run_name = run_name.replace("/", "_")
-            run_stamp = time.strftime("%Y%m%d_%H%M%S")
-            self.rollout_trace_run_dir = os.path.join(self.rollout_trace_dir, f"{run_name}_{run_stamp}")
-            os.makedirs(self.rollout_trace_run_dir, exist_ok=True)
-            logger.info(f"Rollout traces enabled at: {self.rollout_trace_run_dir}")
-        else:
-            self.rollout_trace_run_dir = None
+        run_name = getattr(self.args, "wandb_run_name", "run")
+        run_name = run_name.replace("/", "_")
+        self.rollout_trace_dir = getattr(self.args, "rollout_trace_dir", None) or f"/tmp/{run_name}/rollout_traces"
+        run_stamp = time.strftime("%Y%m%d_%H%M%S")
+        self.rollout_trace_run_dir = os.path.join(self.rollout_trace_dir, f"{run_name}_{run_stamp}")
+        os.makedirs(self.rollout_trace_run_dir, exist_ok=True)
+        logger.info(f"Rollout traces enabled at: {self.rollout_trace_run_dir}")
 
     def _to_jsonable(self, value):
         if isinstance(value, torch.Tensor):

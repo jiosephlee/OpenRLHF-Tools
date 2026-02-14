@@ -132,8 +132,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs 1 \
-    --prompt_max_len 1536 \
-    --generate_max_len 6144 \
+    --prompt_max_len 2048 \
+    --generate_max_len 16384 \
     --max_samples 1600 \
     --zero_stage 1 \
     --param_dtype bf16 \
@@ -165,7 +165,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_is_truncated_threshold 0.5 5.0 \
     --vllm_is_correction_type icepop \
     --stop_properly_penalty_coef 0.0 \
-    --overlong_buffer_len 5120 \
+    --overlong_buffer_len 8192 \
     --overlong_penalty_factor 0.5 \
 
 ### CLEANUP ###

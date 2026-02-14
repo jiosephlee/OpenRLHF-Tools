@@ -127,6 +127,7 @@ class TrainingActor(BasePPOTrainer):
         vllm_lock,
         rollout_queue,
         rollout_slots,
+        **generate_kwargs,
     ):
         tokenizer = get_tokenizer(pretrain, None, "left", strategy, use_fast=not strategy.args.disable_fast_tokenizer)
 
@@ -139,6 +140,17 @@ class TrainingActor(BasePPOTrainer):
             vllm_engines,
             tokenizer,
         )
+
+        # Evaluation support: load eval dataloader and create a samples generator.
+        _, self.eval_dataloader, _ = prepare_datasets(strategy, tokenizer)
+        self.samples_generator = SamplesGenerator(
+            strategy=strategy,
+            prompts_dataloader=None,
+            eval_dataloader=self.eval_dataloader,
+            tokenizer=tokenizer,
+            vllm_engines=vllm_engines,
+        )
+        self.generate_kwargs = generate_kwargs
 
         self.vllm_lock = vllm_lock
         self.rollout_queue = rollout_queue
@@ -170,6 +182,14 @@ class TrainingActor(BasePPOTrainer):
             self.wandb_logger.close()
         if self.tensorboard_logger:
             self.tensorboard_logger.close()
+
+    def evaluate_step0(self):
+        """Run evaluation at step 0 before async training starts."""
+        if self.eval_dataloader:
+            eval_generate_kwargs = self.generate_kwargs.copy()
+            eval_generate_kwargs["temperature"] = self.args.eval_temperature
+            eval_generate_kwargs["n_samples_per_prompt"] = self.args.eval_n_samples_per_prompt
+            self.evaluate(0, **eval_generate_kwargs)
 
     def broadcast_to_vllm(self):
         # vLLM critical section: must not overlap with generation.
@@ -235,6 +255,7 @@ class PPOTrainerAsync:
             vllm_lock=self.vllm_lock,
             rollout_queue=self.rollout_queue,
             rollout_slots=self.rollout_slots,
+            **generate_kwargs,
         )
 
     def fit(self) -> None:
@@ -252,6 +273,10 @@ class PPOTrainerAsync:
                     self.trainer_actor.broadcast_to_vllm.remote(),
                 ]
             )
+
+        # Evaluate at step 0 (before any training) unless resuming from a checkpoint.
+        if global_step == 0:
+            ray.get(self.trainer_actor.evaluate_step0.remote())
 
         # Launch async training
         ray.get(

@@ -38,7 +38,7 @@ if [ ! -d "$PROJECT_ROOT/openrlhf" ]; then
 fi
 
 ### CONFIG ###
-MODEL="Qwen/Qwen2.5-3B-Instruct"
+MODEL="OpenRLHF/Llama-3-8b-sft-mixture"
 DATASET="OpenRLHF/dapo-math-17k"
 REWARD_FUNC="$PROJECT_ROOT/examples/python/math_reward_func.py"
 LEARNING_RATE="1e-6"
@@ -56,7 +56,7 @@ if [ -z "${WANDB_API_KEY:-}" ]; then
 fi
 
 ### GPU LAYOUT (colocated — shared GPUs) ###
-TRAIN_BATCH_SIZE=$((NUM_GPUS * 8))
+TRAIN_BATCH_SIZE=32
 VLLM_NUM_ENGINES=$NUM_GPUS
 
 ### ENVIRONMENT VARIABLES ###
@@ -115,7 +115,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size 1 \
     --colocate_all_models \
-    --vllm_gpu_memory_utilization 0.85 \
+    --vllm_gpu_memory_utilization 0.865 \
     --advantage_estimator dr_grpo \
     --init_kl_coef 0 \
     --kl_estimator k1 \
@@ -125,15 +125,15 @@ python -m openrlhf.cli.train_ppo_ray \
     --remote_rm_url "$REWARD_FUNC" \
     --save_steps -1 \
     --logging_steps 1 \
-    --n_samples_per_prompt 8 \
+    --n_samples_per_prompt 16 \
     --micro_train_batch_size 2 \
     --micro_rollout_batch_size 4 \
     --use_dynamic_batch \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs 1 \
-    --prompt_max_len 1536 \
-    --generate_max_len 6144 \
+    --prompt_max_len 2048 \
+    --generate_max_len 8192 \
     --max_samples 3200 \
     --zero_stage 1 \
     --param_dtype bf16 \
@@ -165,7 +165,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_is_truncated_threshold 0.5 5.0 \
     --vllm_is_correction_type icepop \
     --stop_properly_penalty_coef 0.0 \
-    --overlong_buffer_len 5120 \
+    --overlong_buffer_len 6144 \
     --overlong_penalty_factor 0.5 \
 
 ### CLEANUP ###

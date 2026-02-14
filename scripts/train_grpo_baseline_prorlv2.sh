@@ -56,7 +56,7 @@ if [ -z "${WANDB_API_KEY:-}" ]; then
 fi
 
 ### GPU LAYOUT (colocated — shared GPUs) ###
-TRAIN_BATCH_SIZE=$((NUM_GPUS * 8))
+TRAIN_BATCH_SIZE=$((NUM_GPUS * 4))
 VLLM_NUM_ENGINES=$NUM_GPUS
 
 ### ENVIRONMENT VARIABLES ###
@@ -115,7 +115,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size 1 \
     --colocate_all_models \
-    --vllm_gpu_memory_utilization 0.94 \
+    --vllm_gpu_memory_utilization 0.925 \
     --advantage_estimator dr_grpo \
     --init_kl_coef 0 \
     --kl_estimator k1 \
@@ -134,7 +134,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --max_epochs 1 \
     --prompt_max_len 2048 \
     --generate_max_len 16384 \
-    --max_samples 3200 \
+    --max_samples 1600 \
     --zero_stage 1 \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \
@@ -151,7 +151,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --eval_dataset OpenRLHF/aime-2024 \
     --eval_steps 5 \
     --eval_temperature 1.0 \
-    --eval_n_samples_per_prompt 8 \
+    --eval_n_samples_per_prompt 4 \
     --save_path "$SAVE_PATH" \
     --save_hf_ckpt \
     --push_to_hub "$HUB_REPO_ID" \

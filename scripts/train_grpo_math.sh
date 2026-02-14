@@ -151,7 +151,6 @@ CUDA_VISIBLE_DEVICES=0,1 python -m openrlhf.cli.train_ppo_ray \
     --eval_dataset OpenRLHF/aime-2024 \
     --eval_steps 5 \
     --eval_temperature 1.0 \
-    --eval_top_p 0.7 \
     --eval_n_samples_per_prompt 16 \
     --save_path "$SAVE_PATH" \
     --save_hf_ckpt \

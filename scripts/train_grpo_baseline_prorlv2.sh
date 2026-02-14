@@ -41,7 +41,7 @@ fi
 MODEL="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 DATASET="OpenRLHF/dapo-math-17k"
 REWARD_FUNC="$PROJECT_ROOT/examples/python/math_reward_func.py"
-LEARNING_RATE="1e-6"
+LEARNING_RATE="5e-7"
 
 ### RUN CONFIG ###
 RUN_ID="baseline-grpo-math_$(date +%Y-%m-%d_%H-%M-%S)"
@@ -106,7 +106,7 @@ echo "W&B:              project=$WANDB_PROJECT run=$RUN_ID"
 echo "========================================"
 
 ### TRAINING ###
-CUDA_VISIBLE_DEVICES=0,1 python -m openrlhf.cli.train_ppo_ray \
+python -m openrlhf.cli.train_ppo_ray \
     --pretrain "$MODEL" \
     --ref_num_nodes 1 \
     --ref_num_gpus_per_node $NUM_GPUS \
@@ -116,7 +116,7 @@ CUDA_VISIBLE_DEVICES=0,1 python -m openrlhf.cli.train_ppo_ray \
     --vllm_tensor_parallel_size 1 \
     --colocate_all_models \
     --vllm_gpu_memory_utilization 0.94 \
-    --advantage_estimator group_norm \
+    --advantage_estimator dr_grpo \
     --init_kl_coef 0 \
     --kl_estimator k1 \
     --eps_clip_low_high 0.2 0.27 \
@@ -134,7 +134,7 @@ CUDA_VISIBLE_DEVICES=0,1 python -m openrlhf.cli.train_ppo_ray \
     --max_epochs 1 \
     --prompt_max_len 2048 \
     --generate_max_len 16384 \
-    --max_samples 640 \
+    --max_samples 3200 \
     --zero_stage 1 \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \
@@ -149,16 +149,24 @@ CUDA_VISIBLE_DEVICES=0,1 python -m openrlhf.cli.train_ppo_ray \
     --deepspeed_enable_sleep \
     --enable_prefix_caching \
     --eval_dataset OpenRLHF/aime-2024 \
-    --eval_steps 4 \
-    --eval_temperature 0.7 \
-    --eval_n_samples_per_prompt 4 \
+    --eval_steps 5 \
+    --eval_temperature 1.0 \
+    --eval_n_samples_per_prompt 8 \
     --save_path "$SAVE_PATH" \
     --save_hf_ckpt \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
     --use_wandb "${WANDB_API_KEY:+1}" \
     --wandb_project "$WANDB_PROJECT" \
-    --wandb_run_name "$RUN_ID"
+    --wandb_run_name "$RUN_ID" \
+    --top_p 0.95 \
+    --temperature 1.0 \
+    --enable_vllm_is_correction \
+    --vllm_is_truncated_threshold 0.5 5.0 \
+    --vllm_is_correction_type icepop \
+    --stop_properly_penalty_coef 0.0 \
+    --overlong_buffer_len 8192 \
+    --overlong_penalty_factor 0.5 \
 
 ### CLEANUP ###
 echo "Training complete! Stopping Ray..."

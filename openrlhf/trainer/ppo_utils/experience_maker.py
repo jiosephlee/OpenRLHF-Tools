@@ -404,13 +404,19 @@ class SamplesGenerator:
         if exhausted:
             return [], prompts_consumed, exhausted
 
-        # Two-stage dispatch: send the first half immediately, hold the rest
-        # until an engine goes idle so the heap-based balancer sees real imbalance.
+        # Staged dispatch (50/25/25): send the first half immediately, hold the
+        # rest in a queue.  Each subsequent stage dispatches when an engine is
+        # nearly idle, so the heap-based balancer sees real load imbalance.
         mid = max(1, len(prompts) // 2)
-        stage_1_prompts, stage_1_labels = prompts[:mid], labels[:mid]
-        stage_2_prompts, stage_2_labels = prompts[mid:], labels[mid:]
+        q3 = mid + max(1, (len(prompts) - mid) // 2)
+        staged_batches = [
+            (prompts[mid:q3], labels[mid:q3]),
+            (prompts[q3:], labels[q3:]),
+        ]
+        # Drop empty trailing stages (e.g. when batch is very small).
+        staged_batches = [(p, l) for p, l in staged_batches if p]
 
-        dispatches = self._dispatch_prompts_to_vllm(stage_1_prompts, stage_1_labels, **generate_kwargs)
+        dispatches = self._dispatch_prompts_to_vllm(prompts[:mid], labels[:mid], **generate_kwargs)
         pending_refs = [ref for ref, _ in dispatches]
         ref_to_engine = {ref: engine_idx for ref, engine_idx in dispatches}
         prompts_consumed += len(prompts)
@@ -431,15 +437,19 @@ class SamplesGenerator:
                 engine_idx = ref_to_engine.pop(ref)
                 engine_pending[engine_idx] -= 1
 
-                # Dispatch reserved stage-2 prompts when any engine goes idle.
-                if stage_2_prompts and engine_pending[engine_idx] == 0:
-                    logger.info(f"Stage-2 dispatch triggered: engine {engine_idx} idle, pending={dict(engine_pending)}")
-                    s2_dispatches = self._dispatch_prompts_to_vllm(stage_2_prompts, stage_2_labels, **generate_kwargs)
-                    for new_ref, new_engine_idx in s2_dispatches:
+                # Dispatch next staged batch when any engine is nearly idle,
+                # so new work is queued before the engine fully drains.
+                if staged_batches and engine_pending[engine_idx] <= 1:
+                    next_prompts, next_labels = staged_batches.pop(0)
+                    logger.info(
+                        f"Stage-{3 - len(staged_batches)} dispatch triggered: "
+                        f"engine {engine_idx} nearly idle, pending={dict(engine_pending)}"
+                    )
+                    next_dispatches = self._dispatch_prompts_to_vllm(next_prompts, next_labels, **generate_kwargs)
+                    for new_ref, new_engine_idx in next_dispatches:
                         pending_refs.append(new_ref)
                         ref_to_engine[new_ref] = new_engine_idx
                         engine_pending[new_engine_idx] += 1
-                    stage_2_prompts, stage_2_labels = [], []
 
                 # Build Experience objects for each vLLM response returned from this worker.
                 responses = ray.get(ref)

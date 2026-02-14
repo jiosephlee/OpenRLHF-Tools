@@ -40,7 +40,8 @@ def reward_func(queries: List[str], prompts: List[str], labels: List[str], **kwa
 
         pred_answer = extract_boxed_answer(response)
         is_correct = grade_answer(pred_answer, label)
-        rewards.append(1.0 if is_correct else 0.0)
+        r = 1.0 if is_correct else (0.25 if pred_answer is not None else 0.0)
+        rewards.append(r)
 
         if pred_answer is not None:
             n_boxed_found += 1

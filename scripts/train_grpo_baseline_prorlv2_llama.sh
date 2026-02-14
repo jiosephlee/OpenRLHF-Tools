@@ -41,7 +41,7 @@ fi
 MODEL="OpenRLHF/Llama-3-8b-sft-mixture"
 DATASET="OpenRLHF/dapo-math-17k"
 REWARD_FUNC="$PROJECT_ROOT/examples/python/math_reward_func.py"
-LEARNING_RATE="5e-7"
+LEARNING_RATE="1e-6"
 
 ### RUN CONFIG ###
 RUN_ID="baseline-grpo-math_$(date +%Y-%m-%d_%H-%M-%S)"
@@ -134,7 +134,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --max_epochs 1 \
     --prompt_max_len 1536 \
     --generate_max_len 6144 \
-    --max_samples 800 \
+    --max_samples 3200 \
     --zero_stage 1 \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \

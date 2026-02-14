@@ -41,7 +41,7 @@ fi
 MODEL="OpenRLHF/Llama-3-8b-sft-mixture"
 DATASET="OpenRLHF/dapo-math-17k"
 REWARD_FUNC="$PROJECT_ROOT/examples/python/math_reward_func.py"
-LEARNING_RATE="5e-7"
+LEARNING_RATE="1e-6"
 
 ### RUN CONFIG ###
 RUN_ID="baseline-grpo-math_$(date +%Y-%m-%d_%H-%M-%S)"

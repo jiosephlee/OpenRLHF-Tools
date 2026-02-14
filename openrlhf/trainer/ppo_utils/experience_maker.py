@@ -1,4 +1,5 @@
 import heapq
+from collections import defaultdict
 import json
 import os
 import time
@@ -403,10 +404,21 @@ class SamplesGenerator:
         if exhausted:
             return [], prompts_consumed, exhausted
 
-        dispatches = self._dispatch_prompts_to_vllm(prompts, labels, **generate_kwargs)
+        # Two-stage dispatch: send the first half immediately, hold the rest
+        # until an engine goes idle so the heap-based balancer sees real imbalance.
+        mid = max(1, len(prompts) // 2)
+        stage_1_prompts, stage_1_labels = prompts[:mid], labels[:mid]
+        stage_2_prompts, stage_2_labels = prompts[mid:], labels[mid:]
+
+        dispatches = self._dispatch_prompts_to_vllm(stage_1_prompts, stage_1_labels, **generate_kwargs)
         pending_refs = [ref for ref, _ in dispatches]
         ref_to_engine = {ref: engine_idx for ref, engine_idx in dispatches}
         prompts_consumed += len(prompts)
+
+        # Track how many outstanding requests each engine has.
+        engine_pending = defaultdict(int)
+        for _, engine_idx in dispatches:
+            engine_pending[engine_idx] += 1
 
         accepted_experiences: List[Experience] = []
         pbar = tqdm(range(num_prompts), desc="Generate samples")
@@ -417,6 +429,18 @@ class SamplesGenerator:
             ready_refs, pending_refs = ray.wait(pending_refs, num_returns=1, timeout=10.0)
             for ref in ready_refs:
                 engine_idx = ref_to_engine.pop(ref)
+                engine_pending[engine_idx] -= 1
+
+                # Dispatch reserved stage-2 prompts when any engine goes idle.
+                if stage_2_prompts and engine_pending[engine_idx] == 0:
+                    logger.info(f"Stage-2 dispatch triggered: engine {engine_idx} idle, pending={dict(engine_pending)}")
+                    s2_dispatches = self._dispatch_prompts_to_vllm(stage_2_prompts, stage_2_labels, **generate_kwargs)
+                    for new_ref, new_engine_idx in s2_dispatches:
+                        pending_refs.append(new_ref)
+                        ref_to_engine[new_ref] = new_engine_idx
+                        engine_pending[new_engine_idx] += 1
+                    stage_2_prompts, stage_2_labels = [], []
+
                 # Build Experience objects for each vLLM response returned from this worker.
                 responses = ray.get(ref)
                 if engine_idx not in step_traces_by_engine and responses:
@@ -461,6 +485,7 @@ class SamplesGenerator:
                         for new_ref, new_engine_idx in new_dispatches:
                             pending_refs.append(new_ref)
                             ref_to_engine[new_ref] = new_engine_idx
+                            engine_pending[new_engine_idx] += 1
 
         self._write_step_trace(step_idx, step_traces_by_engine, prompts_consumed, filtered_count)
         return accepted_experiences, prompts_consumed, exhausted

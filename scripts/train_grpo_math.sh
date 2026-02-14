@@ -38,10 +38,10 @@ if [ ! -d "$PROJECT_ROOT/openrlhf" ]; then
 fi
 
 ### CONFIG ###
-MODEL="Qwen/Qwen2.5-3B-Instruct"
+MODEL="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 DATASET="OpenRLHF/dapo-math-17k"
 REWARD_FUNC="$PROJECT_ROOT/examples/python/math_reward_func.py"
-LEARNING_RATE="1e-6"
+LEARNING_RATE="1.5e-6"
 
 ### RUN CONFIG ###
 RUN_ID="baseline-grpo-math_$(date +%Y-%m-%d_%H-%M-%S)"
@@ -85,7 +85,7 @@ for i in {1..60}; do
     sleep 1
 done
 
-export RAY_ADDRESS="$RAY_NODE_IP_ADDRESS:6379"
+export RAY_ADDRESS="auto"
 
 ### PRINT CONFIG ###
 echo "========================================"
@@ -115,7 +115,7 @@ CUDA_VISIBLE_DEVICES=0,1 python -m openrlhf.cli.train_ppo_ray \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size 1 \
     --colocate_all_models \
-    --vllm_gpu_memory_utilization 0.9 \
+    --vllm_gpu_memory_utilization 0.94 \
     --advantage_estimator group_norm \
     --init_kl_coef 0 \
     --kl_estimator k1 \
@@ -125,7 +125,7 @@ CUDA_VISIBLE_DEVICES=0,1 python -m openrlhf.cli.train_ppo_ray \
     --remote_rm_url "$REWARD_FUNC" \
     --save_steps -1 \
     --logging_steps 1 \
-    --n_samples_per_prompt 8 \
+    --n_samples_per_prompt 16 \
     --micro_train_batch_size 2 \
     --micro_rollout_batch_size 4 \
     --use_dynamic_batch \
@@ -133,8 +133,8 @@ CUDA_VISIBLE_DEVICES=0,1 python -m openrlhf.cli.train_ppo_ray \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs 1 \
     --prompt_max_len 2048 \
-    --generate_max_len 8192 \
-    --max_samples 3200 \
+    --generate_max_len 16384 \
+    --max_samples 6400 \
     --zero_stage 1 \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \
@@ -149,16 +149,19 @@ CUDA_VISIBLE_DEVICES=0,1 python -m openrlhf.cli.train_ppo_ray \
     --deepspeed_enable_sleep \
     --enable_prefix_caching \
     --eval_dataset OpenRLHF/aime-2024 \
-    --eval_steps 4 \
-    --eval_temperature 0.7 \
-    --eval_n_samples_per_prompt 4 \
+    --eval_steps 5 \
+    --eval_temperature 1.0 \
+    --eval_n_samples_per_prompt 16 \
     --save_path "$SAVE_PATH" \
     --save_hf_ckpt \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
     --use_wandb "${WANDB_API_KEY:+1}" \
     --wandb_project "$WANDB_PROJECT" \
-    --wandb_run_name "$RUN_ID"
+    --wandb_run_name "$RUN_ID" \
+    --stop_properly_penalty_coef 0.0 \
+    --overlong_buffer_len 8192 \
+    --overlong_penalty_factor 1 \
 
 ### CLEANUP ###
 echo "Training complete! Stopping Ray..."

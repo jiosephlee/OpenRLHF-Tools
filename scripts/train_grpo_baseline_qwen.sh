@@ -38,7 +38,7 @@ if [ ! -d "$PROJECT_ROOT/openrlhf" ]; then
 fi
 
 ### CONFIG ###
-MODEL="OpenRLHF/Llama-3-8b-sft-mixture"
+MODEL="Qwen/Qwen2.5-3B-Instruct"
 DATASET="OpenRLHF/dapo-math-17k"
 REWARD_FUNC="$PROJECT_ROOT/examples/python/math_reward_func.py"
 LEARNING_RATE="1e-6"
@@ -56,7 +56,7 @@ if [ -z "${WANDB_API_KEY:-}" ]; then
 fi
 
 ### GPU LAYOUT (colocated — shared GPUs) ###
-TRAIN_BATCH_SIZE=$((NUM_GPUS * 8))
+TRAIN_BATCH_SIZE=32
 VLLM_NUM_ENGINES=$NUM_GPUS
 
 ### ENVIRONMENT VARIABLES ###
@@ -106,7 +106,7 @@ echo "W&B:              project=$WANDB_PROJECT run=$RUN_ID"
 echo "========================================"
 
 ### TRAINING ###
-python -m openrlhf.cli.train_ppo_ray \
+CUDA_VISIBLE_DEVICES=0,1 python -m openrlhf.cli.train_ppo_ray \
     --pretrain "$MODEL" \
     --ref_num_nodes 1 \
     --ref_num_gpus_per_node $NUM_GPUS \
@@ -115,8 +115,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size 1 \
     --colocate_all_models \
-    --vllm_gpu_memory_utilization 0.85 \
-    --advantage_estimator dr_grpo \
+    --vllm_gpu_memory_utilization 0.94 \
+    --advantage_estimator group_norm \
     --init_kl_coef 0 \
     --kl_estimator k1 \
     --eps_clip_low_high 0.2 0.27 \
@@ -132,8 +132,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs 1 \
-    --prompt_max_len 1536 \
-    --generate_max_len 6144 \
+    --prompt_max_len 2048 \
+    --generate_max_len 8192 \
     --max_samples 3200 \
     --zero_stage 1 \
     --param_dtype bf16 \
@@ -149,8 +149,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --deepspeed_enable_sleep \
     --enable_prefix_caching \
     --eval_dataset OpenRLHF/aime-2024 \
-    --eval_steps 5 \
-    --eval_temperature 1.0 \
+    --eval_steps 4 \
+    --eval_temperature 0.7 \
     --eval_n_samples_per_prompt 4 \
     --save_path "$SAVE_PATH" \
     --save_hf_ckpt \
@@ -158,15 +158,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --delete_local_after_push \
     --use_wandb "${WANDB_API_KEY:+1}" \
     --wandb_project "$WANDB_PROJECT" \
-    --wandb_run_name "$RUN_ID" \
-    --top_p 0.95 \
-    --temperature 1.0 \
-    --enable_vllm_is_correction \
-    --vllm_is_truncated_threshold 0.5 5.0 \
-    --vllm_is_correction_type icepop \
-    --stop_properly_penalty_coef 0.0 \
-    --overlong_buffer_len 5120 \
-    --overlong_penalty_factor 0.5 \
+    --wandb_run_name "$RUN_ID"
 
 ### CLEANUP ###
 echo "Training complete! Stopping Ray..."

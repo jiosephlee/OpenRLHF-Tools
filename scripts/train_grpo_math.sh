@@ -134,7 +134,7 @@ CUDA_VISIBLE_DEVICES=0,1 python -m openrlhf.cli.train_ppo_ray \
     --max_epochs 1 \
     --prompt_max_len 2048 \
     --generate_max_len 16384 \
-    --max_samples 3200 \
+    --max_samples 6400 \
     --zero_stage 1 \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \

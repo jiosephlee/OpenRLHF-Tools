@@ -16,6 +16,7 @@
 #
 
 set -euo pipefail
+export RAY_TMPDIR=/tmp/jojolee/ray
 
 ### ARGS ###
 TASK_NAME=${1:-"BBB_Martins"}

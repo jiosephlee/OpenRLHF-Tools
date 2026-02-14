@@ -29,6 +29,7 @@
 #SBATCH --time=0:20:00
 
 set -euo pipefail
+export RAY_TMPDIR=/tmp/jojolee/ray
 
 ############################
 #   CONFIGURATION          #

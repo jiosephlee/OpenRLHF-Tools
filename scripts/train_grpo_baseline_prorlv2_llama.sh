@@ -134,7 +134,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --max_epochs 1 \
     --prompt_max_len 1536 \
     --generate_max_len 6144 \
-    --max_samples 800 \
+    --max_samples 3200 \
     --zero_stage 1 \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \

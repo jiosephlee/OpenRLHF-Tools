@@ -28,6 +28,7 @@
 #SBATCH --exclude=dgx011
 
 set -euo pipefail
+export RAY_TMPDIR=/tmp/jojolee/ray
 
 ############################
 #   CONFIGURATION          #

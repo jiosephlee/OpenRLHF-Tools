@@ -28,6 +28,9 @@
 #SBATCH --cpus-per-gpu=4
 #SBATCH --time=0:20:00
 
+### Ray temp dir (avoid permission conflicts on shared /tmp/ray) ###
+export RAY_TMPDIR=/tmp/jojolee/ray
+
 ### NCCL / IB / NETWORK CONFIG (match fixed distributed script) ###
 export OMP_NUM_THREADS=16
 export NCCL_NVLS_ENABLE=1

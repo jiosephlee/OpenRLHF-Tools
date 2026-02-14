@@ -28,6 +28,9 @@
 #SBATCH --time=0:30:00
 #SBATCH --exclude=dgx011
 
+### Ray temp dir (avoid permission conflicts on shared /tmp/ray) ###
+export RAY_TMPDIR=/tmp/jojolee/ray
+
 ### NCCL / IB / NETWORK CONFIG (from working colocated script) ###
 # export NCCL_DEBUG=INFO
 export OMP_NUM_THREADS=16

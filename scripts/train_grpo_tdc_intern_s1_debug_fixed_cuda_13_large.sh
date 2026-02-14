@@ -16,6 +16,7 @@
 #
 
 set -euo pipefail
+export RAY_TMPDIR=/tmp/jojolee/ray
 
 ### ARGS ###
 PRETRAIN_PATH=${1:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}

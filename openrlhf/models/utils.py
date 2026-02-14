@@ -1,6 +1,3 @@
-import json
-import os
-import time
 from typing import Optional, Tuple, Union
 
 import torch
@@ -115,32 +112,7 @@ def log_probs_from_logits(logits: torch.Tensor, labels: torch.Tensor, temperatur
 def masked_mean(tensor: torch.Tensor, mask: Optional[torch.Tensor], dim: int = None) -> torch.Tensor:
     if mask is None:
         return tensor.mean(dim=dim)
-    denom = mask.sum(dim=dim)
-    if torch.any(denom == 0):
-        debug_dir = os.environ.get("OPENRLHF_MASKED_MEAN_DEBUG_DIR", "/tmp/openrlhf_masked_mean")
-        os.makedirs(debug_dir, exist_ok=True)
-        debug_file = os.path.join(debug_dir, f"masked_mean_{int(time.time() * 1000)}.json")
-        dump = {
-            "dim": dim,
-            "tensor_shape": list(tensor.shape),
-            "tensor_dtype": str(tensor.dtype),
-            "mask_shape": list(mask.shape),
-            "mask_dtype": str(mask.dtype),
-            "denom_shape": list(denom.shape) if isinstance(denom, torch.Tensor) else [],
-            "denom_dtype": str(denom.dtype) if isinstance(denom, torch.Tensor) else str(type(denom)),
-            "tensor": tensor.detach().cpu().tolist(),
-            "mask": mask.detach().cpu().tolist(),
-            "denom": denom.detach().cpu().tolist() if isinstance(denom, torch.Tensor) else denom,
-        }
-        with open(debug_file, "w") as f:
-            json.dump(dump, f, ensure_ascii=True, indent=2)
-        nonzero = int(mask.sum().item())
-        raise ValueError(
-            f"masked_mean received zero denominator (dim={dim}, tensor_shape={tuple(tensor.shape)}, "
-            f"mask_shape={tuple(mask.shape)}, nonzero_mask_tokens={nonzero}, debug_file={debug_file})"
-        )
-    masked_tensor = torch.where(mask.bool(), tensor, torch.zeros_like(tensor))
-    return masked_tensor.sum(dim=dim) / denom
+    return (tensor * mask).sum(dim=dim) / mask.sum(dim=dim)
 
 
 def masked_normalize(tensor: torch.Tensor, mask: torch.Tensor, dim: int = 1, eps: float = 1e-8) -> torch.Tensor:

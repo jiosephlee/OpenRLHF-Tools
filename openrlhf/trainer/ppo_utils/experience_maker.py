@@ -505,9 +505,7 @@ class SamplesGenerator:
             max_tokens=generate_kwargs.get("max_new_tokens", 1024),
             min_tokens=generate_kwargs.get("min_new_tokens", 1),
             skip_special_tokens=generate_kwargs.get("skip_special_tokens", False),
-            spaces_between_special_tokens=False,
-            stop=self.args.vllm_stop_strings,
-            include_stop_str_in_output=True,
+            **({"spaces_between_special_tokens": False, "stop": self.args.vllm_stop_strings, "include_stop_str_in_output": True} if self.args.agent_func_path else {}),
             logprobs=1 if self.args.enable_vllm_is_correction else None,
         )
         truncate_length = generate_kwargs.get("prompt_max_len", 1024) + generate_kwargs.get("max_new_tokens", 1024)
@@ -879,13 +877,6 @@ class RemoteExperienceMaker:
         elif args.advantage_estimator in ["reinforce_baseline", "dr_grpo"]:
             # REINFORCE++-baseline and Dr. GRPO removed the `/std` in GRPO as `/ std` is not needed in RL variance reduction theory.
             # And `k3 KL` has a larger variance than `k1 KL` under a categorical distribution.
-            import logging as _logging
-            _logging.warning(
-                f"[DEBUG dr_grpo] rewards_shape={rewards.shape}, "
-                f"rewards_raw={rewards.tolist()}, "
-                f"rewards_finite={torch.isfinite(rewards).all().item()}, "
-                f"group_means={rewards.mean(-1).tolist()}"
-            )
             rewards = rewards - rewards.mean(-1, keepdim=True)
         elif args.advantage_estimator == "group_norm":
             rewards = (rewards - rewards.mean(-1, keepdim=True)) / (rewards.std(-1, keepdim=True) + 1e-9)

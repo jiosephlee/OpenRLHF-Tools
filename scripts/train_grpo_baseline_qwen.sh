@@ -115,7 +115,7 @@ CUDA_VISIBLE_DEVICES=0,1 python -m openrlhf.cli.train_ppo_ray \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size 1 \
     --colocate_all_models \
-    --vllm_gpu_memory_utilization 0.94 \
+    --vllm_gpu_memory_utilization 0.9 \
     --advantage_estimator group_norm \
     --init_kl_coef 0 \
     --kl_estimator k1 \

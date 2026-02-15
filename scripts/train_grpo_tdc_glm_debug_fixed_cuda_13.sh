@@ -108,9 +108,6 @@ export DEBUG_TRACES="$DEBUG_TRACES"
 export OPENRLHF_DEBUG_LOGITS=0
 export OPENRLHF_DEBUG_NAN_GUARD=0
 
-# Enable masked_mean debug dumps
-export OPENRLHF_MASKED_MEAN_DEBUG_DIR="$RUNS_DIR/debug_masked_mean"
-mkdir -p "$OPENRLHF_MASKED_MEAN_DEBUG_DIR"
 
 ### RAY ###
 export RAY_NODE_IP_ADDRESS=$(hostname -I | awk '{print $1}')
@@ -157,7 +154,6 @@ echo "Temperature: $TEMPERATURE"
 echo "Top-p: $TOP_P"
 echo "----------------------------------------"
 echo "Runs Dir: $RUNS_DIR"
-echo "masked_mean debug dir: $OPENRLHF_MASKED_MEAN_DEBUG_DIR"
 echo "W&B: project=$WANDB_PROJECT group=TDC-GLMFlash-fixed-$TASK_NAME run=$RUN_ID"
 echo "========================================"
 
@@ -190,8 +186,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --reward_num_gpus_per_node 0 \
     --actor_num_nodes 1 \
     --actor_num_gpus_per_node $NUM_GPUS \
-    --vllm_num_engines $VLLM_NUM_ENGINES \
-    --vllm_tensor_parallel_size 1 \
+    --vllm_num_engines $VLLM_NUM_ENGINES/4 \
+    --vllm_tensor_parallel_size 4 \
     --colocate_all_models \
     --vllm_gpu_memory_utilization 0.6 \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \

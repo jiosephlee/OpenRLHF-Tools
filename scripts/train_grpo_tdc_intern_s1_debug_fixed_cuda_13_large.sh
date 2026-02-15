@@ -25,7 +25,7 @@ NUM_GPUS=$SLURM_GPUS_ON_NODE
 DEBUG_TRACES=${3:-"0"}
 
 ### MULTI-TASK: AMES, BBB_Martins, Bioavailability_Ma, hERG ###
-TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction)
+TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
 TASK_LABEL="Base"
 
 # ### NCCL / IB / NETWORK CONFIG ###
@@ -112,9 +112,6 @@ export DEBUG_TRACES="$DEBUG_TRACES"
 export OPENRLHF_DEBUG_LOGITS=0
 export OPENRLHF_DEBUG_NAN_GUARD=0
 
-# Enable masked_mean debug dumps
-export OPENRLHF_MASKED_MEAN_DEBUG_DIR="/tmp/debug_masked_mean_${USER}"
-mkdir -p "$OPENRLHF_MASKED_MEAN_DEBUG_DIR"
 
 ### RAY ###
 export RAY_NODE_IP_ADDRESS=$(hostname -I | awk '{print $1}')
@@ -160,7 +157,6 @@ echo "Prompt Mode: $PROMPT_CONSTRUCTION_MODE"
 echo "Temperature: $TEMPERATURE"
 echo "Top-p: $TOP_P"
 echo "----------------------------------------"
-echo "masked_mean debug dir: $OPENRLHF_MASKED_MEAN_DEBUG_DIR"
 echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-fixed-$TASK_LABEL run=$RUN_ID"
 echo "========================================"
 
@@ -195,7 +191,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size 1 \
     --colocate_all_models \
-    --vllm_gpu_memory_utilization 0.85 \
+    --vllm_gpu_memory_utilization 0.84 \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \

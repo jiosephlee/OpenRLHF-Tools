@@ -252,7 +252,12 @@ class SamplesGenerator:
         run_name = getattr(self.args, "wandb_run_name", "run")
         run_name = run_name.replace("/", "_")
         date_stamp = time.strftime("%Y%m%d")
-        self.rollout_trace_run_dir = os.path.join(f"/tmp/jojolee/{run_name}/{date_stamp}")
+
+        project_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        )
+        self.runs_dir = os.path.join(project_root, "runs", run_name, date_stamp)
+        self.rollout_trace_run_dir = os.path.join(self.runs_dir, "traces")
         os.makedirs(self.rollout_trace_run_dir, exist_ok=True)
         logger.info(f"Rollout traces enabled at: {self.rollout_trace_run_dir}")
 
@@ -313,16 +318,16 @@ class SamplesGenerator:
         decoded["sections"] = sections
         return decoded
 
-    def _write_step_trace(self, step_idx: int, traces_by_engine: dict, prompts_consumed: int, filtered_count: int):
-        if not self.rollout_trace_run_dir or not traces_by_engine:
+    def _write_step_trace(self, step_idx: int, episode_traces: list, prompts_consumed: int, filtered_count: int):
+        if not self.rollout_trace_run_dir or not episode_traces:
             return
         step_id = step_idx + 1
         trace_path = os.path.join(self.rollout_trace_run_dir, f"step{step_id}.jsonl")
         with open(trace_path, "w") as f:
-            for engine_idx in sorted(traces_by_engine.keys()):
-                trace = traces_by_engine[engine_idx]
+            for i, (engine_idx, trace) in enumerate(episode_traces):
                 record = {
                     "step": step_id,
+                    "episode": i,
                     "engine_idx": engine_idx,
                     "prompts_consumed": prompts_consumed,
                     "filtered_count": filtered_count,
@@ -425,7 +430,7 @@ class SamplesGenerator:
         accepted_experiences: List[Experience] = []
         pbar = tqdm(range(num_prompts), desc="Generate samples")
         filtered_count = 0
-        step_traces_by_engine = {}
+        episode_traces: list = []
 
         while pending_refs:
             ready_refs, pending_refs = ray.wait(pending_refs, num_returns=1, timeout=10.0)
@@ -449,8 +454,8 @@ class SamplesGenerator:
 
                 # Build Experience objects for each vLLM response returned from this worker.
                 responses = ray.get(ref)
-                if engine_idx not in step_traces_by_engine and responses:
-                    step_traces_by_engine[engine_idx] = responses[0]
+                for resp in responses:
+                    episode_traces.append((engine_idx, resp))
                 experiences = [self._process_response_into_experience(response, **generate_kwargs) for response in responses]
 
                 # Drop experiences if the average score falls outside the allowed range.
@@ -483,7 +488,7 @@ class SamplesGenerator:
                     if exhausted:
                         for remaining_ref in pending_refs:
                             ray.cancel(remaining_ref)
-                        self._write_step_trace(step_idx, step_traces_by_engine, prompts_consumed, filtered_count)
+                        self._write_step_trace(step_idx, episode_traces, prompts_consumed, filtered_count)
                         return [], prompts_consumed, True
                     # Otherwise dispatch the new prompt to keep filling the queue.
                     else:
@@ -493,7 +498,7 @@ class SamplesGenerator:
                             ref_to_engine[new_ref] = new_engine_idx
                             engine_pending[new_engine_idx] += 1
 
-        self._write_step_trace(step_idx, step_traces_by_engine, prompts_consumed, filtered_count)
+        self._write_step_trace(step_idx, episode_traces, prompts_consumed, filtered_count)
         return accepted_experiences, prompts_consumed, exhausted
 
     def _dispatch_prompts_to_vllm(self, prompts: List[str], labels: List[str], **generate_kwargs) -> List:

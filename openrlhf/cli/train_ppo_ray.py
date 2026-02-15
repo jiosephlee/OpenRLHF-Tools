@@ -540,13 +540,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dynamic_filtering_reward_range", nargs=2, default=(0, 1), type=float, help="Dynamic filtering rewards range"
     )
-    parser.add_argument(
-        "--rollout_trace_dir",
-        type=str,
-        default=None,
-        help="If set, writes one trace per vLLM engine per step under <dir>/<run_id>/stepN.jsonl",
-    )
-
     # TensorBoard parameters
     parser.add_argument("--use_tensorboard", type=str, default=None, help="TensorBoard logging path")
 

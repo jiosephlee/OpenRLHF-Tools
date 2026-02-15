@@ -23,7 +23,7 @@ TASK_NAME=${1:-"BBB_Martins"}
 PRETRAIN_PATH=${2:-"zai-org/GLM-4.7-Flash"}
 LEARNING_RATE=${3:-"1e-6"}
 NUM_GPUS=$SLURM_GPUS_ON_NODE
-DEBUG_TRACES=${4:-"1"}
+DEBUG_TRACES=${4:-"0"}
 
 # ### NCCL / IB / NETWORK CONFIG ###
 # export OMP_NUM_THREADS=16
@@ -67,6 +67,9 @@ fi
 
 ### RUN CONFIG ###
 RUN_ID="GLM-grpo-fixed-debug-${TASK_NAME}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
+DATE_STAMP=$(date +%Y%m%d)
+RUNS_DIR="$PROJECT_ROOT/runs/${RUN_ID}/${DATE_STAMP}"
+mkdir -p "$RUNS_DIR"
 SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
 HUB_REPO_ID="jiosephlee/grpo-tdc-glm-flash-${TASK_NAME}"
 
@@ -106,7 +109,7 @@ export OPENRLHF_DEBUG_LOGITS=0
 export OPENRLHF_DEBUG_NAN_GUARD=0
 
 # Enable masked_mean debug dumps
-export OPENRLHF_MASKED_MEAN_DEBUG_DIR="/tmp/debug_masked_mean_${USER}"
+export OPENRLHF_MASKED_MEAN_DEBUG_DIR="$RUNS_DIR/debug_masked_mean"
 mkdir -p "$OPENRLHF_MASKED_MEAN_DEBUG_DIR"
 
 ### RAY ###
@@ -153,6 +156,7 @@ echo "Prompt Mode: $PROMPT_CONSTRUCTION_MODE"
 echo "Temperature: $TEMPERATURE"
 echo "Top-p: $TOP_P"
 echo "----------------------------------------"
+echo "Runs Dir: $RUNS_DIR"
 echo "masked_mean debug dir: $OPENRLHF_MASKED_MEAN_DEBUG_DIR"
 echo "W&B: project=$WANDB_PROJECT group=TDC-GLMFlash-fixed-$TASK_NAME run=$RUN_ID"
 echo "========================================"
@@ -176,6 +180,8 @@ print(f'Built eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples from 
 " "$TASK_NAME"
 
 ### TRAINING ###
+RUN_LOG="$RUNS_DIR/run.log"
+echo "Logging to: $RUN_LOG"
 python -m openrlhf.cli.train_ppo_ray \
     --pretrain "$PRETRAIN_PATH" \
     --ref_num_nodes 0 \
@@ -238,6 +244,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
     --use_dynamic_batch \
+    2>&1 | tee "$RUN_LOG"
 
 ### CLEANUP ###
 echo "Training complete! Stopping Ray..."

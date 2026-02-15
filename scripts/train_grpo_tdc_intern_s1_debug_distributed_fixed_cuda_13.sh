@@ -115,9 +115,6 @@ export OPENRLHF_PROMPT_CONSTRUCTION_MODE="$PROMPT_CONSTRUCTION_MODE"
 export OPENRLHF_CHAT_PROTOCOL="$CHAT_PROTOCOL"
 export OPENRLHF_MAX_STEPS="$AGENT_MAX_STEPS"
 
-# Enable masked_mean debug dumps
-export OPENRLHF_MASKED_MEAN_DEBUG_DIR="/tmp/debug_masked_mean_${USER}"
-mkdir -p "$OPENRLHF_MASKED_MEAN_DEBUG_DIR"
 
 ### RAY ###
 export RAY_NODE_IP_ADDRESS=$(hostname -I | awk '{print $1}')
@@ -157,7 +154,6 @@ echo "NUM_GPUS: $NUM_GPUS  ACTOR: $ACTOR_GPUS  VLLM: $VLLM_GPUS"
 echo "TRAIN_BATCH_SIZE: $TRAIN_BATCH_SIZE"
 echo "VLLM_NUM_ENGINES: $VLLM_NUM_ENGINES"
 echo "----------------------------------------"
-echo "masked_mean debug dir: $OPENRLHF_MASKED_MEAN_DEBUG_DIR"
 echo "========================================"
 
 ### GENERATE PER-TASK TOOLS JSON (from Intern-S1-recipe source of truth) ###

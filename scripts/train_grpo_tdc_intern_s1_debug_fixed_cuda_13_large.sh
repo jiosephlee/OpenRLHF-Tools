@@ -112,9 +112,6 @@ export DEBUG_TRACES="$DEBUG_TRACES"
 export OPENRLHF_DEBUG_LOGITS=0
 export OPENRLHF_DEBUG_NAN_GUARD=0
 
-# Enable masked_mean debug dumps
-export OPENRLHF_MASKED_MEAN_DEBUG_DIR="/tmp/debug_masked_mean_${USER}"
-mkdir -p "$OPENRLHF_MASKED_MEAN_DEBUG_DIR"
 
 ### RAY ###
 export RAY_NODE_IP_ADDRESS=$(hostname -I | awk '{print $1}')
@@ -160,7 +157,6 @@ echo "Prompt Mode: $PROMPT_CONSTRUCTION_MODE"
 echo "Temperature: $TEMPERATURE"
 echo "Top-p: $TOP_P"
 echo "----------------------------------------"
-echo "masked_mean debug dir: $OPENRLHF_MASKED_MEAN_DEBUG_DIR"
 echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-fixed-$TASK_LABEL run=$RUN_ID"
 echo "========================================"
 

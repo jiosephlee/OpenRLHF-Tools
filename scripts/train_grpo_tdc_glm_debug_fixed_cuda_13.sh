@@ -204,6 +204,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --prompt_max_len 8192 \
     --generate_max_len 2048 \
     --max_samples 1000000 \
+    --adam_offload \
     --enable_prefix_caching \
     --zero_stage 2 \
     --param_dtype bf16 \

@@ -418,6 +418,14 @@ class PPOTrainer(BasePPOTrainer):
             )
             logs[f"eval_{datasource}_pass1"] = metrics["pass1"] / metrics["count"]
 
+        # Average across all datasources
+        if global_metrics:
+            pass1_values = [logs[f"eval_{ds}_pass1"] for ds in global_metrics]
+            logs["eval_avg_pass1"] = sum(pass1_values) / len(pass1_values)
+            if n_samples_per_prompt > 1:
+                passk_values = [logs[f"eval_{ds}_pass{n_samples_per_prompt}"] for ds in global_metrics]
+                logs[f"eval_avg_pass{n_samples_per_prompt}"] = sum(passk_values) / len(passk_values)
+
         # Log to wandb/tensorboard
         if self.wandb_logger:
             self.wandb_logger.log_eval(global_step, logs)

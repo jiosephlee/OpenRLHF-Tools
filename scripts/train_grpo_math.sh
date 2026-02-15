@@ -105,8 +105,9 @@ echo "Hub:              $HUB_REPO_ID"
 echo "W&B:              project=$WANDB_PROJECT run=$RUN_ID"
 echo "========================================"
 
+
 ### TRAINING ###
-CUDA_VISIBLE_DEVICES=0,1 python -m openrlhf.cli.train_ppo_ray \
+python -m openrlhf.cli.train_ppo_ray \
     --pretrain "$MODEL" \
     --ref_num_nodes 1 \
     --ref_num_gpus_per_node $NUM_GPUS \
@@ -159,10 +160,7 @@ CUDA_VISIBLE_DEVICES=0,1 python -m openrlhf.cli.train_ppo_ray \
     --use_wandb "${WANDB_API_KEY:+1}" \
     --wandb_project "$WANDB_PROJECT" \
     --wandb_run_name "$RUN_ID" \
-    --stop_properly_penalty_coef 0.0 \
-    --overlong_buffer_len 8192 \
-    --overlong_penalty_factor 1 \
-
+    
 ### CLEANUP ###
 echo "Training complete! Stopping Ray..."
 ray stop --force || true

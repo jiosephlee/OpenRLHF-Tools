@@ -509,6 +509,7 @@ class SamplesGenerator:
             logprobs=1 if self.args.enable_vllm_is_correction else None,
         )
         truncate_length = generate_kwargs.get("prompt_max_len", 1024) + generate_kwargs.get("max_new_tokens", 1024)
+        n_samples_per_prompt = generate_kwargs.get("n_samples_per_prompt", self.args.n_samples_per_prompt)
 
         # Snapshot current pending rollout counts to balance upcoming work.
         pending_counts = ray.get([engine.get_num_unfinished_requests.remote() for engine in self.vllm_engines])
@@ -520,7 +521,7 @@ class SamplesGenerator:
         for _ in prompts:
             current_load, engine_idx = heapq.heappop(engine_heap)
             engine_indices.append(engine_idx)
-            heapq.heappush(engine_heap, (current_load + self.args.n_samples_per_prompt, engine_idx))
+            heapq.heappush(engine_heap, (current_load + n_samples_per_prompt, engine_idx))
 
         refs = []
         for idx, (prompt, label) in enumerate(zip(prompts, labels)):
@@ -533,7 +534,7 @@ class SamplesGenerator:
                 sampling_params=sampling_params,
                 max_length=truncate_length,
                 hf_tokenizer=self.tokenizer,
-                num_samples=self.args.n_samples_per_prompt,
+                num_samples=n_samples_per_prompt,
                 log_trajectory=(idx == 0),
             )
             refs.append((ref, engine_idx))

@@ -50,12 +50,15 @@ class ToolCallingTurn(AgentInstanceBase):
       - ``render_tool_feedback``: produce the bridge text between turns
     """
 
-    def __init__(self):
+    def __init__(self, hf_tokenizer=None):
         # ---- tokenizer (needed by protocol parsers) ----
-        model_path = os.environ.get("OPENRLHF_MODEL_PATH")
-        if not model_path:
-            raise ValueError("OPENRLHF_MODEL_PATH environment variable must be set")
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        if hf_tokenizer is not None:
+            self.tokenizer = hf_tokenizer
+        else:
+            model_path = os.environ.get("OPENRLHF_MODEL_PATH")
+            if not model_path:
+                raise ValueError("OPENRLHF_MODEL_PATH environment variable must be set")
+            self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
         # ---- protocol (parse + feedback only, not initial rendering) ----
         protocol_name = os.environ.get("OPENRLHF_CHAT_PROTOCOL", "glm_flash")

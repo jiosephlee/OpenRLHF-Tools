@@ -213,6 +213,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --prompt_data "$TRAIN_DATA" \
     --eval_dataset "$EVAL_DATA" \
     --eval_steps 20 \
+    --adam_offload \
     --eval_temperature $TEMPERATURE \
     --eval_n_samples_per_prompt 1 \
     --input_key messages \

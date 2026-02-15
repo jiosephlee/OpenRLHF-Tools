@@ -21,7 +21,7 @@ export RAY_TMPDIR=/tmp/jojolee/ray
 ### ARGS ###
 TASK_NAME=${1:-"BBB_Martins"}
 PRETRAIN_PATH=${2:-"zai-org/GLM-4.7-Flash"}
-LEARNING_RATE=${3:-"2e-6"}
+LEARNING_RATE=${3:-"1e-6"}
 NUM_GPUS=$SLURM_GPUS_ON_NODE
 DEBUG_TRACES=${4:-"1"}
 
@@ -71,18 +71,18 @@ SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
 HUB_REPO_ID="jiosephlee/grpo-tdc-glm-flash-${TASK_NAME}"
 
 ### GPU LAYOUT (colocated — shared GPUs) ###
-TRAIN_BATCH_SIZE=$((NUM_GPUS * 2))
+TRAIN_BATCH_SIZE=32
 VLLM_NUM_ENGINES=$((NUM_GPUS))
 
 ### TOOL-CALLING CONFIG ###
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
-AGENT_MAX_STEPS=40
+AGENT_MAX_STEPS=30
 PROMPT_CONSTRUCTION_MODE="auto"
 CHAT_PROTOCOL="glm_flash"
 
 ### GRPO CONFIG ###
 N_SAMPLES_PER_PROMPT=8
-ADVANTAGE_ESTIMATOR="dr_grpo"
+ADVANTAGE_ESTIMATOR="group_norm"
 DYNAMIC_FILTERING=true
 DYNAMIC_FILTERING_REWARD_RANGE="0 1"
 
@@ -161,6 +161,20 @@ echo "========================================"
 TDC_TOOLS_JSON="$PROJECT_ROOT/data/tdc/metadata/tools_per_task.json"
 python "$PROJECT_ROOT/scripts/generate_tools_json.py" "$TDC_TOOLS_JSON"
 
+### BUILD EVAL DATASET ###
+EVAL_DATA="$DATA_DIR/eval_${TASK_NAME}.jsonl"
+python -c "
+import json, sys
+task = sys.argv[1]
+src = '$DATA_DIR/' + task + '_val.jsonl'
+with open('$EVAL_DATA', 'w') as out:
+    for line in open(src):
+        rec = json.loads(line)
+        rec['datasource'] = task
+        out.write(json.dumps(rec, ensure_ascii=False) + '\n')
+print(f'Built eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples from {task}')
+" "$TASK_NAME"
+
 ### TRAINING ###
 python -m openrlhf.cli.train_ppo_ray \
     --pretrain "$PRETRAIN_PATH" \
@@ -182,18 +196,23 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_steps -1 \
     --logging_steps 1 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
-    --micro_train_batch_size 2 \
-    --micro_rollout_batch_size 4 \
+    --micro_train_batch_size 1 \
+    --micro_rollout_batch_size 2 \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs 1 \
-    --prompt_max_len 8192 \
+    --prompt_max_len 6144 \
     --generate_max_len 2048 \
     --max_samples 1000000 \
+    --enable_prefix_caching \
     --zero_stage 2 \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \
     --prompt_data "$TRAIN_DATA" \
+    --eval_dataset "$EVAL_DATA" \
+    --eval_steps 20 \
+    --eval_temperature $TEMPERATURE \
+    --eval_n_samples_per_prompt 1 \
     --input_key messages \
     --label_key answer \
     --apply_chat_template \
@@ -203,7 +222,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_sync_backend nccl \
     --vllm_enable_sleep \
     --deepspeed_enable_sleep \
-    --enforce_eager \
     $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \
     --top_p $TOP_P \
     --temperature $TEMPERATURE \
@@ -219,7 +237,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_path "$SAVE_PATH" \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
-    --rollout_trace_dir "$SAVE_PATH/rollout_traces"
+    --use_dynamic_batch \
 
 ### CLEANUP ###
 echo "Training complete! Stopping Ray..."

@@ -78,12 +78,12 @@ SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_LABEL}/$RUN_ID"
 HUB_REPO_ID="jiosephlee/grpo-tdc-intern-s1-${TASK_LABEL}"
 
 ### GPU LAYOUT (colocated — shared GPUs) ###
-TRAIN_BATCH_SIZE=$((NUM_GPUS * 4))
+TRAIN_BATCH_SIZE=32
 VLLM_NUM_ENGINES=$NUM_GPUS
 
 ### TOOL-CALLING CONFIG ###
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
-AGENT_MAX_STEPS=40
+AGENT_MAX_STEPS=30
 PROMPT_CONSTRUCTION_MODE="auto"
 CHAT_PROTOCOL="intern_s1"
 
@@ -218,7 +218,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --actor_learning_rate $LEARNING_RATE \
     --prompt_data "$TRAIN_DATA" \
     --eval_dataset "$EVAL_DATA" \
-    --eval_steps 20 \
+    --eval_steps 25 \
     --eval_temperature $TEMPERATURE \
     --eval_n_samples_per_prompt 1 \
     --input_key messages \

@@ -76,7 +76,7 @@ VLLM_NUM_ENGINES=$((NUM_GPUS))
 
 ### TOOL-CALLING CONFIG ###
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
-AGENT_MAX_STEPS=40
+AGENT_MAX_STEPS=30
 PROMPT_CONSTRUCTION_MODE="auto"
 CHAT_PROTOCOL="glm_flash"
 
@@ -201,10 +201,9 @@ python -m openrlhf.cli.train_ppo_ray \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs 1 \
-    --prompt_max_len 8192 \
+    --prompt_max_len 6144 \
     --generate_max_len 2048 \
     --max_samples 1000000 \
-    --adam_offload \
     --enable_prefix_caching \
     --zero_stage 2 \
     --param_dtype bf16 \
@@ -239,7 +238,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
     --use_dynamic_batch \
-    --rollout_trace_dir "$SAVE_PATH/rollout_traces"
 
 ### CLEANUP ###
 echo "Training complete! Stopping Ray..."

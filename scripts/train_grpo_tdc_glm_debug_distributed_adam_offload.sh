@@ -99,9 +99,9 @@ SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_LABEL}/$RUN_ID"
 HUB_REPO_ID="jiosephlee/grpo-tdc-glm-flash-${TASK_LABEL}"
 
 ### GPU LAYOUT (distributed — separate actor and vLLM GPUs) ###
-ACTOR_GPUS=5
-VLLM_GPUS=3
-VLLM_NUM_ENGINES=3
+ACTOR_GPUS=4
+VLLM_GPUS=4
+VLLM_NUM_ENGINES=4
 VLLM_TENSOR_PARALLEL_SIZE=1
 TRAIN_BATCH_SIZE=32
 MIN_GPUS=$((ACTOR_GPUS + VLLM_NUM_ENGINES * VLLM_TENSOR_PARALLEL_SIZE))
@@ -112,12 +112,12 @@ fi
 
 ### TOOL-CALLING CONFIG ###
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
-AGENT_MAX_STEPS=30
+AGENT_MAX_STEPS=25
 PROMPT_CONSTRUCTION_MODE="auto"
 CHAT_PROTOCOL="glm_flash"
 
 ### GRPO CONFIG ###
-N_SAMPLES_PER_PROMPT=8
+N_SAMPLES_PER_PROMPT=4
 ADVANTAGE_ESTIMATOR="group_norm"
 DYNAMIC_FILTERING=true
 DYNAMIC_FILTERING_REWARD_RANGE="0 1"
@@ -242,7 +242,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs 1 \
     --prompt_max_len 6144 \
-    --generate_max_len 2048 \
+    --generate_max_len 1536 \
     --max_samples 1000000 \
     --enable_prefix_caching \
     --zero_stage 2 \
@@ -278,6 +278,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
     --use_dynamic_batch \
+    --skip_eval_step_zero \
+    --ds_tensor_parallel_size 2 \
     2>&1 | tee "$RUN_LOG"
 
 ### CLEANUP ###

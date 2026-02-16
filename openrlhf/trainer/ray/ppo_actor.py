@@ -120,6 +120,26 @@ class ActorPPOTrainer(ABC):
                 self.strategy.args.vllm_num_engines,
                 self.strategy.args.vllm_tensor_parallel_size,
             )
+            actual_num_engines = len(self.vllm_engines)
+            if actual_num_engines != vllm_num_engines:
+                raise RuntimeError(
+                    f"Configured vLLM engines ({vllm_num_engines}) does not match created engine handles ({actual_num_engines})."
+                )
+
+            # Preflight: verify every configured vLLM engine responds before group rendezvous.
+            # This turns the opaque "4/5 clients joined" timeout into an actionable engine index failure.
+            probe_refs = [engine.get_num_unfinished_requests.remote() for engine in self.vllm_engines]
+            probe_ref_to_idx = {ref: idx for idx, ref in enumerate(probe_refs)}
+            ready_refs, unready_refs = ray.wait(probe_refs, num_returns=len(probe_refs), timeout=30)
+            if unready_refs:
+                unready_indices = [probe_ref_to_idx[ref] for ref in unready_refs]
+                raise RuntimeError(
+                    "Not all vLLM engines are responsive before process-group init. "
+                    f"Unresponsive engine indices: {unready_indices}. "
+                    "Check Ray scheduling and per-engine startup logs."
+                )
+            ray.get(ready_refs)
+
             world_size = vllm_num_engines * vllm_tensor_parallel_size + 1
 
             use_ray = getattr(self.strategy.args, "vllm_sync_with_ray", False)

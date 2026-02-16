@@ -300,6 +300,27 @@ class BasePPOTrainer(ABC):
                 refs.extend(self.critic_model_group.async_run_method(method_name="save_checkpoint", tag=tag))
             ray.get(refs)
 
+            # Push HF checkpoint to Hub and optionally delete local copy
+            if self.args.save_hf_ckpt and self.args.push_to_hub:
+                hf_ckpt_path = os.path.join(self.args.ckpt_path, f"{tag}_hf")
+                if os.path.exists(hf_ckpt_path):
+                    from huggingface_hub import HfApi
+
+                    api = HfApi()
+                    api.create_repo(self.args.push_to_hub, private=self.args.push_to_hub_private, exist_ok=True)
+                    api.upload_folder(
+                        folder_path=hf_ckpt_path,
+                        repo_id=self.args.push_to_hub,
+                        commit_message=f"Checkpoint {tag}",
+                        revision=tag,
+                    )
+                    logger.info(f"Uploaded {tag} to {self.args.push_to_hub} (branch: {tag})")
+                    if self.args.delete_local_after_push:
+                        import shutil
+
+                        shutil.rmtree(hf_ckpt_path, ignore_errors=True)
+                        logger.info(f"Deleted local checkpoint {hf_ckpt_path}")
+
     def init_checkpoint_states(self) -> Dict:
         ckpt_path = os.path.join(self.args.ckpt_path, "_actor")
         if self.args.load_checkpoint and os.path.exists(ckpt_path):

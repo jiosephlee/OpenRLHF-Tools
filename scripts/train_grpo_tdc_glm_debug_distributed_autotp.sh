@@ -266,7 +266,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
     --use_dynamic_batch \
-    --use_liger_kernel \
     --ds_tensor_parallel_size 2 \
     --skip_eval_step_zero \
     2>&1 | tee "$RUN_LOG"

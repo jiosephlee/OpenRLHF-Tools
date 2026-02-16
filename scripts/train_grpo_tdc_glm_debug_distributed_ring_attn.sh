@@ -266,9 +266,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
     --use_dynamic_batch \
-    --use_liger_kernel \
     --ring_attn_size 2 \
-    --ring_head_stride 2 \
+    --ring_head_stride 1 \
     --skip_eval_step_zero \
     2>&1 | tee "$RUN_LOG"
 

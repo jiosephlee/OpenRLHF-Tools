@@ -30,9 +30,9 @@ NUM_GPUS=$SLURM_GPUS_ON_NODE
 DEBUG_TRACES=${4:-"0"}
 
 ### RING ATTENTION + AUTOTP CONFIG ###
-RING_ATTN_SIZE=4
+RING_ATTN_SIZE=2
 RING_HEAD_STRIDE=1
-DS_TP_SIZE=2
+DS_TP_SIZE=4
 
 MIN_GPUS=$((RING_ATTN_SIZE * DS_TP_SIZE))
 if [ "$NUM_GPUS" -lt "$MIN_GPUS" ]; then
@@ -94,12 +94,12 @@ VLLM_NUM_ENGINES=$((NUM_GPUS))
 
 ### TOOL-CALLING CONFIG ###
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
-AGENT_MAX_STEPS=30
+AGENT_MAX_STEPS=25
 PROMPT_CONSTRUCTION_MODE="auto"
 CHAT_PROTOCOL="glm_flash"
 
 ### GRPO CONFIG ###
-N_SAMPLES_PER_PROMPT=8
+N_SAMPLES_PER_PROMPT=4
 ADVANTAGE_ESTIMATOR="group_norm"
 DYNAMIC_FILTERING=true
 DYNAMIC_FILTERING_REWARD_RANGE="0 1"
@@ -204,10 +204,10 @@ python -m openrlhf.cli.train_ppo_ray \
     --reward_num_gpus_per_node 0 \
     --actor_num_nodes 1 \
     --actor_num_gpus_per_node $NUM_GPUS \
-    --vllm_num_engines $((VLLM_NUM_ENGINES)) \
-    --vllm_tensor_parallel_size 1 \
+    --vllm_num_engines $((VLLM_NUM_ENGINES/2)) \
+    --vllm_tensor_parallel_size 2 \
     --colocate_all_models \
-    --vllm_gpu_memory_utilization 0.6 \
+    --vllm_gpu_memory_utilization 0.4 \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \

@@ -112,12 +112,12 @@ fi
 
 ### TOOL-CALLING CONFIG ###
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
-AGENT_MAX_STEPS=30
+AGENT_MAX_STEPS=25
 PROMPT_CONSTRUCTION_MODE="auto"
 CHAT_PROTOCOL="glm_flash"
 
 ### GRPO CONFIG ###
-N_SAMPLES_PER_PROMPT=8
+N_SAMPLES_PER_PROMPT=4
 ADVANTAGE_ESTIMATOR="group_norm"
 DYNAMIC_FILTERING=true
 DYNAMIC_FILTERING_REWARD_RANGE="0 1"
@@ -242,7 +242,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs 1 \
     --prompt_max_len 6144 \
-    --generate_max_len 2048 \
+    --generate_max_len 1536 \
     --max_samples 1000000 \
     --enable_prefix_caching \
     --zero_stage 2 \
@@ -261,7 +261,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --packing_samples \
     --vllm_sync_backend gloo \
     --async_train \
-    --async_queue_size 1 \
+    --async_queue_size 2 \
     $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \
     --top_p $TOP_P \
     --temperature $TEMPERATURE \
@@ -278,7 +278,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
     --use_dynamic_batch \
-    --adam_offload \
+    --skip_eval_step_zero \
+    --ds_tensor_parallel_size 2 \
     2>&1 | tee "$RUN_LOG"
 
 ### CLEANUP ###

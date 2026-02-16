@@ -26,6 +26,7 @@ import argparse
 import json
 import logging
 import multiprocessing
+import multiprocessing.pool
 import os
 import sys
 from pathlib import Path
@@ -70,8 +71,7 @@ except ImportError:
     from unittest.mock import MagicMock
     sys.modules["pyPgSQL"] = MagicMock()
 
-# NOTE: AccFG is imported lazily inside each worker process (_worker_init)
-# to avoid pickling issues with loky/multiprocessing.
+from tools.AccFG import high_level_fg_fragments_w_attach_points_no_special_tokens_w_atom_ids
 
 
 # ---------------------------------------------------------------------------
@@ -133,48 +133,15 @@ def load_existing_cache(path: Path) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Worker — each subprocess does its own import to avoid pickling issues
-# with the mocked tools package and loky backend.
+# Worker — uses fork-based pool so sys.modules (with mocked tools package)
+# is inherited by child processes.
 # ---------------------------------------------------------------------------
-_INTERN_S1_ROOT_STR = str(INTERN_S1_ROOT)
-
-
-def _worker_init():
-    """Lazy-import AccFG inside the worker process."""
-    global _worker_fn
-    if "_worker_fn" in globals() and _worker_fn is not None:
-        return _worker_fn
-
-    import types as _t
-
-    if _INTERN_S1_ROOT_STR not in sys.path:
-        sys.path.insert(0, _INTERN_S1_ROOT_STR)
-    if "tools" not in sys.modules:
-        _pkg = _t.ModuleType("tools")
-        _pkg.__path__ = [os.path.join(_INTERN_S1_ROOT_STR, "tools")]
-        _pkg.__package__ = "tools"
-        sys.modules["tools"] = _pkg
-    try:
-        import pyPgSQL  # noqa: F401
-    except ImportError:
-        from unittest.mock import MagicMock
-        sys.modules["pyPgSQL"] = MagicMock()
-
-    from tools.AccFG import high_level_fg_fragments_w_attach_points_no_special_tokens_w_atom_ids as fn
-    _worker_fn = fn
-    return _worker_fn
-
-
-_worker_fn = None
-
-
 def _process_one(smiles: str) -> tuple[str, str] | None:
-    """Compute FG description for a single SMILES (runs in worker process)."""
+    """Compute FG description for a single SMILES (runs in forked worker)."""
     try:
         if not isinstance(smiles, str) or not smiles.strip():
             return None
-        fn = _worker_init()
-        desc = fn(smiles)
+        desc = high_level_fg_fragments_w_attach_points_no_special_tokens_w_atom_ids(smiles)
         return (smiles, desc)
     except Exception as e:
         return (smiles, f"Error: {e}")
@@ -211,75 +178,36 @@ def main():
         logger.info("Nothing to compute — cache is complete.")
         return
 
-    # 3. Compute in parallel.
+    # 3. Compute in parallel using fork-based pool.
+    # We MUST use fork (not loky/spawn) so child processes inherit the mocked
+    # `tools` package in sys.modules — otherwise tools/__init__.py gets
+    # imported and fails on missing deps like freesasa.
     logger.info(f"Computing FG descriptions with {args.workers} workers ...")
     computed = 0
     errors = 0
 
-    try:
-        from joblib import Parallel, delayed
+    # Use fork so child processes inherit sys.modules (mocked tools package).
+    multiprocessing.set_start_method("fork", force=True)
 
-        logger.info("Using joblib (loky backend).")
-        results_iter = Parallel(n_jobs=args.workers, verbose=0, backend="loky", return_generator=True)(
-            delayed(_process_one)(s) for s in all_smiles
-        )
+    mode = "a" if args.append and output_path.exists() else "w"
+    with multiprocessing.Pool(processes=args.workers) as pool, \
+         open(output_path, mode, encoding="utf-8") as f:
+        if mode == "w" and existing_cache:
+            for k, v in existing_cache.items():
+                f.write(json.dumps({k: v}, ensure_ascii=False) + "\n")
 
-        # Write results incrementally.
-        mode = "a" if args.append and output_path.exists() else "w"
-        with open(output_path, mode, encoding="utf-8") as f:
-            # If writing fresh, dump existing cache first.
-            if mode == "w" and existing_cache:
-                for k, v in existing_cache.items():
-                    f.write(json.dumps({k: v}, ensure_ascii=False) + "\n")
-
-            for res in tqdm(results_iter, total=len(all_smiles), desc="Processing"):
-                if res is None:
-                    continue
-                smi, desc = res
-                if isinstance(desc, str) and desc.startswith("Error:"):
-                    errors += 1
-                else:
-                    computed += 1
-                f.write(json.dumps({smi: desc}, ensure_ascii=False) + "\n")
-                if computed % 100 == 0:
-                    f.flush()
-
-    except ImportError:
-        logger.info("joblib not found, falling back to multiprocessing Pool.")
-
-        # NoDaemon pool so AccFG can spawn child processes.
-        class _NoDaemonProcess(multiprocessing.Process):
-            @property
-            def daemon(self):
-                return False
-
-            @daemon.setter
-            def daemon(self, _):
-                pass
-
-        class _NoDaemonPool(multiprocessing.pool.Pool):
-            def Process(self, *args, **kwds):
-                proc = super().Process(*args, **kwds)
-                proc.__class__ = _NoDaemonProcess
-                return proc
-
-        mode = "a" if args.append and output_path.exists() else "w"
-        with _NoDaemonPool(processes=args.workers) as pool, open(output_path, mode, encoding="utf-8") as f:
-            if mode == "w" and existing_cache:
-                for k, v in existing_cache.items():
-                    f.write(json.dumps({k: v}, ensure_ascii=False) + "\n")
-
-            for res in tqdm(pool.imap_unordered(_process_one, all_smiles), total=len(all_smiles), desc="Processing"):
-                if res is None:
-                    continue
-                smi, desc = res
-                if isinstance(desc, str) and desc.startswith("Error:"):
-                    errors += 1
-                else:
-                    computed += 1
-                f.write(json.dumps({smi: desc}, ensure_ascii=False) + "\n")
-                if computed % 100 == 0:
-                    f.flush()
+        for res in tqdm(pool.imap_unordered(_process_one, all_smiles, chunksize=8),
+                        total=len(all_smiles), desc="Processing"):
+            if res is None:
+                continue
+            smi, desc = res
+            if isinstance(desc, str) and desc.startswith("Error:"):
+                errors += 1
+            else:
+                computed += 1
+            f.write(json.dumps({smi: desc}, ensure_ascii=False) + "\n")
+            if computed % 100 == 0:
+                f.flush()
 
     logger.info(f"Done. Computed {computed} descriptions ({errors} errors). Saved to {output_path}")
     total = len(existing_cache) + computed

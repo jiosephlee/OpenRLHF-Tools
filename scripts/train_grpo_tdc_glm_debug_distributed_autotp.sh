@@ -23,7 +23,7 @@ PRETRAIN_PATH=${1:-"zai-org/GLM-4.7-Flash"}
 LEARNING_RATE=${2:-"1e-6"}
 NUM_GPUS=$SLURM_GPUS_ON_NODE
 DEBUG_TRACES=${3:-"0"}
-
+DS_TP_SIZE=${4:-"4"}
 ### MULTI-TASK ###
 TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
 TASK_LABEL="Base"
@@ -98,9 +98,9 @@ SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_LABEL}/$RUN_ID"
 HUB_REPO_ID="jiosephlee/grpo-tdc-glm-flash-${TASK_LABEL}"
 
 ### GPU LAYOUT (distributed — separate actor and vLLM GPUs) ###
-ACTOR_GPUS=2
-VLLM_GPUS=6
-VLLM_NUM_ENGINES=6
+ACTOR_GPUS=4
+VLLM_GPUS=4
+VLLM_NUM_ENGINES=4
 VLLM_TENSOR_PARALLEL_SIZE=1
 TRAIN_BATCH_SIZE=32
 
@@ -266,8 +266,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
     --use_dynamic_batch \
-    --ds_tensor_parallel_size 2 \
-    --skip_eval_step_zero \
+    --ds_tensor_parallel_size $DS_TP_SIZE
     2>&1 | tee "$RUN_LOG"
 
 ### CLEANUP ###

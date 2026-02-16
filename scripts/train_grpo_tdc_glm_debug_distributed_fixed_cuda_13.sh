@@ -9,21 +9,24 @@
 # Usage:
 #   1. Get an interactive node:  srun --partition=dgx-b200 --gpus=4 --mem-per-gpu=128G --cpus-per-gpu=8 --time=1:00:00 --pty bash
 #   2. Activate env:             module load MAMBA && module load cuda/13.1.0 && micromamba activate /vast/projects/myatskar/design-documents/conda_env/openrlhf_tfv4
-#   3. Run:                      bash scripts/train_grpo_tdc_glm_debug_distributed_fixed_cuda_13.sh <task_name> [model_path] [learning_rate]
+#   3. Run:                      bash scripts/train_grpo_tdc_glm_debug_distributed_fixed_cuda_13.sh [model_path] [learning_rate]
 #
 # Example:
-#   bash scripts/train_grpo_tdc_glm_debug_distributed_fixed_cuda_13.sh AMES zai-org/GLM-4.7-Flash 1e-6
+#   bash scripts/train_grpo_tdc_glm_debug_distributed_fixed_cuda_13.sh zai-org/GLM-4.7-Flash 1e-6
 #
 
 set -euo pipefail
 export RAY_TMPDIR=/tmp/jojolee/ray
 
 ### ARGS ###
-TASK_NAME=${1:-"BBB_Martins"}
-PRETRAIN_PATH=${2:-"zai-org/GLM-4.7-Flash"}
-LEARNING_RATE=${3:-"1e-6"}
+PRETRAIN_PATH=${1:-"zai-org/GLM-4.7-Flash"}
+LEARNING_RATE=${2:-"1e-6"}
 NUM_GPUS=$SLURM_GPUS_ON_NODE
-DEBUG_TRACES=${4:-"0"}
+DEBUG_TRACES=${3:-"0"}
+
+### MULTI-TASK ###
+TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
+TASK_LABEL="Base"
 
 ### NCCL / IB / NETWORK CONFIG ###
 unset NCCL_NVLS_ENABLE
@@ -71,28 +74,33 @@ fi
 
 ### DATA ###
 DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format"
-TRAIN_DATA="$DATA_DIR/${TASK_NAME}_train.jsonl"
 mkdir -p "$PROJECT_ROOT/logs"
 
-if [ ! -f "$TRAIN_DATA" ]; then
-    echo "Error: Training data not found: $TRAIN_DATA"
-    echo "Available tasks:"
-    ls "$DATA_DIR" 2>/dev/null | grep "_train.jsonl" | sed 's/_train.jsonl//' | sort
-    exit 1
-fi
+TRAIN_PARTS=()
+for t in "${TASK_NAMES[@]}"; do
+    f="$DATA_DIR/${t}_train.jsonl"
+    if [ ! -f "$f" ]; then
+        echo "Error: Training data not found: $f"
+        echo "Available tasks:"
+        ls "$DATA_DIR" 2>/dev/null | grep "_train.jsonl" | sed 's/_train.jsonl//' | sort
+        exit 1
+    fi
+    TRAIN_PARTS+=("$f")
+done
+IFS=,; TRAIN_DATA="${TRAIN_PARTS[*]}"; unset IFS
 
 ### RUN CONFIG ###
-RUN_ID="GLM-grpo-fixed-debug-distributed-${TASK_NAME}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
+RUN_ID="GLM-grpo-fixed-debug-distributed-${TASK_LABEL}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
 DATE_STAMP=$(date +%Y%m%d)
 RUNS_DIR="$PROJECT_ROOT/runs/${RUN_ID}/${DATE_STAMP}"
 mkdir -p "$RUNS_DIR"
-SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
-HUB_REPO_ID="jiosephlee/grpo-tdc-glm-flash-${TASK_NAME}"
+SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_LABEL}/$RUN_ID"
+HUB_REPO_ID="jiosephlee/grpo-tdc-glm-flash-${TASK_LABEL}"
 
 ### GPU LAYOUT (distributed — separate actor and vLLM GPUs) ###
-ACTOR_GPUS=2
-VLLM_GPUS=6
-VLLM_NUM_ENGINES=6
+ACTOR_GPUS=4
+VLLM_GPUS=4
+VLLM_NUM_ENGINES=4
 VLLM_TENSOR_PARALLEL_SIZE=1
 TRAIN_BATCH_SIZE=32
 
@@ -152,7 +160,7 @@ export RAY_ADDRESS="auto"
 echo "========================================"
 echo "TDC GRPO Training — GLM-4.7-Flash (DISTRIBUTED INTERACTIVE DEBUG)"
 echo "========================================"
-echo "Task: $TASK_NAME"
+echo "Tasks: ${TASK_NAMES[*]}"
 echo "Model: $PRETRAIN_PATH"
 echo "Chat Protocol: $CHAT_PROTOCOL"
 echo "Learning Rate: $LEARNING_RATE"
@@ -172,26 +180,27 @@ echo "Temperature: $TEMPERATURE"
 echo "Top-p: $TOP_P"
 echo "----------------------------------------"
 echo "Runs Dir: $RUNS_DIR"
-echo "W&B: project=$WANDB_PROJECT group=TDC-GLMFlash-fixed-$TASK_NAME run=$RUN_ID"
+echo "W&B: project=$WANDB_PROJECT group=TDC-GLMFlash-fixed-$TASK_LABEL run=$RUN_ID"
 echo "========================================"
 
 ### GENERATE PER-TASK TOOLS JSON ###
 TDC_TOOLS_JSON="$PROJECT_ROOT/data/tdc/metadata/tools_per_task.json"
 python "$PROJECT_ROOT/scripts/generate_tools_json.py" "$TDC_TOOLS_JSON"
 
-### BUILD EVAL DATASET ###
-EVAL_DATA="$DATA_DIR/eval_${TASK_NAME}.jsonl"
+### BUILD TDC EVAL DATASET ###
+EVAL_DATA="$DATA_DIR/eval_tdc.jsonl"
 python -c "
 import json, sys
-task = sys.argv[1]
-src = '$DATA_DIR/' + task + '_val.jsonl'
+tasks = sys.argv[1:]
 with open('$EVAL_DATA', 'w') as out:
-    for line in open(src):
-        rec = json.loads(line)
-        rec['datasource'] = task
-        out.write(json.dumps(rec, ensure_ascii=False) + '\n')
-print(f'Built eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples from {task}')
-" "$TASK_NAME"
+    for task in tasks:
+        with open(f'$DATA_DIR/{task}_val.jsonl') as f:
+            for line in f:
+                rec = json.loads(line)
+                rec['datasource'] = task
+                out.write(json.dumps(rec, ensure_ascii=False) + '\n')
+print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples from {len(tasks)} tasks')
+" "${TASK_NAMES[@]}"
 
 ### TRAINING ###
 RUN_LOG="$RUNS_DIR/run.log"
@@ -206,7 +215,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --actor_num_gpus_per_node $ACTOR_GPUS \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size $VLLM_TENSOR_PARALLEL_SIZE \
-    --vllm_gpu_memory_utilization 0.7 \
+    --vllm_gpu_memory_utilization 0.95 \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \
@@ -220,7 +229,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs 1 \
-    --prompt_max_len 6144 \
+    --prompt_max_len 8192 \
     --generate_max_len 2048 \
     --max_samples 1000000 \
     --enable_prefix_caching \
@@ -251,7 +260,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --chat_protocol "$CHAT_PROTOCOL" \
     --use_wandb 1 \
     --wandb_project "$WANDB_PROJECT" \
-    --wandb_group "TDC-GLMFlash-fixed-$TASK_NAME" \
+    --wandb_group "TDC-GLMFlash-fixed-$TASK_LABEL" \
     --wandb_run_name "$RUN_ID" \
     --save_path "$SAVE_PATH" \
     --push_to_hub "$HUB_REPO_ID" \

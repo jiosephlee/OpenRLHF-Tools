@@ -26,15 +26,32 @@ NUM_GPUS=$SLURM_GPUS_ON_NODE
 DEBUG_TRACES=${4:-"0"}
 
 ### NCCL / IB / NETWORK CONFIG ###
-export OMP_NUM_THREADS=16
-export NCCL_NVLS_ENABLE=1
-export NCCL_IB_ADAPTIVE_ROUTING=1
-export NCCL_IB_SL=1
-export NCCL_IB_QPS_PER_CONNECTION=2
-export NCCL_IB_SPLIT_DATA_ON_QPS=0
-export NCCL_IB_HCA=mlx5_15,mlx5_10,mlx5_14,mlx5_13,mlx5_8,mlx5_7,mlx5_9,mlx5_4
+unset NCCL_NVLS_ENABLE
+unset NCCL_IB_ADAPTIVE_ROUTING
+unset NCCL_IB_SL
+unset NCCL_IB_QPS_PER_CONNECTION
+unset NCCL_IB_SPLIT_DATA_ON_QPS
+unset UCX_TLS
+# Keep
+export NCCL_P2P_DISABLE=1
+export NCCL_IB_DISABLE=1
+export NCCL_DEBUG=INFO
 export NCCL_SOCKET_IFNAME=bond0
-export UCX_TLS=rc
+export NCCL_IB_HCA=mlx5_4,mlx5_7,mlx5_8,mlx5_9,mlx5_10,mlx5_14,mlx5_15
+
+# Add for diagnosis/stability
+export NCCL_ASYNC_ERROR_HANDLING=1
+export NCCL_BLOCKING_WAIT=1
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+# export OMP_NUM_THREADS=16
+# export NCCL_NVLS_ENABLE=1
+# export NCCL_IB_ADAPTIVE_ROUTING=1
+# export NCCL_IB_SL=1
+# export NCCL_IB_QPS_PER_CONNECTION=2
+# export NCCL_IB_SPLIT_DATA_ON_QPS=0
+# export NCCL_IB_HCA=mlx5_15,mlx5_10,mlx5_14,mlx5_13,mlx5_8,mlx5_7,mlx5_9,mlx5_4
+# export NCCL_SOCKET_IFNAME=bond0
+# export UCX_TLS=rc
 
 ### W&B ###
 if [ -z "${WANDB_API_KEY:-}" ]; then
@@ -74,8 +91,8 @@ HUB_REPO_ID="jiosephlee/grpo-tdc-glm-flash-${TASK_NAME}"
 
 ### GPU LAYOUT (distributed — separate actor and vLLM GPUs) ###
 ACTOR_GPUS=2
-VLLM_GPUS=$((NUM_GPUS - ACTOR_GPUS))
-VLLM_NUM_ENGINES=$VLLM_GPUS
+VLLM_GPUS=6
+VLLM_NUM_ENGINES=6
 VLLM_TENSOR_PARALLEL_SIZE=1
 TRAIN_BATCH_SIZE=32
 
@@ -221,7 +238,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --tdc_tools "$TDC_TOOLS_JSON" \
     --gradient_checkpointing \
     --packing_samples \
-    --vllm_sync_backend nccl \
+    --vllm_sync_backend gloo \
     --async_train \
     --async_queue_size 1 \
     $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \

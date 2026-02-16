@@ -323,18 +323,20 @@ class SamplesGenerator:
             return
         step_id = step_idx + 1
         trace_path = os.path.join(self.rollout_trace_run_dir, f"step{step_id}.jsonl")
+        # Only save the first trace per step to avoid excessive disk usage.
+        engine_idx, trace = episode_traces[0]
+        record = {
+            "step": step_id,
+            "episode": 0,
+            "engine_idx": engine_idx,
+            "prompts_consumed": prompts_consumed,
+            "filtered_count": filtered_count,
+            "total_episodes": len(episode_traces),
+            "trace": trace,
+            "decoded": self._decode_trace(trace),
+        }
         with open(trace_path, "w") as f:
-            for i, (engine_idx, trace) in enumerate(episode_traces):
-                record = {
-                    "step": step_id,
-                    "episode": i,
-                    "engine_idx": engine_idx,
-                    "prompts_consumed": prompts_consumed,
-                    "filtered_count": filtered_count,
-                    "trace": trace,
-                    "decoded": self._decode_trace(trace),
-                }
-                f.write(json.dumps(self._to_jsonable(record), ensure_ascii=True) + "\n")
+            f.write(json.dumps(self._to_jsonable(record), ensure_ascii=True) + "\n")
 
     @torch.no_grad()
     def generate_eval_samples(self, **generate_kwargs) -> Tuple[List[Experience], Optional[float], int, bool]:

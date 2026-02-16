@@ -1,6 +1,7 @@
 import os
 import time
 from abc import ABC
+from collections import defaultdict
 from datetime import timedelta
 from typing import Dict, Tuple
 
@@ -17,9 +18,31 @@ from openrlhf.trainer.ray.launcher import RayActorGroup
 from openrlhf.trainer.ray.vllm_engine import batch_vllm_engine_call
 from openrlhf.utils.deepspeed import DeepspeedStrategy
 from openrlhf.utils.logging_utils import TensorboardLogger, WandbLogger, init_logger
+from openrlhf.utils.tdc_reward_model import extract_final_answer
 from openrlhf.utils.utils import get_tokenizer
 
 logger = init_logger(__name__)
+
+
+def _extract_tdc_binary_choice(text: str) -> str:
+    answer = extract_final_answer(text)
+    if not answer:
+        raise ValueError(f"Failed to extract TDC binary choice from text: {text[:200]!r}")
+    return answer.upper()
+
+
+def _macro_f1(y_true, y_pred) -> float:
+    classes = sorted(set(y_true) | set(y_pred))
+    f1_sum = 0.0
+    for cls in classes:
+        tp = sum(1 for t, p in zip(y_true, y_pred) if t == cls and p == cls)
+        fp = sum(1 for t, p in zip(y_true, y_pred) if t != cls and p == cls)
+        fn = sum(1 for t, p in zip(y_true, y_pred) if t == cls and p != cls)
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+        f1_sum += f1
+    return f1_sum / len(classes)
 
 
 def prepare_datasets(strategy, tokenizer):
@@ -110,6 +133,11 @@ class BasePPOTrainer(ABC):
         """Evaluate model performance on eval dataset."""
         start_time = time.time()
         logger.info(f"⏰ Evaluation start time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        is_tdc_eval = bool(getattr(self.args, "tdc_tools", None)) or any(
+            "tdc" in str(v).lower()
+            for v in [getattr(self.args, "prompt_data", None), getattr(self.args, "eval_dataset", None)]
+            if v is not None
+        )
 
         # First collect all prompts and labels
         prompt_to_datasource = {}  # Dictionary to store mapping between prompts and their data sources
@@ -123,6 +151,7 @@ class BasePPOTrainer(ABC):
 
         # duplicate prompts and labels for each sample
         all_prompts = sum([s.prompts for s in samples_list], [])
+        all_labels = sum([s.labels for s in samples_list], [])
 
         n_samples_per_prompt = generate_kwargs["n_samples_per_prompt"]
 
@@ -169,6 +198,24 @@ class BasePPOTrainer(ABC):
             if n_samples_per_prompt > 1:
                 passk_values = [logs[f"eval_{ds}_pass{n_samples_per_prompt}"] for ds in global_metrics]
                 logs[f"eval_avg_pass{n_samples_per_prompt}"] = sum(passk_values) / len(passk_values)
+
+        # TDC-only macro-F1 (per task/datasource + average)
+        if is_tdc_eval:
+            labels_by_datasource = defaultdict(list)
+            preds_by_datasource = defaultdict(list)
+            for prompt, label, sample in zip(all_prompts, all_labels, samples_list):
+                datasource = prompt_to_datasource[prompt]
+                text = self.tokenizer.decode(sample.sequences[0], skip_special_tokens=False)
+                labels_by_datasource[datasource].append(_extract_tdc_binary_choice(label))
+                preds_by_datasource[datasource].append(_extract_tdc_binary_choice(text))
+
+            macro_f1_values = []
+            for datasource in labels_by_datasource:
+                macro_f1 = _macro_f1(labels_by_datasource[datasource], preds_by_datasource[datasource])
+                logs[f"eval_{datasource}_macro_f1"] = macro_f1
+                macro_f1_values.append(macro_f1)
+            if macro_f1_values:
+                logs["eval_avg_macro_f1"] = sum(macro_f1_values) / len(macro_f1_values)
 
         # Log to wandb/tensorboard
         if self.wandb_logger:

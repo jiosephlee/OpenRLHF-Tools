@@ -132,6 +132,7 @@ if __name__ == "__main__":
         ("I conclude (A) is correct", "(A)", 1.0),
         ("Answer: (B)", "(A)", 0.0),  # Wrong answer
         ("No clear answer here", "(A)", 0.0),  # No answer
+        ("n\n**Answer: (B)**", "(B)", 1.0),  # Markdown bold format
     ]
 
     print("Testing TDC Reward Model")

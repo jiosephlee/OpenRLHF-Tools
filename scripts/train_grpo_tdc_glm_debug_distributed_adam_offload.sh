@@ -9,10 +9,10 @@
 # Usage:
 #   1. Get an interactive node:  srun --partition=dgx-b200 --gpus=8 --mem-per-gpu=128G --cpus-per-gpu=8 --time=1:00:00 --pty bash
 #   2. Activate env:             module load MAMBA && module load cuda/13.1.0 && micromamba activate /vast/projects/myatskar/design-documents/conda_env/openrlhf_tfv4
-#   3. Run:                      bash scripts/train_grpo_tdc_glm_debug_distributed_adam_offload.sh [model_path] [learning_rate]
+#   3. Run:                      bash scripts/train_grpo_tdc_glm_debug_distributed_adam_offload.sh [model_path] [learning_rate] [vllm_gpu_mem_util]
 #
 # Example:
-#   bash scripts/train_grpo_tdc_glm_debug_distributed_adam_offload.sh zai-org/GLM-4.7-Flash 1e-6
+#   bash scripts/train_grpo_tdc_glm_debug_distributed_adam_offload.sh zai-org/GLM-4.7-Flash 1e-6 0.12
 #
 
 set -euo pipefail
@@ -23,6 +23,7 @@ PRETRAIN_PATH=${1:-"zai-org/GLM-4.7-Flash"}
 LEARNING_RATE=${2:-"1e-6"}
 NUM_GPUS=$SLURM_GPUS_ON_NODE
 DEBUG_TRACES=${3:-"0"}
+VLLM_GPU_MEMORY_UTILIZATION=${4:-"0.95"}
 
 ### MULTI-TASK ###
 TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
@@ -139,6 +140,11 @@ export OPENRLHF_MAX_STEPS="$AGENT_MAX_STEPS"
 export DEBUG_TRACES="$DEBUG_TRACES"
 export OPENRLHF_DEBUG_LOGITS=0
 export OPENRLHF_DEBUG_NAN_GUARD=0
+export TORCHINDUCTOR_FX_GRAPH_CACHE=0
+export TORCHINDUCTOR_CACHE_DIR="/tmp/torchinductor_${USER}_${SLURM_JOB_ID:-$$}_$(date +%s)"
+export TRITON_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR}/triton"
+rm -rf "/tmp/torchinductor_${USER}" 2>/dev/null || true
+mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR"
 
 ### RAY ###
 export RAY_NODE_IP_ADDRESS=$(hostname -I | awk '{print $1}')
@@ -177,6 +183,7 @@ echo "----------------------------------------"
 echo "NUM_GPUS: $NUM_GPUS  ACTOR: $ACTOR_GPUS  VLLM: $VLLM_GPUS"
 echo "TRAIN_BATCH_SIZE: $TRAIN_BATCH_SIZE"
 echo "VLLM_NUM_ENGINES: $VLLM_NUM_ENGINES"
+echo "vLLM GPU memory utilization: $VLLM_GPU_MEMORY_UTILIZATION"
 echo "----------------------------------------"
 echo "Agent Max Steps: $AGENT_MAX_STEPS"
 echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
@@ -220,7 +227,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --actor_num_gpus_per_node $ACTOR_GPUS \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size $VLLM_TENSOR_PARALLEL_SIZE \
-    --vllm_gpu_memory_utilization 0.95 \
+    --vllm_gpu_memory_utilization $VLLM_GPU_MEMORY_UTILIZATION \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \

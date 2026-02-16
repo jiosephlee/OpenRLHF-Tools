@@ -103,6 +103,14 @@ class LLMRayActor:
             "0.8.5"
         ), "Streaming VLLM version must be greater than 0.8.5"
 
+        # Prevent inheriting trainer process-group rendezvous env into vLLM workers.
+        # vLLM V1 initializes its own distributed context and can collide on MASTER_PORT.
+        os.environ.pop("MASTER_ADDR", None)
+        os.environ.pop("MASTER_PORT", None)
+        os.environ.pop("WORLD_SIZE", None)
+        os.environ.pop("RANK", None)
+        os.environ.pop("LOCAL_RANK", None)
+
         if version.parse(vllm.__version__) >= version.parse("0.9.0"):
             os.environ["VLLM_ALLOW_INSECURE_SERIALIZATION"] = "1"
 
@@ -120,12 +128,6 @@ class LLMRayActor:
     async def init_process_group(
         self, master_address, master_port, rank_offset, world_size, group_name, backend, use_ray
     ):
-        print(
-            f"[LLMRayActor.init_process_group] pid={os.getpid()} "
-            f"master={master_address}:{master_port} rank_offset={rank_offset} "
-            f"world_size={world_size} group={group_name} backend={backend} use_ray={use_ray}",
-            flush=True,
-        )
         return await self.llm.collective_rpc(
             "init_process_group",
             args=(master_address, master_port, rank_offset, world_size, group_name, backend, use_ray),

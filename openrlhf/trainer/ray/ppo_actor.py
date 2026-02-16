@@ -120,26 +120,6 @@ class ActorPPOTrainer(ABC):
                 self.strategy.args.vllm_num_engines,
                 self.strategy.args.vllm_tensor_parallel_size,
             )
-            actual_num_engines = len(self.vllm_engines)
-            if actual_num_engines != vllm_num_engines:
-                raise RuntimeError(
-                    f"Configured vLLM engines ({vllm_num_engines}) does not match created engine handles ({actual_num_engines})."
-                )
-
-            # Preflight: verify every configured vLLM engine responds before group rendezvous.
-            # This turns the opaque "4/5 clients joined" timeout into an actionable engine index failure.
-            probe_refs = [engine.get_num_unfinished_requests.remote() for engine in self.vllm_engines]
-            probe_ref_to_idx = {ref: idx for idx, ref in enumerate(probe_refs)}
-            ready_refs, unready_refs = ray.wait(probe_refs, num_returns=len(probe_refs), timeout=30)
-            if unready_refs:
-                unready_indices = [probe_ref_to_idx[ref] for ref in unready_refs]
-                raise RuntimeError(
-                    "Not all vLLM engines are responsive before process-group init. "
-                    f"Unresponsive engine indices: {unready_indices}. "
-                    "Check Ray scheduling and per-engine startup logs."
-                )
-            ray.get(ready_refs)
-
             world_size = vllm_num_engines * vllm_tensor_parallel_size + 1
 
             use_ray = getattr(self.strategy.args, "vllm_sync_with_ray", False)
@@ -277,20 +257,6 @@ class ActorPPOTrainer(ABC):
         )
 
         # loss function
-        # DEBUG: inspect inputs to loss before computation
-        _mask_sum = experience.action_mask.sum().item()
-        _adv_finite = torch.isfinite(advantages).all().item()
-        _old_lp_finite = torch.isfinite(old_action_log_probs).all().item()
-        _new_lp_finite = torch.isfinite(action_log_probs).all().item()
-        _rlp_finite = torch.isfinite(experience.rollout_log_probs).all().item() if experience.rollout_log_probs is not None else True
-        import logging as _logging
-        _logging.warning(
-            f"[DEBUG pre-loss] step={step}, mask_sum={_mask_sum}, "
-            f"adv_finite={_adv_finite}, old_lp_finite={_old_lp_finite}, "
-            f"new_lp_finite={_new_lp_finite}, rollout_lp_finite={_rlp_finite}, "
-            f"adv_range=[{advantages.min().item():.4f}, {advantages.max().item():.4f}]"
-        )
-
         actor_loss, clip_ratio, ppo_kl, vllm_kl = self.actor_loss_fn(
             action_log_probs,
             old_action_log_probs,

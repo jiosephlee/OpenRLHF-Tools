@@ -12,6 +12,7 @@ import json
 import os
 import re
 import sys
+import types
 import torch
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
@@ -19,8 +20,11 @@ from typing import Any, Callable, Dict, Optional
 from transformers import AutoTokenizer
 
 # ---------------------------------------------------------------------------
-# Extern tools: add Intern-S1-recipe to sys.path so `from tools import ...`
-# resolves to Intern-S1-recipe/tools/__init__.py.
+# Extern tools — import modules directly, bypassing Intern-S1-recipe's
+# tools/__init__.py which hard-depends on molgpka (not installed).
+# We pre-register an empty ``tools`` package in sys.modules so that
+# ``from tools.RDKit_tools import ...`` resolves each submodule without
+# ever executing __init__.py.
 # ---------------------------------------------------------------------------
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _INTERN_S1_ROOT = _PROJECT_ROOT / "Intern-S1-recipe"
@@ -30,8 +34,121 @@ assert (_INTERN_S1_ROOT / "tools").is_dir(), (
 )
 if str(_INTERN_S1_ROOT) not in sys.path:
     sys.path.insert(0, str(_INTERN_S1_ROOT))
+if "tools" not in sys.modules:
+    _pkg = types.ModuleType("tools")
+    _pkg.__path__ = [str(_INTERN_S1_ROOT / "tools")]
+    _pkg.__package__ = "tools"
+    sys.modules["tools"] = _pkg
 
-from tools import BASIC_TOOLS, get_function_by_name
+from tools.RDKit_tools import (
+    RDKIT_BASIC_OPENAI_TOOLS,
+    TDC_RDKIT_SPECIFIC_OPENAI_TOOLS_MAP,
+    # basic
+    get_molecular_weight,
+    get_exact_molecular_weight,
+    get_heavy_atom_count,
+    get_mol_logp,
+    get_tpsa,
+    get_hbd,
+    get_hba,
+    get_num_rotatable_bonds,
+    get_fraction_csp3,
+    get_mol_mr,
+    get_ring_count,
+    get_num_aromatic_rings,
+    get_formal_charge,
+    get_qed,
+    get_num_heteroatoms,
+    # task-specific
+    get_labute_asa,
+    get_max_abs_partial_charge,
+    get_min_abs_partial_charge,
+    get_max_estate_index,
+    get_min_estate_index,
+    get_num_aromatic_atoms,
+    get_fraction_aromatic_atoms,
+    get_num_positive_charge_atoms,
+    get_num_negative_charge_atoms,
+    get_num_aliphatic_rings,
+    get_num_saturated_rings,
+    get_num_heterocycles,
+    get_num_aromatic_heterocycles,
+    get_num_aliphatic_heterocycles,
+    get_num_saturated_heterocycles,
+    get_num_amide_bonds,
+    get_bertz_ct,
+    get_balaban_j,
+    get_ipc,
+    get_hall_kier_alpha,
+    get_kappa1,
+    get_kappa2,
+    get_kappa3,
+    get_num_atom_stereo_centers,
+    get_num_unspecified_atom_stereo_centers,
+)
+from tools.AccFG import AccFG_OPENAI_TOOLS, cached_describe_high_level_fg_fragments
+from tools.standardize_tools import STANDARDIZE_OPENAI_TOOLS, remove_salts
+
+try:
+    from tools.ePSA_3D import get_3d_exposed_polar_surface, SASA_OPENAI_TOOLS
+except ImportError:
+    get_3d_exposed_polar_surface = None
+    SASA_OPENAI_TOOLS = []
+
+BASIC_TOOLS = (
+    RDKIT_BASIC_OPENAI_TOOLS
+    + AccFG_OPENAI_TOOLS
+    + STANDARDIZE_OPENAI_TOOLS
+    + SASA_OPENAI_TOOLS
+)
+
+# All callable tools (everything from get_function_by_name minus pKa).
+_TOOL_CALLABLES: Dict[str, Callable] = {
+    "describe_high_level_fg_fragments": cached_describe_high_level_fg_fragments,
+    "get_molecular_weight": get_molecular_weight,
+    "get_exact_molecular_weight": get_exact_molecular_weight,
+    "get_heavy_atom_count": get_heavy_atom_count,
+    "get_mol_logp": get_mol_logp,
+    "get_tpsa": get_tpsa,
+    "get_hbd": get_hbd,
+    "get_hba": get_hba,
+    "get_num_rotatable_bonds": get_num_rotatable_bonds,
+    "get_fraction_csp3": get_fraction_csp3,
+    "get_labute_asa": get_labute_asa,
+    "get_mol_mr": get_mol_mr,
+    "get_ring_count": get_ring_count,
+    "get_num_aromatic_rings": get_num_aromatic_rings,
+    "get_formal_charge": get_formal_charge,
+    "get_qed": get_qed,
+    "get_num_heteroatoms": get_num_heteroatoms,
+    "get_max_abs_partial_charge": get_max_abs_partial_charge,
+    "get_min_abs_partial_charge": get_min_abs_partial_charge,
+    "get_max_estate_index": get_max_estate_index,
+    "get_min_estate_index": get_min_estate_index,
+    "get_num_aromatic_atoms": get_num_aromatic_atoms,
+    "get_fraction_aromatic_atoms": get_fraction_aromatic_atoms,
+    "get_num_positive_charge_atoms": get_num_positive_charge_atoms,
+    "get_num_negative_charge_atoms": get_num_negative_charge_atoms,
+    "get_num_aliphatic_rings": get_num_aliphatic_rings,
+    "get_num_saturated_rings": get_num_saturated_rings,
+    "get_num_heterocycles": get_num_heterocycles,
+    "get_num_aromatic_heterocycles": get_num_aromatic_heterocycles,
+    "get_num_aliphatic_heterocycles": get_num_aliphatic_heterocycles,
+    "get_num_saturated_heterocycles": get_num_saturated_heterocycles,
+    "get_num_amide_bonds": get_num_amide_bonds,
+    "get_bertz_ct": get_bertz_ct,
+    "get_balaban_j": get_balaban_j,
+    "get_ipc": get_ipc,
+    "get_hall_kier_alpha": get_hall_kier_alpha,
+    "get_kappa1": get_kappa1,
+    "get_kappa2": get_kappa2,
+    "get_kappa3": get_kappa3,
+    "get_num_atom_stereo_centers": get_num_atom_stereo_centers,
+    "get_num_unspecified_atom_stereo_centers": get_num_unspecified_atom_stereo_centers,
+    "remove_salts": remove_salts,
+}
+if get_3d_exposed_polar_surface is not None:
+    _TOOL_CALLABLES["get_3d_exposed_polar_surface"] = get_3d_exposed_polar_surface
 
 from openrlhf.utils.agent import AgentInstanceBase, MultiTurnAgentExecutor
 from openrlhf.utils.chat_protocol import GLMFlashProtocol, InternS1Protocol
@@ -68,13 +185,22 @@ class ToolCallingTurn(AgentInstanceBase):
             self.protocol = GLMFlashProtocol(self.tokenizer)
 
         # ---- tool callables ----
+        # Register ALL tools (basic + task-specific) so the agent can execute
+        # any tool the model calls. The prompt/chat template controls which
+        # tools the model *sees*; this controls which it can *execute*.
         self.tools: Dict[str, Callable] = {}
-        for tool_spec in BASIC_TOOLS:
+        all_tool_specs = list(BASIC_TOOLS)
+        for task_tools in TDC_RDKIT_SPECIFIC_OPENAI_TOOLS_MAP.values():
+            all_tool_specs.extend(task_tools)
+        seen = set()
+        for tool_spec in all_tool_specs:
             if isinstance(tool_spec, dict) and "function" in tool_spec:
                 func_name = tool_spec["function"]["name"]
-                func = get_function_by_name(func_name)
-                if func:
-                    self.tools[func_name] = func
+                if func_name not in seen:
+                    seen.add(func_name)
+                    func = _TOOL_CALLABLES.get(func_name)
+                    if func:
+                        self.tools[func_name] = func
 
     # ------------------------------------------------------------------
     # AgentInstanceBase interface

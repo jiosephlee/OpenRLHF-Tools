@@ -13,9 +13,13 @@ Default output: data/tdc/metadata/tools_per_task.json
 
 import json
 import sys
+import types
 from pathlib import Path
 
-# Add Intern-S1-recipe to sys.path so `from tools import ...` works.
+# Add Intern-S1-recipe to sys.path and import tool modules directly,
+# bypassing tools/__init__.py which hard-depends on molgpka (not installed).
+# We pre-register an empty ``tools`` package in sys.modules so that
+# submodule imports resolve without executing __init__.py.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 INTERN_S1_ROOT = PROJECT_ROOT / "Intern-S1-recipe"
 assert (INTERN_S1_ROOT / "tools").is_dir(), (
@@ -23,9 +27,27 @@ assert (INTERN_S1_ROOT / "tools").is_dir(), (
     f"Run: git submodule update --init Intern-S1-recipe"
 )
 sys.path.insert(0, str(INTERN_S1_ROOT))
+if "tools" not in sys.modules:
+    _pkg = types.ModuleType("tools")
+    _pkg.__path__ = [str(INTERN_S1_ROOT / "tools")]
+    _pkg.__package__ = "tools"
+    sys.modules["tools"] = _pkg
 
-from tools import BASIC_TOOLS
-from tools.RDKit_tools import TDC_RDKIT_SPECIFIC_OPENAI_TOOLS_MAP
+from tools.RDKit_tools import RDKIT_BASIC_OPENAI_TOOLS, TDC_RDKIT_SPECIFIC_OPENAI_TOOLS_MAP
+from tools.AccFG import AccFG_OPENAI_TOOLS
+from tools.standardize_tools import STANDARDIZE_OPENAI_TOOLS
+
+try:
+    from tools.ePSA_3D import SASA_OPENAI_TOOLS
+except ImportError:
+    SASA_OPENAI_TOOLS = []
+
+BASIC_TOOLS = (
+    RDKIT_BASIC_OPENAI_TOOLS
+    + AccFG_OPENAI_TOOLS
+    + STANDARDIZE_OPENAI_TOOLS
+    + SASA_OPENAI_TOOLS
+)
 
 def main():
     output_path = sys.argv[1] if len(sys.argv) > 1 else str(

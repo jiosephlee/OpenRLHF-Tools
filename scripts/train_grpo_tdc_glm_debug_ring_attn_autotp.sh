@@ -31,7 +31,7 @@ DEBUG_TRACES=${4:-"0"}
 
 ### RING ATTENTION + AUTOTP CONFIG ###
 RING_ATTN_SIZE=4
-RING_HEAD_STRIDE=2
+RING_HEAD_STRIDE=1
 DS_TP_SIZE=2
 
 MIN_GPUS=$((RING_ATTN_SIZE * DS_TP_SIZE))
@@ -260,7 +260,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --ring_attn_size $RING_ATTN_SIZE \
     --ring_head_stride $RING_HEAD_STRIDE \
     --ds_tensor_parallel_size $DS_TP_SIZE \
-    --use_liger_kernel \
     --skip_eval_step_zero \
     2>&1 | tee "$RUN_LOG"
 

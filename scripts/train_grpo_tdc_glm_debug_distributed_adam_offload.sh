@@ -99,9 +99,9 @@ SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_LABEL}/$RUN_ID"
 HUB_REPO_ID="jiosephlee/grpo-tdc-glm-flash-${TASK_LABEL}"
 
 ### GPU LAYOUT (distributed — separate actor and vLLM GPUs) ###
-ACTOR_GPUS=4
-VLLM_GPUS=4
-VLLM_NUM_ENGINES=4
+ACTOR_GPUS=5
+VLLM_GPUS=3
+VLLM_NUM_ENGINES=3
 VLLM_TENSOR_PARALLEL_SIZE=1
 TRAIN_BATCH_SIZE=32
 MIN_GPUS=$((ACTOR_GPUS + VLLM_NUM_ENGINES * VLLM_TENSOR_PARALLEL_SIZE))
@@ -261,7 +261,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --packing_samples \
     --vllm_sync_backend gloo \
     --async_train \
-    --async_queue_size 1 \
+    --async_queue_size 2 \
     $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \
     --top_p $TOP_P \
     --temperature $TEMPERATURE \
@@ -278,7 +278,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
     --use_dynamic_batch \
-    --adam_offload \
     2>&1 | tee "$RUN_LOG"
 
 ### CLEANUP ###

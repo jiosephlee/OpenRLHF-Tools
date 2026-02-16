@@ -3,18 +3,18 @@
 # TDC GRPO Training Script for Intern-S1-mini — DISTRIBUTED (non-colocated) mode — FIXED
 #
 # Actor and vLLM run on separate GPU sets (no colocation).
+# Multi-task: trains on all TDC tasks simultaneously, with periodic evaluation.
 # Uses the Intern-S1 JSON tool-calling format:
 #   <|action_start|><|plugin|>{"name": "...", "parameters": {...}}<|action_end|>
 #
 # Usage:
 #   export WANDB_API_KEY=...   # required for wandb tracking
-#   # SLURM: sbatch scripts/train_grpo_tdc_intern_s1_fixed.sh <task_name> [model_path] [learning_rate]
-#   # Direct: bash scripts/train_grpo_tdc_intern_s1_fixed.sh <task_name> [model_path] [learning_rate] [num_gpus]
+#   # SLURM: sbatch scripts/train_grpo_tdc_intern_s1_distributed_fixed_cuda_13.sh [model_path] [learning_rate]
+#   # Direct: bash scripts/train_grpo_tdc_intern_s1_distributed_fixed_cuda_13.sh [model_path] [learning_rate] [num_gpus]
 #
 # Examples:
-#   sbatch scripts/train_grpo_tdc_intern_s1_fixed.sh AMES
-#   sbatch scripts/train_grpo_tdc_intern_s1_fixed.sh Skin_Reaction jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05
-#   bash scripts/train_grpo_tdc_intern_s1_fixed.sh hERG jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05 1e-6 4
+#   sbatch scripts/train_grpo_tdc_intern_s1_distributed_fixed_cuda_13.sh
+#   bash scripts/train_grpo_tdc_intern_s1_distributed_fixed_cuda_13.sh jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05 1e-6 4
 #
 
 ### SLURM DIRECTIVES ###
@@ -26,13 +26,13 @@
 #SBATCH --gpus=2
 #SBATCH --mem-per-gpu=128G
 #SBATCH --cpus-per-gpu=4
-#SBATCH --time=0:20:00
+#SBATCH --time=3:00:00
 
 ### Ray temp dir (avoid permission conflicts on shared /tmp/ray) ###
 export RAY_TMPDIR=/tmp/jojolee/ray
 
-### NCCL / IB / NETWORK CONFIG (match fixed distributed script) ###
-export OMP_NUM_THREADS=$(( ${NUM_GPUS:-4} * 2 ))
+### NCCL / IB / NETWORK CONFIG ###
+export OMP_NUM_THREADS=16
 export NCCL_NVLS_ENABLE=1
 export NCCL_IB_ADAPTIVE_ROUTING=1
 export NCCL_IB_SL=1
@@ -71,13 +71,16 @@ run_task() {
     else
         echo "Running in standalone mode"
         IS_SLURM=false
-        NUM_GPUS=${4:-4}
+        NUM_GPUS=${3:-4}
     fi
 
     # Parse arguments
-    TASK_NAME=${1:-"AMES"}
-    PRETRAIN_PATH=${2:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}
-    LEARNING_RATE=${3:-"1e-6"}
+    PRETRAIN_PATH=${1:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}
+    LEARNING_RATE=${2:-"1e-6"}
+
+    ### MULTI-TASK ###
+    TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
+    TASK_LABEL="Base"
 
     # Resolve PROJECT_ROOT by walking up from a known starting directory until
     # we find the 'openrlhf' package dir.
@@ -95,39 +98,43 @@ run_task() {
     fi
 
     DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format"
-    TRAIN_DATA="$DATA_DIR/${TASK_NAME}_train.jsonl"
-    VAL_DATA="$DATA_DIR/${TASK_NAME}_val.jsonl"
-
     mkdir -p "$PROJECT_ROOT/logs"
 
-    # Verify data exists
-    if [ ! -f "$TRAIN_DATA" ]; then
-        echo "Error: Training data not found: $TRAIN_DATA"
-        echo "Available tasks:"
-        ls "$DATA_DIR" | grep "_train.jsonl" | sed 's/_train.jsonl//' | sort
-        exit 1
-    fi
+    # Build concatenated training data from all tasks
+    TRAIN_PARTS=()
+    for t in "${TASK_NAMES[@]}"; do
+        f="$DATA_DIR/${t}_train.jsonl"
+        if [ ! -f "$f" ]; then
+            echo "Error: Training data not found: $f"
+            echo "Available tasks:"
+            ls "$DATA_DIR" 2>/dev/null | grep "_train.jsonl" | sed 's/_train.jsonl//' | sort
+            exit 1
+        fi
+        TRAIN_PARTS+=("$f")
+    done
+    IFS=,; TRAIN_DATA="${TRAIN_PARTS[*]}"; unset IFS
 
-    # Run configuration (+fixed tag)
-    RUN_ID="S-grpo-fixed-${TASK_NAME}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
-    SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
+    # Run configuration
+    RUN_ID="S-grpo-fixed-${TASK_LABEL}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
+    SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_LABEL}/$RUN_ID"
+    HUB_REPO_ID="jiosephlee/grpo-tdc-intern-s1-${TASK_LABEL}"
 
     # Distributed layout: derive split from visible GPUs (about 25% actor, rest vLLM)
     ACTOR_GPUS=1
     VLLM_GPUS=$((NUM_GPUS - 1))
     VLLM_NUM_ENGINES=$VLLM_GPUS
     VLLM_TENSOR_PARALLEL_SIZE=1
-    TRAIN_BATCH_SIZE=$((ACTOR_GPUS * 16))
+    TRAIN_BATCH_SIZE=32
 
     # Tool-calling configuration — Intern-S1 format
     AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
-    AGENT_MAX_STEPS=40
+    AGENT_MAX_STEPS=30
     PROMPT_CONSTRUCTION_MODE="auto"   # "manual" (fast) or "auto" (robust)
     CHAT_PROTOCOL="intern_s1"         # Intern-S1 JSON format with <|action_start|><|plugin|> markers
 
     # GRPO configuration
-    N_SAMPLES_PER_PROMPT=16
-    ADVANTAGE_ESTIMATOR="dr_grpo"
+    N_SAMPLES_PER_PROMPT=8
+    ADVANTAGE_ESTIMATOR="group_norm"
     DYNAMIC_FILTERING=true
     DYNAMIC_FILTERING_REWARD_RANGE="0 1"
 
@@ -159,6 +166,9 @@ run_task() {
     export OPENRLHF_PROMPT_CONSTRUCTION_MODE="$PROMPT_CONSTRUCTION_MODE"
     export OPENRLHF_CHAT_PROTOCOL="$CHAT_PROTOCOL"
     export OPENRLHF_MAX_STEPS="$AGENT_MAX_STEPS"
+    export DEBUG_TRACES="${DEBUG_TRACES:-0}"
+    export OPENRLHF_DEBUG_LOGITS=0
+    export OPENRLHF_DEBUG_NAN_GUARD=0
 
     ############################
     #   RAY LOG MANAGEMENT     #
@@ -197,9 +207,11 @@ run_task() {
     export RAY_PYTHON_EXECUTABLE="$PY_EXE"
 
     # (Optional) increase fd limit; helps with raylet sockets
-    ulimit -n 65535
+    ulimit -n 65535 2>/dev/null || true
+
     # Clean up any previous Ray state
-    ray stop --force || true
+    ray stop --force 2>/dev/null || true
+    rm -rf "$RAY_TMPDIR"/ray/session_* 2>/dev/null || true
 
     # Start Ray head node
     echo "Starting Ray head node at $RAY_NODE_IP_ADDRESS"
@@ -223,9 +235,10 @@ run_task() {
     ############################
 
     echo "========================================"
-    echo "TDC GRPO Training — Intern-S1-mini (FIXED)"
+    echo "TDC GRPO Training — Intern-S1-mini (DISTRIBUTED FIXED)"
     echo "========================================"
-    echo "Task: $TASK_NAME"
+    echo "Tasks: ${TASK_NAMES[*]}"
+    echo "Task Label: $TASK_LABEL"
     echo "Model: $PRETRAIN_PATH"
     echo "Chat Protocol: $CHAT_PROTOCOL"
     echo "Learning Rate: $LEARNING_RATE"
@@ -238,7 +251,6 @@ run_task() {
         echo "----------------------------------------"
     fi
     echo "Training Data: $TRAIN_DATA"
-    echo "Validation Data: $VAL_DATA"
     echo "Save Path: $SAVE_PATH"
     echo "----------------------------------------"
     echo "NUM_GPUS: $NUM_GPUS"
@@ -256,7 +268,7 @@ run_task() {
     echo "Temperature: $TEMPERATURE"
     echo "Top-p: $TOP_P"
     echo "----------------------------------------"
-    echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-fixed-$TASK_NAME run=$RUN_ID"
+    echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-fixed-$TASK_LABEL run=$RUN_ID"
     echo "========================================"
 
     ############################
@@ -264,6 +276,23 @@ run_task() {
     ############################
     TDC_TOOLS_JSON="$PROJECT_ROOT/data/tdc/metadata/tools_per_task.json"
     python "$PROJECT_ROOT/scripts/generate_tools_json.py" "$TDC_TOOLS_JSON"
+
+    ############################
+    #   BUILD TDC EVAL DATASET #
+    ############################
+    EVAL_DATA="$DATA_DIR/eval_tdc.jsonl"
+    python -c "
+import json, sys
+tasks = sys.argv[1:]
+with open('$EVAL_DATA', 'w') as out:
+    for task in tasks:
+        with open(f'$DATA_DIR/{task}_val.jsonl') as f:
+            for line in f:
+                rec = json.loads(line)
+                rec['datasource'] = task
+                out.write(json.dumps(rec, ensure_ascii=False) + '\n')
+print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples from {len(tasks)} tasks')
+" "${TASK_NAMES[@]}"
 
     ############################
     #   TRAINING COMMAND       #
@@ -288,18 +317,23 @@ run_task() {
         --save_steps -1 \
         --logging_steps 1 \
         --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
-        --micro_train_batch_size 8 \
-        --micro_rollout_batch_size 16 \
+        --micro_train_batch_size 4 \
+        --micro_rollout_batch_size 8 \
         --train_batch_size $TRAIN_BATCH_SIZE \
         --rollout_batch_size $TRAIN_BATCH_SIZE \
         --max_epochs 1 \
         --prompt_max_len 8192 \
-        --generate_max_len 1536 \
+        --generate_max_len 2048 \
         --max_samples 1000000 \
-        --zero_stage 0 \
+        --enable_prefix_caching \
+        --zero_stage 1 \
         --param_dtype bf16 \
         --actor_learning_rate $LEARNING_RATE \
         --prompt_data "$TRAIN_DATA" \
+        --eval_dataset "$EVAL_DATA" \
+        --eval_steps 25 \
+        --eval_temperature $TEMPERATURE \
+        --eval_n_samples_per_prompt 1 \
         --input_key messages \
         --label_key answer \
         --apply_chat_template \
@@ -320,8 +354,12 @@ run_task() {
         --chat_protocol "$CHAT_PROTOCOL" \
         --use_wandb 1 \
         --wandb_project "$WANDB_PROJECT" \
-        --wandb_group "TDC-InternS1-fixed-$TASK_NAME" \
+        --wandb_group "TDC-InternS1-fixed-$TASK_LABEL" \
         --wandb_run_name "$RUN_ID" \
+        --save_path "$SAVE_PATH" \
+        --push_to_hub "$HUB_REPO_ID" \
+        --delete_local_after_push \
+        --use_dynamic_batch \
         --rollout_trace_dir "$SAVE_PATH/rollout_traces"
 
     ############################
@@ -337,7 +375,7 @@ run_task() {
     echo "Training Summary"
     echo "========================================"
     echo "Saved model to: $SAVE_PATH"
-    echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-fixed-$TASK_NAME run=$RUN_ID"
+    echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-fixed-$TASK_LABEL run=$RUN_ID"
     echo "Ray logs at: $PERSIST_RAY_DIR/session_latest"
     if [ "$IS_SLURM" = true ]; then
         echo "SLURM output: S-grpo-fixed_${SLURM_JOB_ID}.out"

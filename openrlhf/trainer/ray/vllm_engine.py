@@ -120,6 +120,12 @@ class LLMRayActor:
     async def init_process_group(
         self, master_address, master_port, rank_offset, world_size, group_name, backend, use_ray
     ):
+        print(
+            f"[LLMRayActor.init_process_group] pid={os.getpid()} "
+            f"master={master_address}:{master_port} rank_offset={rank_offset} "
+            f"world_size={world_size} group={group_name} backend={backend} use_ray={use_ray}",
+            flush=True,
+        )
         return await self.llm.collective_rpc(
             "init_process_group",
             args=(master_address, master_port, rank_offset, world_size, group_name, backend, use_ray),

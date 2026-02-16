@@ -7,12 +7,12 @@
 #   <tool_call>func_name<arg_key>key</arg_key><arg_value>value</arg_value></tool_call>
 #
 # Usage:
-#   1. Get an interactive node:  srun --partition=dgx-b200 --gpus=4 --mem-per-gpu=128G --cpus-per-gpu=8 --time=1:00:00 --pty bash
+#   1. Get an interactive node:  srun --partition=dgx-b200 --gpus=8 --mem-per-gpu=128G --cpus-per-gpu=8 --time=1:00:00 --pty bash
 #   2. Activate env:             module load MAMBA && module load cuda/13.1.0 && micromamba activate /vast/projects/myatskar/design-documents/conda_env/openrlhf_tfv4
-#   3. Run:                      bash scripts/train_grpo_tdc_glm_debug_distributed_fixed_cuda_13.sh [model_path] [learning_rate]
+#   3. Run:                      bash scripts/train_grpo_tdc_glm_debug_distributed_adam_offload.sh [model_path] [learning_rate]
 #
 # Example:
-#   bash scripts/train_grpo_tdc_glm_debug_distributed_fixed_cuda_13.sh zai-org/GLM-4.7-Flash 1e-6
+#   bash scripts/train_grpo_tdc_glm_debug_distributed_adam_offload.sh zai-org/GLM-4.7-Flash 1e-6
 #
 
 set -euo pipefail
@@ -103,6 +103,11 @@ VLLM_GPUS=4
 VLLM_NUM_ENGINES=4
 VLLM_TENSOR_PARALLEL_SIZE=1
 TRAIN_BATCH_SIZE=32
+MIN_GPUS=$((ACTOR_GPUS + VLLM_NUM_ENGINES * VLLM_TENSOR_PARALLEL_SIZE))
+if [ "$NUM_GPUS" -lt "$MIN_GPUS" ]; then
+    echo "Error: Need at least $MIN_GPUS GPUs for non-colocated run (actor=$ACTOR_GPUS, vLLM=$((VLLM_NUM_ENGINES * VLLM_TENSOR_PARALLEL_SIZE))), got $NUM_GPUS." >&2
+    exit 1
+fi
 
 ### TOOL-CALLING CONFIG ###
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"

@@ -1,33 +1,29 @@
 #!/bin/bash
 #
-# INTERACTIVE DEBUG version of the Intern-S1 GRPO training script — DISTRIBUTED (non-colocated).
+# INTERACTIVE DEBUG version of the GLM-4.7-Flash GRPO training script — DISTRIBUTED (non-colocated).
 #
 # Actor and vLLM run on separate GPU sets (no colocation).
-# Multi-task: trains on all TDC tasks simultaneously, with periodic evaluation.
-# Uses the Intern-S1 JSON tool-calling format:
-#   <|action_start|><|plugin|>{"name": "...", "parameters": {...}}<|action_end|>
+# Uses the GLM Flash XML tool-calling format:
+#   <tool_call>func_name<arg_key>key</arg_key><arg_value>value</arg_value></tool_call>
 #
 # Usage:
 #   1. Get an interactive node:  srun --partition=dgx-b200 --gpus=4 --mem-per-gpu=128G --cpus-per-gpu=8 --time=1:00:00 --pty bash
-#   2. Activate env:             module load MAMBA && module load cuda/13.1.0 && micromamba activate /vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern
-#   3. Run:                      bash scripts/train_grpo_tdc_intern_s1_debug_distributed_fixed_cuda_13.sh [model_path] [learning_rate]
+#   2. Activate env:             module load MAMBA && module load cuda/13.1.0 && micromamba activate /vast/projects/myatskar/design-documents/conda_env/openrlhf_tfv4
+#   3. Run:                      bash scripts/train_grpo_tdc_glm_debug_distributed_fixed_cuda_13.sh <task_name> [model_path] [learning_rate]
 #
 # Example:
-#   bash scripts/train_grpo_tdc_intern_s1_debug_distributed_fixed_cuda_13.sh jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05 1e-6
+#   bash scripts/train_grpo_tdc_glm_debug_distributed_fixed_cuda_13.sh AMES zai-org/GLM-4.7-Flash 1e-6
 #
 
 set -euo pipefail
 export RAY_TMPDIR=/tmp/jojolee/ray
 
 ### ARGS ###
-PRETRAIN_PATH=${1:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}
-LEARNING_RATE=${2:-"1e-6"}
+TASK_NAME=${1:-"BBB_Martins"}
+PRETRAIN_PATH=${2:-"zai-org/GLM-4.7-Flash"}
+LEARNING_RATE=${3:-"1e-6"}
 NUM_GPUS=$SLURM_GPUS_ON_NODE
-DEBUG_TRACES=${3:-"0"}
-
-### MULTI-TASK ###
-TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
-TASK_LABEL="Base"
+DEBUG_TRACES=${4:-"0"}
 
 ### NCCL / IB / NETWORK CONFIG ###
 export OMP_NUM_THREADS=16
@@ -58,28 +54,26 @@ fi
 
 ### DATA ###
 DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format"
+TRAIN_DATA="$DATA_DIR/${TASK_NAME}_train.jsonl"
 mkdir -p "$PROJECT_ROOT/logs"
 
-TRAIN_PARTS=()
-for t in "${TASK_NAMES[@]}"; do
-    f="$DATA_DIR/${t}_train.jsonl"
-    if [ ! -f "$f" ]; then
-        echo "Error: Training data not found: $f"
-        echo "Available tasks:"
-        ls "$DATA_DIR" 2>/dev/null | grep "_train.jsonl" | sed 's/_train.jsonl//' | sort
-        exit 1
-    fi
-    TRAIN_PARTS+=("$f")
-done
-IFS=,; TRAIN_DATA="${TRAIN_PARTS[*]}"; unset IFS
+if [ ! -f "$TRAIN_DATA" ]; then
+    echo "Error: Training data not found: $TRAIN_DATA"
+    echo "Available tasks:"
+    ls "$DATA_DIR" 2>/dev/null | grep "_train.jsonl" | sed 's/_train.jsonl//' | sort
+    exit 1
+fi
 
 ### RUN CONFIG ###
-RUN_ID="S-grpo-debug-distributed-${TASK_LABEL}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
-SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_LABEL}/$RUN_ID"
-HUB_REPO_ID="jiosephlee/grpo-tdc-intern-s1-${TASK_LABEL}"
+RUN_ID="GLM-grpo-fixed-debug-distributed-${TASK_NAME}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
+DATE_STAMP=$(date +%Y%m%d)
+RUNS_DIR="$PROJECT_ROOT/runs/${RUN_ID}/${DATE_STAMP}"
+mkdir -p "$RUNS_DIR"
+SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_NAME}/$RUN_ID"
+HUB_REPO_ID="jiosephlee/grpo-tdc-glm-flash-${TASK_NAME}"
 
 ### GPU LAYOUT (distributed — separate actor and vLLM GPUs) ###
-ACTOR_GPUS=1
+ACTOR_GPUS=2
 VLLM_GPUS=$((NUM_GPUS - ACTOR_GPUS))
 VLLM_NUM_ENGINES=$VLLM_GPUS
 VLLM_TENSOR_PARALLEL_SIZE=1
@@ -89,7 +83,7 @@ TRAIN_BATCH_SIZE=32
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
 AGENT_MAX_STEPS=30
 PROMPT_CONSTRUCTION_MODE="auto"
-CHAT_PROTOCOL="intern_s1"
+CHAT_PROTOCOL="glm_flash"
 
 ### GRPO CONFIG ###
 N_SAMPLES_PER_PROMPT=8
@@ -139,10 +133,9 @@ export RAY_ADDRESS="auto"
 
 ### PRINT CONFIG ###
 echo "========================================"
-echo "TDC GRPO Training — Intern-S1-mini (DISTRIBUTED INTERACTIVE DEBUG)"
+echo "TDC GRPO Training — GLM-4.7-Flash (DISTRIBUTED INTERACTIVE DEBUG)"
 echo "========================================"
-echo "Tasks: ${TASK_NAMES[*]}"
-echo "Task Label: $TASK_LABEL"
+echo "Task: $TASK_NAME"
 echo "Model: $PRETRAIN_PATH"
 echo "Chat Protocol: $CHAT_PROTOCOL"
 echo "Learning Rate: $LEARNING_RATE"
@@ -161,29 +154,31 @@ echo "Prompt Mode: $PROMPT_CONSTRUCTION_MODE"
 echo "Temperature: $TEMPERATURE"
 echo "Top-p: $TOP_P"
 echo "----------------------------------------"
-echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-fixed-$TASK_LABEL run=$RUN_ID"
+echo "Runs Dir: $RUNS_DIR"
+echo "W&B: project=$WANDB_PROJECT group=TDC-GLMFlash-fixed-$TASK_NAME run=$RUN_ID"
 echo "========================================"
 
-### GENERATE PER-TASK TOOLS JSON (from Intern-S1-recipe source of truth) ###
+### GENERATE PER-TASK TOOLS JSON ###
 TDC_TOOLS_JSON="$PROJECT_ROOT/data/tdc/metadata/tools_per_task.json"
 python "$PROJECT_ROOT/scripts/generate_tools_json.py" "$TDC_TOOLS_JSON"
 
-### BUILD TDC EVAL DATASET ###
-EVAL_DATA="$DATA_DIR/eval_tdc.jsonl"
+### BUILD EVAL DATASET ###
+EVAL_DATA="$DATA_DIR/eval_${TASK_NAME}.jsonl"
 python -c "
 import json, sys
-tasks = sys.argv[1:]
+task = sys.argv[1]
+src = '$DATA_DIR/' + task + '_val.jsonl'
 with open('$EVAL_DATA', 'w') as out:
-    for task in tasks:
-        with open(f'$DATA_DIR/{task}_val.jsonl') as f:
-            for line in f:
-                rec = json.loads(line)
-                rec['datasource'] = task
-                out.write(json.dumps(rec, ensure_ascii=False) + '\n')
-print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples from {len(tasks)} tasks')
-" "${TASK_NAMES[@]}"
+    for line in open(src):
+        rec = json.loads(line)
+        rec['datasource'] = task
+        out.write(json.dumps(rec, ensure_ascii=False) + '\n')
+print(f'Built eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples from {task}')
+" "$TASK_NAME"
 
 ### TRAINING ###
+RUN_LOG="$RUNS_DIR/run.log"
+echo "Logging to: $RUN_LOG"
 python -m openrlhf.cli.train_ppo_ray \
     --pretrain "$PRETRAIN_PATH" \
     --ref_num_nodes 0 \
@@ -203,16 +198,16 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_steps -1 \
     --logging_steps 1 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
-    --micro_train_batch_size 4 \
-    --micro_rollout_batch_size 8 \
+    --micro_train_batch_size 1 \
+    --micro_rollout_batch_size 2 \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs 1 \
-    --prompt_max_len 8192 \
+    --prompt_max_len 6144 \
     --generate_max_len 2048 \
     --max_samples 1000000 \
     --enable_prefix_caching \
-    --zero_stage 1 \
+    --zero_stage 2 \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \
     --prompt_data "$TRAIN_DATA" \
@@ -229,24 +224,23 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_sync_backend nccl \
     --async_train \
     --async_queue_size 1 \
-    --enforce_eager \
     $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \
     --top_p $TOP_P \
     --temperature $TEMPERATURE \
     --agent_func_path "$AGENT_FUNC_PATH" \
     --agent_max_steps $AGENT_MAX_STEPS \
-    --vllm_stop_strings "<|action_end|>" "<|im_end|>" \
+    --vllm_stop_strings "</tool_call>" \
     --prompt_construction_mode "$PROMPT_CONSTRUCTION_MODE" \
     --chat_protocol "$CHAT_PROTOCOL" \
     --use_wandb 1 \
     --wandb_project "$WANDB_PROJECT" \
-    --wandb_group "TDC-InternS1-fixed-$TASK_LABEL" \
+    --wandb_group "TDC-GLMFlash-fixed-$TASK_NAME" \
     --wandb_run_name "$RUN_ID" \
     --save_path "$SAVE_PATH" \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
     --use_dynamic_batch \
-    --rollout_trace_dir "$SAVE_PATH/rollout_traces"
+    2>&1 | tee "$RUN_LOG"
 
 ### CLEANUP ###
 echo "Training complete! Stopping Ray..."

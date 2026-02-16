@@ -84,7 +84,7 @@ PROMPT_CONSTRUCTION_MODE="auto"
 CHAT_PROTOCOL="glm_flash"
 
 ### GRPO CONFIG ###
-N_SAMPLES_PER_PROMPT=8
+N_SAMPLES_PER_PROMPT=4
 ADVANTAGE_ESTIMATOR="group_norm"
 DYNAMIC_FILTERING=true
 DYNAMIC_FILTERING_REWARD_RANGE="0 1"
@@ -186,8 +186,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --reward_num_gpus_per_node 0 \
     --actor_num_nodes 1 \
     --actor_num_gpus_per_node $NUM_GPUS \
-    --vllm_num_engines $((VLLM_NUM_ENGINES/4)) \
-    --vllm_tensor_parallel_size 4 \
+    --vllm_num_engines $((VLLM_NUM_ENGINES)) \
+    --vllm_tensor_parallel_size 1 \
     --colocate_all_models \
     --vllm_gpu_memory_utilization 0.6 \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \

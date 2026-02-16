@@ -269,6 +269,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --use_liger_kernel \
     --ring_attn_size 2 \
     --ring_head_stride 2 \
+    --skip_eval_step_zero \
     2>&1 | tee "$RUN_LOG"
 
 ### CLEANUP ###

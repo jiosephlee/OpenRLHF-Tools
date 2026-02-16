@@ -355,15 +355,18 @@ class PPOTrainer(BasePPOTrainer):
         vllm_engines,
         **generate_kwargs,
     ) -> None:
-        # get eval and save steps
-        if strategy.args.eval_steps == -1:
-            strategy.args.eval_steps = float("inf")  # do not evaluate
-        if strategy.args.save_steps == -1:
-            strategy.args.save_steps = float("inf")  # do not save ckpt
-
         # Tokenizer is shared across the sample generator and trainer to avoid duplicated loads.
         tokenizer = get_tokenizer(pretrain, None, "left", strategy, use_fast=not strategy.args.disable_fast_tokenizer)
         self.prompts_dataloader, self.eval_dataloader, self.max_steps = prepare_datasets(strategy, tokenizer)
+
+        # get eval and save steps
+        if strategy.args.eval_steps == -1:
+            strategy.args.eval_steps = float("inf")  # do not evaluate
+        if getattr(strategy.args, "save_steps_ratio", None) is not None:
+            strategy.args.save_steps = max(1, int(self.max_steps * strategy.args.save_steps_ratio))
+            logger.info(f"save_steps_ratio={strategy.args.save_steps_ratio} → save_steps={strategy.args.save_steps} (max_steps={self.max_steps})")
+        if strategy.args.save_steps == -1:
+            strategy.args.save_steps = float("inf")  # do not save ckpt
         self.generate_kwargs = generate_kwargs
 
         # sample generation

@@ -318,7 +318,7 @@ class SamplesGenerator:
         decoded["sections"] = sections
         return decoded
 
-    def _write_step_trace(self, step_idx: int, episode_traces: list, prompts_consumed: int, filtered_count: int):
+    def _write_step_trace(self, step_idx: int, episode_traces: list, prompts_consumed: int, filtered_count: int, total_episodes: int = 0):
         if not self.rollout_trace_run_dir or not episode_traces:
             return
         step_id = step_idx + 1
@@ -331,7 +331,7 @@ class SamplesGenerator:
             "engine_idx": engine_idx,
             "prompts_consumed": prompts_consumed,
             "filtered_count": filtered_count,
-            "total_episodes": len(episode_traces),
+            "total_episodes": total_episodes,
             "trace": trace,
             "decoded": self._decode_trace(trace),
         }
@@ -433,6 +433,7 @@ class SamplesGenerator:
         pbar = tqdm(range(num_prompts), desc="Generate samples")
         filtered_count = 0
         episode_traces: list = []
+        total_episodes = 0
 
         while pending_refs:
             ready_refs, pending_refs = ray.wait(pending_refs, num_returns=1, timeout=10.0)
@@ -456,9 +457,14 @@ class SamplesGenerator:
 
                 # Build Experience objects for each vLLM response returned from this worker.
                 responses = ray.get(ref)
-                for resp in responses:
-                    episode_traces.append((engine_idx, resp))
+                total_episodes += len(responses)
+                # Only keep the first trace per step — _write_step_trace only uses [0].
+                # Holding ALL responses in episode_traces leaks hundreds of MB in
+                # multi-turn mode (each resp contains full observation_tokens + log_probs).
+                if not episode_traces:
+                    episode_traces.append((engine_idx, responses[0]))
                 experiences = [self._process_response_into_experience(response, **generate_kwargs) for response in responses]
+                del responses  # free raw vLLM response dicts before processing next batch
 
                 # Drop experiences if the average score falls outside the allowed range.
                 if dynamic_filtering and all(e.scores is not None for e in experiences):
@@ -490,7 +496,7 @@ class SamplesGenerator:
                     if exhausted:
                         for remaining_ref in pending_refs:
                             ray.cancel(remaining_ref)
-                        self._write_step_trace(step_idx, episode_traces, prompts_consumed, filtered_count)
+                        self._write_step_trace(step_idx, episode_traces, prompts_consumed, filtered_count, total_episodes)
                         return [], prompts_consumed, True
                     # Otherwise dispatch the new prompt to keep filling the queue.
                     else:
@@ -500,7 +506,7 @@ class SamplesGenerator:
                             ref_to_engine[new_ref] = new_engine_idx
                             engine_pending[new_engine_idx] += 1
 
-        self._write_step_trace(step_idx, episode_traces, prompts_consumed, filtered_count)
+        self._write_step_trace(step_idx, episode_traces, prompts_consumed, filtered_count, total_episodes)
         return accepted_experiences, prompts_consumed, exhausted
 
     def _dispatch_prompts_to_vllm(self, prompts: List[str], labels: List[str], **generate_kwargs) -> List:

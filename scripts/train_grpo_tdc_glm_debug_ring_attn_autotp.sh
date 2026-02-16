@@ -5,13 +5,13 @@
 # Hybrid (colocated) mode — Actor and vLLM share the same GPUs via sleep mode.
 # Adds ring attention (sequence parallelism) + DeepSpeed AutoTP (tensor parallelism).
 # Device mesh: (dp=NUM_GPUS/(ring*tp), sp=ring_attn_size, tp=ds_tp_size)
-#   e.g. 4 GPUs with ring=2, tp=2 → (dp=1, sp=2, tp=2)
+#   e.g. 8 GPUs with ring=4, tp=2 → (dp=1, sp=4, tp=2)
 #
 # Uses the GLM Flash XML tool-calling format:
 #   <tool_call>func_name<arg_key>key</arg_key><arg_value>value</arg_value></tool_call>
 #
 # Usage:
-#   1. Get an interactive node:  srun --partition=dgx-b200 --gpus=4 --mem-per-gpu=128G --cpus-per-gpu=4 --time=1:00:00 --pty bash
+#   1. Get an interactive node:  srun --partition=dgx-b200 --gpus=8 --mem-per-gpu=128G --cpus-per-gpu=4 --time=1:00:00 --pty bash
 #   2. Activate env:             module load MAMBA && module load cuda/13.1.0 && micromamba activate /vast/projects/myatskar/design-documents/conda_env/openrlhf_tfv4
 #   3. Run:                      bash scripts/train_grpo_tdc_glm_debug_distributed_ring_attn_autotp.sh <task_name> [model_path] [learning_rate]
 #
@@ -30,7 +30,7 @@ NUM_GPUS=$SLURM_GPUS_ON_NODE
 DEBUG_TRACES=${4:-"0"}
 
 ### RING ATTENTION + AUTOTP CONFIG ###
-RING_ATTN_SIZE=2
+RING_ATTN_SIZE=4
 RING_HEAD_STRIDE=2
 DS_TP_SIZE=2
 
@@ -257,10 +257,11 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_path "$SAVE_PATH" \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
-    --use_dynamic_batch \
     --ring_attn_size $RING_ATTN_SIZE \
     --ring_head_stride $RING_HEAD_STRIDE \
     --ds_tensor_parallel_size $DS_TP_SIZE \
+    --use_liger_kernel \
+    --skip_eval_step_zero \
     2>&1 | tee "$RUN_LOG"
 
 ### CLEANUP ###

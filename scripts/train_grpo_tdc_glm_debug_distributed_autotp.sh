@@ -268,6 +268,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --use_dynamic_batch \
     --use_liger_kernel \
     --ds_tensor_parallel_size 2 \
+    --skip_eval_step_zero \
     2>&1 | tee "$RUN_LOG"
 
 ### CLEANUP ###

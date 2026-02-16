@@ -283,6 +283,7 @@ if __name__ == "__main__":
 
     # Checkpoints
     parser.add_argument("--eval_steps", type=int, default=-1)
+    parser.add_argument("--skip_eval_step_zero", action="store_true", default=False)
     parser.add_argument("--save_steps", type=int, default=-1)
     parser.add_argument("--logging_steps", type=int, default=1)
     parser.add_argument("--ckpt_path", type=str, default="./ckpt/checkpoints_ppo_ray")

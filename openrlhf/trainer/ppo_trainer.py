@@ -382,7 +382,7 @@ class PPOTrainer(BasePPOTrainer):
                 self.prompts_dataloader.load_state_dict(state_dict)
 
         # Evaluate at step 0 (before any training) unless resuming from a checkpoint.
-        if global_step == 0 and self.eval_dataloader:
+        if global_step == 0 and self.eval_dataloader and not self.args.skip_eval_step_zero:
             eval_generate_kwargs = self.generate_kwargs.copy()
             eval_generate_kwargs["temperature"] = self.args.eval_temperature
             eval_generate_kwargs["n_samples_per_prompt"] = self.args.eval_n_samples_per_prompt

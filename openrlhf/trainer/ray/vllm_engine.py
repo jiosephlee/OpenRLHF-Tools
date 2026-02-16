@@ -103,6 +103,14 @@ class LLMRayActor:
             "0.8.5"
         ), "Streaming VLLM version must be greater than 0.8.5"
 
+        # Prevent inheriting trainer process-group rendezvous env into vLLM workers.
+        # vLLM V1 initializes its own distributed context and can collide on MASTER_PORT.
+        os.environ.pop("MASTER_ADDR", None)
+        os.environ.pop("MASTER_PORT", None)
+        os.environ.pop("WORLD_SIZE", None)
+        os.environ.pop("RANK", None)
+        os.environ.pop("LOCAL_RANK", None)
+
         if version.parse(vllm.__version__) >= version.parse("0.9.0"):
             os.environ["VLLM_ALLOW_INSECURE_SERIALIZATION"] = "1"
 

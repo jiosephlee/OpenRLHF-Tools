@@ -181,6 +181,18 @@ class LLMRayActor:
         """Number of unfinished requests in vLLM engine."""
         return self.llm.output_processor.get_num_unfinished_requests()
 
+    async def gc_collect(self):
+        """Force garbage collection inside the vLLM engine worker.
+
+        Multi-turn agent execution creates many intermediate objects per request
+        (RequestOutputs, token lists, deepcopied SamplingParams).  Python's cyclic
+        GC may not run between requests, so we trigger it explicitly after each
+        rollout batch to reclaim host RAM.
+        """
+        import gc
+
+        gc.collect()
+
     async def generate_responses(
         self,
         prompt: str,

@@ -1,3 +1,4 @@
+import gc
 import os
 import time
 from abc import ABC
@@ -228,6 +229,10 @@ class BasePPOTrainer(ABC):
         time_str = str(timedelta(seconds=duration)).split(".")[0]
         logger.info(f"✨ Evaluation completed in {time_str}, global_step {global_step}, eval_metrics: {logs}")
 
+        # Eval generates the entire dataset at once — free the large result set.
+        del samples_list, all_prompts, all_labels, rewards
+        gc.collect()
+
     def train_step(self, rollout_samples, global_step: int) -> Tuple[Dict, int]:
         # Turn raw rollouts into PPO-ready trajectories with rewards.
         experiences = self.experience_maker.make_experience_batch(rollout_samples)
@@ -256,6 +261,9 @@ class BasePPOTrainer(ABC):
         if self.critic_model_group is not None:
             refs.extend(self.critic_model_group.async_run_method_batch(method_name="append", experience=experiences))
         ray.get(refs)
+
+        # Free local experience tensors — data now lives in actor replay buffers.
+        del experiences, rollout_samples, refs
 
         # Perform PPO optimization for actor/critic and gather metrics.
         status = self.ppo_train(global_step)
@@ -501,6 +509,11 @@ class PPOTrainer(BasePPOTrainer):
                     self.evaluate(global_step, **eval_generate_kwargs)
 
                 pbar.update(prompts_consumed)
+
+                # Free accumulated Ray object store refs and Python garbage to
+                # prevent host-RAM growth across training steps.
+                del rollout_samples, status
+                gc.collect()
 
         # Close trackers
         if self.wandb_logger:

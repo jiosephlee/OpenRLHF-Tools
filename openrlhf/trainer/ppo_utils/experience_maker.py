@@ -354,6 +354,9 @@ class SamplesGenerator:
             **generate_kwargs,
         )
 
+        # Reclaim host RAM in vLLM engine workers accumulated during generation.
+        batch_vllm_engine_call(self.vllm_engines, "gc_collect")
+
         # Put engines back to sleep when enabled.
         if self.args.vllm_enable_sleep:
             batch_vllm_engine_call(self.vllm_engines, "sleep")
@@ -381,6 +384,9 @@ class SamplesGenerator:
             trace_step_idx=trace_step_idx,
             **generate_kwargs,
         )
+
+        # Reclaim host RAM in vLLM engine workers accumulated during generation.
+        batch_vllm_engine_call(self.vllm_engines, "gc_collect")
 
         # Put engines back to sleep when enabled.
         if self.args.vllm_enable_sleep:
@@ -524,6 +530,10 @@ class SamplesGenerator:
         truncate_length = generate_kwargs.get("prompt_max_len", 1024) + generate_kwargs.get("max_new_tokens", 1024)
         n_samples_per_prompt = generate_kwargs.get("n_samples_per_prompt", self.args.n_samples_per_prompt)
 
+        # Cache tokenizer in Ray object store once to avoid re-serializing per prompt.
+        if not hasattr(self, "_tokenizer_ref"):
+            self._tokenizer_ref = ray.put(self.tokenizer)
+
         # Snapshot current pending rollout counts to balance upcoming work.
         pending_counts = ray.get([engine.get_num_unfinished_requests.remote() for engine in self.vllm_engines])
         engine_heap = [(count, idx) for idx, count in enumerate(pending_counts)]
@@ -546,7 +556,7 @@ class SamplesGenerator:
                 label=label,
                 sampling_params=sampling_params,
                 max_length=truncate_length,
-                hf_tokenizer=self.tokenizer,
+                hf_tokenizer=self._tokenizer_ref,
                 num_samples=n_samples_per_prompt,
                 log_trajectory=(idx == 0),
             )
@@ -798,13 +808,17 @@ class RemoteExperienceMaker:
         # This is because the actors in ring group and tp group will return the same output
         duplicate_factor = args.ring_attn_size * args.ds_tensor_parallel_size
         action_log_probs_list = sum(ray.get(action_log_probs_ref)[::duplicate_factor], [])
+        del action_log_probs_ref
         base_action_log_probs_list = sum(ray.get(base_action_log_probs_ref)[::duplicate_factor], [])
+        del base_action_log_probs_ref
         value_list = sum(ray.get(value_ref)[::duplicate_factor], [])
+        del value_ref
 
         # Process rewards based on source
         if use_reward_model:
             # Reward Model
             rewards_list = sum(ray.get(r_refs)[::duplicate_factor], [])
+            del r_refs
             for i, samples in enumerate(samples_list):
                 samples.rewards = rewards_list[i]
                 samples.info["reward"] = rewards_list[i]

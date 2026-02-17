@@ -1,3 +1,4 @@
+import gc
 import os
 import shutil
 from abc import ABC
@@ -231,6 +232,25 @@ class DeepspeedStrategy(ABC):
                 model.model = tp_model
             else:
                 model = tp_model
+
+            # The old optimizer (and scheduler.optimizer) hold references to the
+            # pre-sharded full model parameters, pinning ~N GiB of stale weights in GPU
+            # memory. Recreate the optimizer over the TP-sharded parameters and rebind the
+            # scheduler so the originals can be freed before deepspeed.initialize() allocates
+            # gradient partitions.
+            old_defaults = optim.defaults.copy()
+            del optim
+            if scheduler is not None:
+                scheduler.optimizer = None  # break reference to old optimizer
+            sharded_model = model.model if is_actor else model
+            AdamOptimizer = DeepSpeedCPUAdam if self.adam_offload else FusedAdam
+            optim_params = get_optimizer_grouped_parameters(sharded_model, old_defaults.get("weight_decay", 0.0))
+            optim = AdamOptimizer(optim_params, **old_defaults)
+            if scheduler is not None:
+                scheduler.optimizer = optim  # rebind to new optimizer
+
+            gc.collect()
+            torch.cuda.empty_cache()
 
         engine, optim, _, scheduler = deepspeed.initialize(
             model=model.model if is_actor else model,

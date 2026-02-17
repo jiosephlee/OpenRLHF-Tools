@@ -1,318 +1,175 @@
-# OpenRLHF Tool-Calling Support
+# OpenRLHF-Tools: Extended OpenRLHF Fork
 
 ## Overview
 
-This implementation extends OpenRLHF with multi-turn tool-calling support for Group Relative Policy Optimization (GRPO) training. Agents can interact with external tools over multiple turns while maintaining proper token-level masking for policy gradients.
+This fork extends OpenRLHF with multi-turn tool-calling support for GRPO training, along with several infrastructure improvements: transformers v5 compatibility, multi-stage GPU dispatch, DeepSpeed OOM fixes, eval improvements, and TDC (Therapeutics Data Commons) dataset integration.
 
 **Key Features:**
-- ✅ Multi-turn agent-based rollouts with tool execution
-- ✅ Token-level masking (only LLM actions contribute to loss, observations excluded)
-- ✅ Clean abstraction layer (ToolCallingTurn + ChatProtocol)
-- ✅ GLM Flash XML tool format support
-- ✅ Extensible protocol system for new formats
+- Multi-turn agent-based rollouts with tool execution
+- Token-level masking (only LLM actions contribute to loss, observations excluded)
+- Clean abstraction layer (ToolCallingTurn + ChatProtocol)
+- Multiple chat protocol support: GLM Flash XML, Intern-S1, Qwen3
+- Transformers v4/v5 backward compatibility
+- 3-stage deferred GPU dispatch for better load balancing
+- AutoTP OOM fix (free pre-sharded weights before DeepSpeed init)
+- NaN-safe masked operations (`torch.where` instead of `tensor * mask`)
+- Eval at step 0, macro-F1 for TDC, `eval/global_step` W&B axis
+- Checkpoint uploading to HF Hub
+- Rollout trace logging to `runs/<run_name>/<date>/traces/`
+
+## Major Changes from Upstream OpenRLHF
+
+### 1. Transformers v5 Compatibility
+**Files:** `openrlhf/cli/batch_inference.py`, `openrlhf/cli/interactive_chat.py`
+
+Detects transformers major version at import time and branches on `batch_decode` (v4) vs `decode` (v5). `requirements.txt` allows either version.
+
+### 2. Multi-Stage GPU Dispatch (3-Stage Deferred Dispatch)
+**File:** `openrlhf/trainer/ppo_utils/experience_maker.py`
+
+Upstream dispatches all prompts to vLLM engines at once. We split into 3 stages (50/25/25):
+- Stage 1 (50%): dispatched immediately
+- Stage 2 (25%): dispatched when any engine's pending count drops to <=1
+- Stage 3 (25%): same trigger
+
+This dramatically improves GPU utilization when generation times vary (common with multi-turn tool calling). Uses heap-based balancer with per-engine pending counts.
+
+### 3. DeepSpeed AutoTP OOM Fix
+**File:** `openrlhf/utils/deepspeed/deepspeed.py`
+
+After `tp_model_init()` shards the model, the old optimizer still holds references to full-size pre-sharded parameters (~80 GiB). Fix: explicitly delete old optimizer, break scheduler reference, recreate optimizer over sharded params, force `gc.collect()` + `torch.cuda.empty_cache()` before `deepspeed.initialize()`.
+
+### 4. NaN-Safe Masked Operations
+**Files:** `openrlhf/models/actor.py`, `openrlhf/models/utils.py`
+
+Changed `(tensor * mask).sum()` to `torch.where(mask.bool(), tensor, torch.zeros_like(tensor)).sum()` in `masked_mean()` and `action_log_probs`. Prevents NaN propagation through masked positions.
+
+### 5. Eval Improvements
+**Files:** `openrlhf/trainer/ppo_trainer.py`, `openrlhf/trainer/ppo_trainer_async.py`, `openrlhf/utils/logging_utils.py`
+
+- Moved `evaluate()` from `PPOTrainer` to `BasePPOTrainer` (shared by sync/async)
+- Added eval at step 0 (`--skip_eval_step_zero` to disable)
+- Changed W&B metric axis from `eval/epoch` to `eval/global_step`
+- Added macro-F1 computation for TDC binary classification tasks
+
+### 6. TDC Dataset Integration
+**Files:** `openrlhf/datasets/tdc_loader.py`, `openrlhf/utils/tdc_reward_model.py`, `openrlhf/datasets/prompts_dataset.py`
+
+- `TDCDatasetLoader`: converts TDC CSVs to OpenAI message format with fuzzy prompt matching, Tox21 multi-subtask support
+- Per-task tool schema injection via `--tdc_tools` pointing to `tools_per_task.json`
+- Binary answer extraction (A/B) for eval with macro-F1
+
+### 7. Checkpoint Uploading
+**Files:** `openrlhf/cli/train_ppo_ray.py`, `openrlhf/trainer/ppo_trainer.py`
+
+New CLI args: `--push_to_hub`, `--push_to_hub_private`, `--delete_local_after_push`, `--save_steps_ratio`
+
+### 8. Rollout Trace Logging
+**File:** `openrlhf/trainer/ppo_utils/experience_maker.py`
+
+Saves one decoded rollout trace per step to `runs/<run_name>/<date>/traces/`. Annotates each record with prompt/action/observation sections decoded from token IDs using action ranges.
 
 ## Architecture
 
-### Core Components
+### Tool-Calling Components
 
-#### 1. ToolCallingTurn (`openrlhf/utils/tool_calling_turn.py`)
-Single-class agent that directly implements `AgentInstanceBase`. Handles conversation
-history, tool execution, reward computation, and format rendering — no intermediate
-session object.
+#### ToolCallingTurn (`openrlhf/utils/tool_calling_turn.py`)
+Single-class agent implementing `AgentInstanceBase`. Handles conversation history, tool execution, reward computation, and format rendering.
 
-**Key Methods:**
 ```python
 class ToolCallingTurn(AgentInstanceBase):
-    async def reset(self, states) -> dict
-        # Parse prompt (plain text or JSON messages), build history, render via protocol
-        # Returns: {"observation": formatted_prompt}
-
-    async def step(self, state_dict) -> dict
-        # Parse tool calls, execute tools, compute reward
-        # Returns: {"environment_feedback", "rewards", "done", "scores", "extra_logs"}
+    async def reset(self, states) -> dict    # Returns {"observation": formatted_prompt}
+    async def step(self, state_dict) -> dict  # Returns {"environment_feedback", "rewards", "done", ...}
 ```
 
-**Design:**
-- ~180 lines — merges former ToolCallAgent + AgentSession into one class
-- Uses MultiTurnAgentExecutor with factory pattern (zero-arg init)
-- Inline tool execution via simple dict: `{"tool_name": callable}`
-- Inline reward computation (placeholder for actual reward model)
+#### ChatProtocol (`openrlhf/utils/chat_protocol.py`)
+Abstract interface for model-specific tool-call formats.
 
-#### 2. ChatProtocol (`openrlhf/utils/chat_protocol.py`)
-Abstract interface for model-specific formats.
+**Implementations:**
+- `GLMFlashProtocol`: XML format (`<tool_call>func<arg_key>k</arg_key><arg_value>v</arg_value></tool_call>`)
+- `InternS1Protocol`: JSON format with `<|action_start|><|plugin|>` delimiters, includes SMILES-safe JSON escape repair
+- Qwen3 support via `--chat_protocol qwen3`
 
-**Key Methods:**
-```python
-class ChatProtocol(ABC):
-    def render_messages(self, messages, tools, add_generation_prompt) -> str
-        # Format messages with tool schemas
-
-    def parse_assistant_text(self, text: str) -> Dict[str, Any]
-        # Parse tool calls from LLM output
-```
-
-**GLMFlashProtocol:**
-- Tool format: `<tool_call>func_name<arg_key>key</arg_key><arg_value>value</arg_value></tool_call>`
-- Uses vLLM's official parser (with regex fallback)
-- Supports manual (fast) and auto (robust) prompt construction modes
-
-### Multi-Turn Flow
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    GRPO Training Loop                           │
-└─────────────────────────────────────────────────────────────────┘
-                             ↓
-┌─────────────────────────────────────────────────────────────────┐
-│               Experience Maker (Rollout Generation)             │
-└─────────────────────────────────────────────────────────────────┘
-                             ↓
-┌─────────────────────────────────────────────────────────────────┐
-│                  vLLM Engine (LLMRayActor)                      │
-│  • Sets environment variables (MODEL_PATH, PROMPT_MODE, etc.)   │
-│  • Loads AgentExecutor from agent_func_path                     │
-└─────────────────────────────────────────────────────────────────┘
-                             ↓
-┌─────────────────────────────────────────────────────────────────┐
-│              MultiTurnAgentExecutor (agent.py)                  │
-│  • Orchestrates multi-turn loop                                 │
-│  • Tracks action_ranges (only LLM tokens)                       │
-│  • Computes rollout_log_probs                                   │
-└─────────────────────────────────────────────────────────────────┘
-                             ↓
-              ┌──────────────────────────────┐
-              │   ToolCallingTurn            │
-              │   (tool_calling_turn.py)     │
-              │   • reset()                  │
-              │   • step()                   │
-              │   • _execute_tool()          │
-              │   • _compute_reward()        │
-              └──────────────────────────────┘
-                             ↓
-              ┌──────────────────────────────┐
-              │   ChatProtocol               │
-              │   • render_messages()        │
-              │   • parse_assistant_text()   │
-              └──────────────────────────────┘
-```
+Selected via `OPENRLHF_CHAT_PROTOCOL` env var (propagated by `vllm_engine.py`).
 
 ### Token-Level Masking
 
-**Critical Feature:** Only LLM-generated action tokens contribute to policy loss.
-
+Only LLM-generated action tokens contribute to policy loss:
 ```
-Trajectory: [prompt_tokens | action_1 | observation_1 | action_2 | observation_2 | final_answer]
-              ├─ Prompt: system + user question (0-N)
-              ├─ Action 1: tool call (N to M) ← In action_ranges
-              ├─ Observation 1: tool response (M to K) ← NOT in action_ranges
-              ├─ Action 2: tool call (K to L) ← In action_ranges
-              ├─ Observation 2: tool response (L to P) ← NOT in action_ranges
-              └─ Final: answer (P to Q) ← In action_ranges
-
-action_ranges = [(N, M), (K, L), (P, Q)]  # Only actions!
-action_mask = [0...0, 1...1, 0...0, 1...1, 0...0, 1...1]  # Binary mask
-```
-
-**GRPO Loss Computation:**
-```python
-loss_mask = action_mask * attention_mask  # Only LLM tokens have mask=1
+Trajectory: [prompt | action_1 | observation_1 | action_2 | observation_2 | final_answer]
+action_ranges = [(N, M), (K, L), (P, Q)]  # Only LLM-generated spans
+loss_mask = action_mask * attention_mask
 actor_loss = -(log_probs * advantages * loss_mask).sum() / loss_mask.sum()
 ```
 
-This ensures observations don't affect policy gradients while allowing the LLM to condition on them.
-
-## Usage
-
-### Quick Start
-
-1. **Prepare your tool functions** (in external module):
-```python
-# therapeutic-tuning/tools/__init__.py
-BASIC_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "calculate_qed",
-            "description": "Calculate drug-likeness score",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "smiles": {"type": "string", "description": "SMILES string"}
-                },
-                "required": ["smiles"]
-            }
-        }
-    }
-]
-
-def calculate_qed(smiles: str) -> float:
-    # Your implementation
-    return 0.85
+### Multi-Turn Flow
+```
+GRPO Training Loop
+  -> Experience Maker (3-stage dispatch)
+    -> vLLM Engine (LLMRayActor)
+      -> MultiTurnAgentExecutor (agent.py, tracks action_ranges)
+        -> ToolCallingTurn (tool_calling_turn.py)
+          -> ChatProtocol (parse/render)
 ```
 
-2. **Run training:**
-```bash
-bash examples/scripts/train_grpo_tool_calling.sh /path/to/model /path/to/data
-```
+## CLI Arguments
 
-### CLI Arguments
-
-**Tool-Calling Specific:**
-- `--agent_func_path`: Path to agent implementation (e.g., `openrlhf/utils/tool_calling_turn.py`)
-- `--agent_max_steps`: Max turns per episode (default: 5, recommend: 20-40 for complex tasks)
+**Tool-Calling:**
+- `--agent_func_path`: Path to agent implementation
+- `--agent_max_steps`: Max turns per episode (default: 5)
 - `--vllm_stop_strings`: Stop generation tokens (e.g., `"</tool_call>"`)
-- `--prompt_construction_mode`: Prompt mode - `"manual"` (fast) or `"auto"` (robust)
+- `--chat_protocol`: Protocol name (`glm_flash`, `intern_s1`, `qwen3`)
+- `--prompt_construction_mode`: `"manual"` (fast) or `"auto"` (robust)
 
-**Example:**
-```bash
-python -m openrlhf.cli.train_ppo_ray \
-    --pretrain /path/to/glm-flash-model \
-    --agent_func_path openrlhf/utils/tool_calling_turn.py \
-    --agent_max_steps 40 \
-    --vllm_stop_strings "</tool_call>" \
-    --prompt_construction_mode manual \
-    --advantage_estimator dr_grpo \
-    --n_samples_per_prompt 8 \
-    --dynamic_filtering \
-    --dynamic_filtering_reward_range 0.2 0.8 \
-    # ... other GRPO args
-```
+**TDC:**
+- `--tdc_tools`: Path to per-task tool schema JSON
 
-### Environment Variables
+**Eval:**
+- `--skip_eval_step_zero`: Skip evaluation at step 0
+
+**Checkpointing:**
+- `--push_to_hub <repo_id>`: Upload checkpoints to HF Hub
+- `--push_to_hub_private`: Make repo private
+- `--delete_local_after_push`: Delete local checkpoint after upload
+- `--save_steps_ratio <float>`: Compute save_steps as fraction of total steps
+
+## Environment Variables
 
 Set automatically by vllm_engine.py:
-- `OPENRLHF_MODEL_PATH`: Model path for tokenizer (set from `--pretrain`)
-- `OPENRLHF_PROMPT_CONSTRUCTION_MODE`: Prompt mode (set from CLI arg)
-- `OPENRLHF_MAX_STEPS`: Max steps (set from `--agent_max_steps`)
+- `OPENRLHF_MODEL_PATH`: Model path for tokenizer
+- `OPENRLHF_PROMPT_CONSTRUCTION_MODE`: Prompt mode
+- `OPENRLHF_MAX_STEPS`: Max agent steps
+- `OPENRLHF_CHAT_PROTOCOL`: Chat protocol name
 
-Additional recommended:
-- `VLLM_NO_USAGE_STATS=1`: Disable vLLM telemetry
-- `VLLM_DISABLE_TELEMETRY=1`: Disable vLLM telemetry
+Debug flags:
+- `OPENRLHF_DEBUG_NAN_GUARD=1`: Enable NaN assertions in actor forward/backward
+- `OPENRLHF_DEBUG_LOGITS=1`: Enable verbose logit/log_prob diagnostics
 
-## Prompt Construction Modes
+## Key Files Changed from Upstream
 
-### Manual Mode (Default) - Fast
-String concatenation with hardcoded format:
-```python
-environment_feedback = (
-    f"<|observation|>\n"
-    f"<tool_response>{result}</tool_response>\n"
-    f"<|assistant|>\n"
-)
-```
-
-**Pros:** ⚡ Minimal overhead, direct control
-**Cons:** ❌ Brittle, model-specific format
-
-### Auto Mode - Robust
-Uses tokenizer's chat template:
-```python
-messages_with_tool = messages + [
-    {"role": "assistant", "tool_calls": [...]},
-    {"role": "tool", "content": result}
-]
-environment_feedback = tokenizer.apply_chat_template(
-    messages_with_tool, tools=BASIC_TOOLS, add_generation_prompt=True
-)
-```
-
-**Pros:** ✅ Robust, model-agnostic, handles edge cases
-**Cons:** 🐢 Slower (re-processes history each turn)
-
-**Recommendation:** Use manual for production, auto for development/testing.
-
-## Extending with New Protocols
-
-### Add Qwen3 Protocol (JSON Format)
-
-1. **Create protocol class:**
-```python
-# openrlhf/utils/chat_protocol.py
-
-class Qwen3Protocol(ChatProtocol):
-    """Qwen3 JSON format: <tool_call>\n{"name": "...", "arguments": {...}}\n</tool_call>"""
-
-    TOOL_CALL_REGEX = re.compile(r"<tool_call>\s*(?P<body>.*?)\s*</tool_call>", re.DOTALL)
-
-    def parse_assistant_text(self, text: str) -> Dict[str, Any]:
-        match = self.TOOL_CALL_REGEX.search(text)
-        if match:
-            payload = json.loads(match.group("body"))
-            return {
-                "content": "",
-                "tool_calls": [{
-                    "name": payload["name"],
-                    "arguments": payload["arguments"]
-                }]
-            }
-        return {"content": text, "tool_calls": []}
-```
-
-2. **Use in agent:**
-```python
-protocol_name = os.environ.get("OPENRLHF_CHAT_PROTOCOL", "glm_flash")
-if protocol_name == "qwen3":
-    protocol = Qwen3Protocol(tokenizer)
-elif protocol_name == "glm_flash":
-    protocol = GLMFlashProtocol(tokenizer)
-```
-
-3. **Set environment variable:**
-```bash
-export OPENRLHF_CHAT_PROTOCOL=qwen3
-```
-
-## Debugging
-
-### Test Parser Directly
-```python
-from openrlhf.utils.chat_protocol import GLMFlashProtocol
-from transformers import AutoTokenizer
-
-tokenizer = AutoTokenizer.from_pretrained("path/to/model", trust_remote_code=True)
-protocol = GLMFlashProtocol(tokenizer)
-
-text = "<tool_call>calculate_qed<arg_key>smiles</arg_key><arg_value>CCO</arg_value></tool_call>"
-action = protocol.parse_assistant_text(text)
-print(action)
-# {'content': '', 'tool_calls': [{'name': 'calculate_qed', 'arguments': {'smiles': 'CCO'}}]}
-```
-## Testing
-
-### Unit Tests
-```bash
-# Test ToolCallingTurn
-pytest tests/test_tool_calling_turn.py -v
-
-# Test ChatProtocol
-pytest tests/test_chat_protocol.py -v
-```
-
-### Integration Test (Small-Scale)
-```bash
-python -m openrlhf.cli.train_ppo_ray \
-    --agent_func_path openrlhf/utils/tool_calling_turn.py \
-    --max_samples 10 \
-    # ... other args
-```
-
-Validate:
-- ✅ Ray logs show agent initialization
-- ✅ action_ranges tracked correctly
-- ✅ Rewards computed (check wandb)
-- ✅ No crashes in 10 samples
-
-## Contributing
-
-To add new features:
-1. Create feature branch: `git checkout -b feature/your-feature`
-2. Implement changes (maintain abstraction layer)
-3. Add tests (unit + integration)
-4. Update this documentation
-5. Submit pull request
+| File | Changes |
+|---|---|
+| `openrlhf/utils/chat_protocol.py` | New: ChatProtocol ABC, GLMFlashProtocol, InternS1Protocol |
+| `openrlhf/utils/tool_calling_turn.py` | New: ToolCallingTurn agent class |
+| `openrlhf/utils/tdc_reward_model.py` | New: binary answer extractor for TDC eval |
+| `openrlhf/datasets/tdc_loader.py` | New: TDCDatasetLoader |
+| `openrlhf/datasets/prompts_dataset.py` | Per-task tool schema injection via tools_map |
+| `openrlhf/trainer/ppo_utils/experience_maker.py` | 3-stage dispatch, trace logging, filtered count logging |
+| `openrlhf/trainer/ppo_trainer.py` | evaluate() in BasePPOTrainer, step-0 eval, macro-F1, hub push |
+| `openrlhf/trainer/ppo_trainer_async.py` | Eval wired into async trainer |
+| `openrlhf/trainer/ray/vllm_engine.py` | Passes chat_protocol env var to Ray actors |
+| `openrlhf/trainer/ray/ppo_actor.py` | NaN guard assertions |
+| `openrlhf/models/actor.py` | torch.where NaN fix, logit diagnostics |
+| `openrlhf/models/utils.py` | torch.where in masked_mean |
+| `openrlhf/utils/deepspeed/deepspeed.py` | Recreate optimizer after AutoTP to free pre-sharded weights |
+| `openrlhf/utils/distributed_util.py` | NCCL diagnostic logging |
+| `openrlhf/utils/logging_utils.py` | eval/global_step W&B axis |
+| `openrlhf/cli/batch_inference.py` | Transformers v4/v5 compat |
+| `openrlhf/cli/interactive_chat.py` | Transformers v4/v5 compat |
+| `openrlhf/cli/train_ppo_ray.py` | New CLI args for tools, eval, checkpointing |
+| `openrlhf/utils/agent.py` | Pass hf_tokenizer through to agent instance |
 
 ---
 
-**Last Updated:** 2026-02-09
-**Implemented By:** Claude Sonnet 4.5
+**Last Updated:** 2026-02-16
 **Base Version:** OpenRLHF (latest main branch)

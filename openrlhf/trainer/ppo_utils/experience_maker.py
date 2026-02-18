@@ -530,10 +530,6 @@ class SamplesGenerator:
         truncate_length = generate_kwargs.get("prompt_max_len", 1024) + generate_kwargs.get("max_new_tokens", 1024)
         n_samples_per_prompt = generate_kwargs.get("n_samples_per_prompt", self.args.n_samples_per_prompt)
 
-        # Cache tokenizer in Ray object store once to avoid re-serializing per prompt.
-        if not hasattr(self, "_tokenizer_ref"):
-            self._tokenizer_ref = ray.put(self.tokenizer)
-
         # Snapshot current pending rollout counts to balance upcoming work.
         pending_counts = ray.get([engine.get_num_unfinished_requests.remote() for engine in self.vllm_engines])
         engine_heap = [(count, idx) for idx, count in enumerate(pending_counts)]
@@ -556,7 +552,6 @@ class SamplesGenerator:
                 label=label,
                 sampling_params=sampling_params,
                 max_length=truncate_length,
-                hf_tokenizer=self._tokenizer_ref,
                 num_samples=n_samples_per_prompt,
                 log_trajectory=(idx == 0),
             )

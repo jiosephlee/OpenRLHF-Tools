@@ -8,6 +8,7 @@ import vllm
 from packaging import version
 from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
+from transformers import AutoTokenizer
 from vllm.inputs import TokensPrompt
 from vllm.utils import random_uuid
 
@@ -53,9 +54,11 @@ class LLMRayActor:
         )
         self._configure_vllm_env(version, vllm, kwargs.pop("full_determinism", False))
 
+        model_path = kwargs.get("model", "")
+        self.hf_tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+
         # Configure agent environment variables
         if agent_func_path:
-            model_path = kwargs.get("model", "")
             os.environ["OPENRLHF_MODEL_PATH"] = model_path
             os.environ["OPENRLHF_PROMPT_CONSTRUCTION_MODE"] = prompt_construction_mode
             os.environ["OPENRLHF_CHAT_PROTOCOL"] = chat_protocol
@@ -204,7 +207,6 @@ class LLMRayActor:
         label: str,
         sampling_params,
         max_length: int,
-        hf_tokenizer,
         num_samples: int = 1,
         log_trajectory: bool = False,
     ):
@@ -215,7 +217,7 @@ class LLMRayActor:
                 label=label,
                 sampling_params=sampling_params,
                 max_length=max_length,
-                hf_tokenizer=hf_tokenizer,
+                hf_tokenizer=self.hf_tokenizer,
                 llm_engine=self,
                 log_trajectory=log_trajectory,
             )

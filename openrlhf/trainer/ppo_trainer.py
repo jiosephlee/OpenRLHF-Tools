@@ -1,3 +1,4 @@
+import ctypes
 import gc
 import os
 import time
@@ -232,6 +233,10 @@ class BasePPOTrainer(ABC):
         # Eval generates the entire dataset at once — free the large result set.
         del samples_list, all_prompts, all_labels, rewards
         gc.collect()
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception:
+            pass
 
     def train_step(self, rollout_samples, global_step: int) -> Tuple[Dict, int]:
         # Turn raw rollouts into PPO-ready trajectories with rewards.
@@ -514,6 +519,10 @@ class PPOTrainer(BasePPOTrainer):
                 # prevent host-RAM growth across training steps.
                 del rollout_samples, status
                 gc.collect()
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception:
+            pass
 
         # Close trackers
         if self.wandb_logger:

@@ -219,7 +219,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --actor_num_gpus_per_node $ACTOR_GPUS \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size $VLLM_TENSOR_PARALLEL_SIZE \
-    --vllm_gpu_memory_utilization 0.95 \
+    --vllm_gpu_memory_utilization 0.975 \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \

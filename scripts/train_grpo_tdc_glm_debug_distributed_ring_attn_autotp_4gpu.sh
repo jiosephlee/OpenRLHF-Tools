@@ -253,7 +253,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --tool_version "$TOOL_VERSION" \
     --gradient_checkpointing \
     --packing_samples \
-    --vllm_sync_backend gloo \
+    --vllm_sync_backend nccl \
     --async_train \
     --async_queue_size 1 \
     $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \
@@ -274,7 +274,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --ring_attn_size $RING_ATTN_SIZE \
     --ring_head_stride $RING_HEAD_STRIDE \
     --ds_tensor_parallel_size $DS_TP_SIZE \
-    --skip_eval_step_zero \
+    --adam_offload \
+    --skip_eval_step_zero
     2>&1 | tee "$RUN_LOG"
 
 ### CLEANUP ###

@@ -22,7 +22,7 @@ def compute_similarity_wrapper(
     reference_smiles: list,
     fingerprint: str = "morgan",
 ) -> str:
-    from tools.full_Haydn import compute_similarity, FingerprintType
+    from tools.haydn_tools_python_311 import compute_similarity, FingerprintType
     result = compute_similarity(smiles, reference_smiles, FingerprintType(fingerprint))
     return result.model_dump_json(indent=2)
 
@@ -33,7 +33,7 @@ def find_mcs_wrapper(
     complete_rings_only: bool = True,
     ring_matches_ring_only: bool = True,
 ) -> str:
-    from tools.full_Haydn import find_mcs
+    from tools.haydn_tools_python_311 import find_mcs
     result = find_mcs(smiles, reference_smiles, complete_rings_only, ring_matches_ring_only)
     return result.model_dump_json(indent=2)
 
@@ -42,19 +42,19 @@ def score_structural_alerts_wrapper(
     smiles: str,
     alert_library: str = "all",
 ) -> str:
-    from tools.full_Haydn import score_structural_alerts, AlertLibrary
+    from tools.haydn_tools_python_311 import score_structural_alerts, AlertLibrary
     result = score_structural_alerts(smiles, AlertLibrary(alert_library))
     return result.model_dump_json(indent=2)
 
 
 def extract_pharmacophore_features_wrapper(smiles: str) -> str:
-    from tools.full_Haydn import extract_pharmacophore_features
+    from tools.haydn_tools_python_311 import extract_pharmacophore_features
     result = extract_pharmacophore_features(smiles)
     return result.model_dump_json(indent=2)
 
 
 def classify_ionization_wrapper(smiles: str, ph: float = 7.4) -> str:
-    from tools.full_Haydn import classify_ionization
+    from tools.haydn_tools_python_311 import classify_ionization
     result = classify_ionization(smiles, ph)
     return result.model_dump_json(indent=2)
 
@@ -65,7 +65,7 @@ def standardize_smiles_wrapper(
     canonical_tautomer: bool = True,
     neutralize: bool = False,
 ) -> str:
-    from tools.full_Haydn import standardize_smiles
+    from tools.haydn_tools_python_311 import standardize_smiles
     return standardize_smiles(smiles, remove_salts, canonical_tautomer, neutralize)
 
 
@@ -73,7 +73,7 @@ def compute_descriptors_wrapper(
     smiles: str,
     descriptors: Optional[list] = None,
 ) -> str:
-    from tools.full_Haydn import compute_descriptors
+    from tools.haydn_tools_python_311 import compute_descriptors
     result = compute_descriptors(smiles, descriptors)
     return json.dumps(result, indent=2, ensure_ascii=False)
 
@@ -82,7 +82,7 @@ def match_substructure_wrapper(
     smiles: str,
     patterns: dict,
 ) -> str:
-    from tools.full_Haydn import match_substructure
+    from tools.haydn_tools_python_311 import match_substructure
     result = match_substructure(smiles, patterns)
     # SubstructureMatchResult is a pydantic model
     return json.dumps(
@@ -93,7 +93,7 @@ def match_substructure_wrapper(
 
 
 def analyze_ring_systems_wrapper(smiles: str) -> str:
-    from tools.full_Haydn import analyze_ring_systems
+    from tools.haydn_tools_python_311 import analyze_ring_systems
     result = analyze_ring_systems(smiles)
     return result.model_dump_json(indent=2)
 
@@ -102,7 +102,7 @@ def get_murcko_scaffold_wrapper(
     smiles: str,
     generic: bool = False,
 ) -> str:
-    from tools.full_Haydn import get_murcko_scaffold
+    from tools.haydn_tools_python_311 import get_murcko_scaffold
     result = get_murcko_scaffold(smiles, generic=generic)
     return result.model_dump_json(indent=2)
 

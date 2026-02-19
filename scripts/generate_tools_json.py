@@ -1,68 +1,73 @@
 #!/usr/bin/env python3
-"""Generate tools_per_task.json from the canonical Python source.
+"""Generate versioned tools_per_task JSON files from the tool version registry.
 
-Reads BASIC_TOOLS and TDC_RDKIT_SPECIFIC_OPENAI_TOOLS_MAP from
-Intern-S1-recipe/tools and writes a merged JSON mapping:
-    {task_name: BASIC_TOOLS + task_specific_tools, "__default__": BASIC_TOOLS}
+Reads tool schemas from ``openrlhf.utils.tool_versions`` and writes merged
+JSON mappings of the form:
+    {task_name: basic_schemas + task_specific, "__default__": basic_schemas}
 
 Usage:
-    python scripts/generate_tools_json.py [output_path]
+    python scripts/generate_tools_json.py --version v1|v2|v3|v4|all
 
-Default output: data/tdc/metadata/tools_per_task.json
+Output: data/tdc/metadata/tools_per_task_<version>.json
 """
 
+import argparse
 import json
 import sys
-import types
 from pathlib import Path
 
-# Add Intern-S1-recipe to sys.path and import tool modules directly,
-# bypassing tools/__init__.py which hard-depends on molgpka (not installed).
-# We pre-register an empty ``tools`` package in sys.modules so that
-# submodule imports resolve without executing __init__.py.
+# Ensure the project root is on sys.path so ``openrlhf`` is importable.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-INTERN_S1_ROOT = PROJECT_ROOT / "Intern-S1-recipe"
-assert (INTERN_S1_ROOT / "tools").is_dir(), (
-    f"Intern-S1-recipe/tools not found at {INTERN_S1_ROOT}/tools. "
-    f"Run: git submodule update --init Intern-S1-recipe"
-)
-sys.path.insert(0, str(INTERN_S1_ROOT))
-if "tools" not in sys.modules:
-    _pkg = types.ModuleType("tools")
-    _pkg.__path__ = [str(INTERN_S1_ROOT / "tools")]
-    _pkg.__package__ = "tools"
-    sys.modules["tools"] = _pkg
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-from tools.RDKit_tools import RDKIT_BASIC_OPENAI_TOOLS, TDC_RDKIT_SPECIFIC_OPENAI_TOOLS_MAP
-from tools.AccFG import AccFG_OPENAI_TOOLS
-from tools.standardize_tools import STANDARDIZE_OPENAI_TOOLS
+from openrlhf.utils.tool_versions import TOOL_VERSIONS, get_version
 
-try:
-    from tools.ePSA_3D import SASA_OPENAI_TOOLS
-except ImportError:
-    SASA_OPENAI_TOOLS = []
 
-BASIC_TOOLS = (
-    RDKIT_BASIC_OPENAI_TOOLS
-    + AccFG_OPENAI_TOOLS
-    + STANDARDIZE_OPENAI_TOOLS
-    + SASA_OPENAI_TOOLS
-)
+def _write_version(ver: str, output_dir: Path) -> None:
+    """Write a single version's tools_per_task JSON file."""
+    cfg = get_version(ver)
+    basic = cfg["basic_schemas"]
+    task_map = cfg["task_specific_map"]
 
-def main():
-    output_path = sys.argv[1] if len(sys.argv) > 1 else str(
-        PROJECT_ROOT / "data" / "tdc" / "metadata" / "tools_per_task.json"
-    )
+    mapping = {"__default__": basic}
+    for task, specific_tools in task_map.items():
+        mapping[task] = basic + specific_tools
 
-    mapping = {"__default__": BASIC_TOOLS}
-    for task, specific_tools in TDC_RDKIT_SPECIFIC_OPENAI_TOOLS_MAP.items():
-        mapping[task] = BASIC_TOOLS + specific_tools
-
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"tools_per_task_{ver}.json"
     with open(output_path, "w") as f:
         json.dump(mapping, f, indent=2, ensure_ascii=False)
 
-    print(f"Wrote {len(mapping)} tasks ({len(mapping)-1} + __default__) to {output_path}")
+    n_default = len(basic)
+    print(f"[{ver}] Wrote {len(mapping)} tasks ({len(mapping)-1} + __default__, "
+          f"{n_default} base tools) to {output_path}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate versioned tools_per_task JSON files.")
+    parser.add_argument(
+        "--version",
+        required=True,
+        choices=list(TOOL_VERSIONS.keys()) + ["all"],
+        help="Tool version to generate (v1, v2, v3, v4, or all).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Output directory (default: data/tdc/metadata/).",
+    )
+    args = parser.parse_args()
+
+    output_dir = Path(args.output_dir) if args.output_dir else (PROJECT_ROOT / "data" / "tdc" / "metadata")
+
+    if args.version == "all":
+        for ver in TOOL_VERSIONS:
+            _write_version(ver, output_dir)
+    else:
+        _write_version(args.version, output_dir)
+
 
 if __name__ == "__main__":
     main()

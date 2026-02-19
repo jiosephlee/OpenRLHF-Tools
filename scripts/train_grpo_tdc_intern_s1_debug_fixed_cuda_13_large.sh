@@ -161,8 +161,9 @@ echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-fixed-$TASK_LABEL run=$RUN_
 echo "========================================"
 
 ### GENERATE PER-TASK TOOLS JSON (from Intern-S1-recipe source of truth) ###
-TDC_TOOLS_JSON="$PROJECT_ROOT/data/tdc/metadata/tools_per_task.json"
-python "$PROJECT_ROOT/scripts/generate_tools_json.py" "$TDC_TOOLS_JSON"
+TOOL_VERSION="${TOOL_VERSION:-v3}"
+TDC_TOOLS_JSON="$PROJECT_ROOT/data/tdc/metadata/tools_per_task_${TOOL_VERSION}.json"
+python "$PROJECT_ROOT/scripts/generate_tools_json.py" --version "$TOOL_VERSION"
 
 ### BUILD TDC EVAL DATASET ###
 EVAL_DATA="$DATA_DIR/eval_tdc.jsonl"
@@ -191,7 +192,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size 1 \
     --colocate_all_models \
-    --vllm_gpu_memory_utilization 0.84 \
+    --vllm_gpu_memory_utilization 0.8525 \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \
@@ -206,7 +207,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs 1 \
-    --prompt_max_len 8192 \
+    --prompt_max_len 10240 \
     --generate_max_len 2048 \
     --max_samples 1000000 \
     --enable_prefix_caching \
@@ -222,6 +223,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --label_key answer \
     --apply_chat_template \
     --tdc_tools "$TDC_TOOLS_JSON" \
+    --tool_version "$TOOL_VERSION" \
     --gradient_checkpointing \
     --packing_samples \
     --vllm_sync_backend nccl \

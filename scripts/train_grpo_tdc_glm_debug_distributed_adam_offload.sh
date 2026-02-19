@@ -196,8 +196,9 @@ echo "W&B: project=$WANDB_PROJECT group=TDC-GLMFlash-fixed-$TASK_LABEL run=$RUN_
 echo "========================================"
 
 ### GENERATE PER-TASK TOOLS JSON ###
-TDC_TOOLS_JSON="$PROJECT_ROOT/data/tdc/metadata/tools_per_task.json"
-python "$PROJECT_ROOT/scripts/generate_tools_json.py" "$TDC_TOOLS_JSON"
+TOOL_VERSION="${TOOL_VERSION:-v3}"
+TDC_TOOLS_JSON="$PROJECT_ROOT/data/tdc/metadata/tools_per_task_${TOOL_VERSION}.json"
+python "$PROJECT_ROOT/scripts/generate_tools_json.py" --version "$TOOL_VERSION"
 
 ### BUILD TDC EVAL DATASET ###
 EVAL_DATA="$DATA_DIR/eval_tdc.jsonl"
@@ -257,6 +258,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --label_key answer \
     --apply_chat_template \
     --tdc_tools "$TDC_TOOLS_JSON" \
+    --tool_version "$TOOL_VERSION" \
     --gradient_checkpointing \
     --packing_samples \
     --vllm_sync_backend gloo \

@@ -69,7 +69,6 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
         total_reward = 0
         final_scores = 0
         extra_logs = {}
-
         if sampling_params.logprobs is not None:
             rollout_log_probs = [0.0] * len(current_obs_tokens)
         else:

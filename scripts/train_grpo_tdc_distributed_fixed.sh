@@ -261,7 +261,7 @@ run_task() {
     #   GENERATE TOOLS JSON    #
     ############################
     TDC_TOOLS_JSON="$PROJECT_ROOT/data/tdc/metadata/tools_per_task.json"
-    python "$PROJECT_ROOT/scripts/generate_tools_json.py" "$TDC_TOOLS_JSON"
+    python "$PROJECT_ROOT/scripts/generate_tools_json.py" --version "$TOOL_VERSION"
 
     ############################
     #   TRAINING COMMAND       #
@@ -303,6 +303,7 @@ run_task() {
         --label_key answer \
         --apply_chat_template \
         --tdc_tools "$TDC_TOOLS_JSON" \
+    --tool_version "$TOOL_VERSION" \
         --gradient_checkpointing \
         --packing_samples \
         --vllm_sync_backend nccl \

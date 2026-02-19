@@ -71,6 +71,7 @@ def train(args):
             vllm_stop_strings=args.vllm_stop_strings,
             prompt_construction_mode=args.prompt_construction_mode,
             chat_protocol=args.chat_protocol,
+            tool_version=args.tool_version,
         )
 
     actor_model = RayActorGroup(
@@ -525,6 +526,13 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Path to JSON mapping {task_name: [tool_schemas]} for per-task tool injection into apply_chat_template",
+    )
+    parser.add_argument(
+        "--tool_version",
+        type=str,
+        choices=["v1", "v2", "v3", "v4"],
+        default=None,
+        help="Tool version for training (v1: RDKit+AccFG, v2: +salts, v3: +pKa/logD/ePSA, v4: +Haydn)",
     )
 
     # wandb parameters

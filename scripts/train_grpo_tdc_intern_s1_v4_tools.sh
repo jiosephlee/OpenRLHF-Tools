@@ -207,7 +207,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs 1 \
-    --prompt_max_len 10240 \
+    --prompt_max_len 12288 \
     --generate_max_len 2048 \
     --max_samples 1000000 \
     --enable_prefix_caching \

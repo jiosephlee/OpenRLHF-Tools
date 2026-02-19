@@ -176,7 +176,10 @@ except ImportError:
     HAYDN_OPENAI_TOOLS = []
     HAYDN_CALLABLES = {}
 
-_V4_SCHEMAS: List[Dict[str, Any]] = _V3_SCHEMAS + HAYDN_OPENAI_TOOLS
+_V4_HAYDN_NAMES = {"compute_similarity", "score_structural_alerts", "match_substructure"}
+_V4_SCHEMAS: List[Dict[str, Any]] = _V3_SCHEMAS + [
+    t for t in HAYDN_OPENAI_TOOLS if t["function"]["name"] in _V4_HAYDN_NAMES
+]
 
 # ---------------------------------------------------------------------------
 # Version callables (incremental)
@@ -193,7 +196,10 @@ if estimate_logd is not None:
 if get_3d_exposed_polar_surface is not None:
     _V3_CALLABLES["get_3d_exposed_polar_surface"] = get_3d_exposed_polar_surface
 
-_V4_CALLABLES: Dict[str, Callable] = {**_V3_CALLABLES, **HAYDN_CALLABLES}
+_V4_CALLABLES: Dict[str, Callable] = {
+    **_V3_CALLABLES,
+    **{k: v for k, v in HAYDN_CALLABLES.items() if k in _V4_HAYDN_NAMES},
+}
 
 # ---------------------------------------------------------------------------
 # Public registry

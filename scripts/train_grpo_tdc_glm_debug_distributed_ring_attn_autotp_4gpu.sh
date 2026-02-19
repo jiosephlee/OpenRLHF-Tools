@@ -30,8 +30,8 @@ NUM_GPUS=$SLURM_GPUS_ON_NODE
 DEBUG_TRACES=${4:-"0"}
 
 ### RING ATTENTION + AUTOTP CONFIG ###
-RING_ATTN_SIZE=2
-RING_HEAD_STRIDE=1
+RING_ATTN_SIZE=1
+RING_HEAD_STRIDE=8
 DS_TP_SIZE=2
 
 ACTOR_MIN_GPUS=$((RING_ATTN_SIZE * DS_TP_SIZE))
@@ -219,7 +219,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --actor_num_gpus_per_node $ACTOR_GPUS \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size $VLLM_TENSOR_PARALLEL_SIZE \
-    --vllm_gpu_memory_utilization 0.95 \
+    --vllm_gpu_memory_utilization 0.975 \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \
@@ -253,7 +253,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --tool_version "$TOOL_VERSION" \
     --gradient_checkpointing \
     --packing_samples \
-    --vllm_sync_backend gloo \
+    --vllm_sync_backend nccl \
     --async_train \
     --async_queue_size 1 \
     $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \
@@ -274,7 +274,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --ring_attn_size $RING_ATTN_SIZE \
     --ring_head_stride $RING_HEAD_STRIDE \
     --ds_tensor_parallel_size $DS_TP_SIZE \
-    --skip_eval_step_zero \
+    --skip_eval_step_zero
     2>&1 | tee "$RUN_LOG"
 
 ### CLEANUP ###

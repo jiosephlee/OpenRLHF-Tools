@@ -32,7 +32,7 @@ DEBUG_TRACES=${4:-"0"}
 ### RING ATTENTION + AUTOTP CONFIG ###
 RING_ATTN_SIZE=2
 RING_HEAD_STRIDE=1
-DS_TP_SIZE=4
+DS_TP_SIZE=2
 
 MIN_GPUS=$((RING_ATTN_SIZE * DS_TP_SIZE))
 if [ "$NUM_GPUS" -lt "$MIN_GPUS" ]; then
@@ -41,15 +41,15 @@ if [ "$NUM_GPUS" -lt "$MIN_GPUS" ]; then
 fi
 
 # ### NCCL / IB / NETWORK CONFIG ###
-# export OMP_NUM_THREADS=16
-# export NCCL_NVLS_ENABLE=1
-# export NCCL_IB_ADAPTIVE_ROUTING=1
-# export NCCL_IB_SL=1
-# export NCCL_IB_QPS_PER_CONNECTION=2
-# export NCCL_IB_SPLIT_DATA_ON_QPS=0
-# export NCCL_IB_HCA=mlx5_15,mlx5_10,mlx5_14,mlx5_13,mlx5_8,mlx5_7,mlx5_9,mlx5_4
-# export NCCL_SOCKET_IFNAME=bond0
-# export UCX_TLS=rc
+export OMP_NUM_THREADS=16
+export NCCL_NVLS_ENABLE=1
+export NCCL_IB_ADAPTIVE_ROUTING=1
+export NCCL_IB_SL=1
+export NCCL_IB_QPS_PER_CONNECTION=2
+export NCCL_IB_SPLIT_DATA_ON_QPS=0
+export NCCL_IB_HCA=mlx5_15,mlx5_10,mlx5_14,mlx5_13,mlx5_8,mlx5_7,mlx5_9,mlx5_4
+export NCCL_SOCKET_IFNAME=bond0
+export UCX_TLS=rc
 
 ### W&B ###
 if [ -z "${WANDB_API_KEY:-}" ]; then
@@ -94,12 +94,12 @@ VLLM_NUM_ENGINES=$((NUM_GPUS))
 
 ### TOOL-CALLING CONFIG ###
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
-AGENT_MAX_STEPS=25
+AGENT_MAX_STEPS=15
 PROMPT_CONSTRUCTION_MODE="auto"
 CHAT_PROTOCOL="glm_flash"
 
 ### GRPO CONFIG ###
-N_SAMPLES_PER_PROMPT=4
+N_SAMPLES_PER_PROMPT=8
 ADVANTAGE_ESTIMATOR="group_norm"
 DYNAMIC_FILTERING=true
 DYNAMIC_FILTERING_REWARD_RANGE="0 1"
@@ -208,7 +208,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_num_engines $((VLLM_NUM_ENGINES/2)) \
     --vllm_tensor_parallel_size 2 \
     --colocate_all_models \
-    --vllm_gpu_memory_utilization 0.4 \
+    --vllm_gpu_memory_utilization 0.5 \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \
@@ -222,7 +222,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs 1 \
-    --prompt_max_len 6144 \
+    --prompt_max_len 8192 \
     --generate_max_len 2048 \
     --max_samples 1000000 \
     --enable_prefix_caching \

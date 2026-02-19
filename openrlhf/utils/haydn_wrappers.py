@@ -218,7 +218,10 @@ def get_murcko_scaffold_wrapper(
         raise ValueError(f"Invalid SMILES string: {smiles}")
 
     mol_heavy_atoms = mol.GetNumHeavyAtoms()
-    core = MurckoScaffold.GetScaffoldForMol(mol)
+    try:
+        core = MurckoScaffold.GetScaffoldForMol(mol)
+    except Exception:
+        core = None
     has_core = core is not None and core.GetNumAtoms() > 0
 
     scaffold_smiles = Chem.MolToSmiles(core, canonical=True, isomericSmiles=True) if has_core else ""

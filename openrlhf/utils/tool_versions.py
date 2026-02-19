@@ -34,11 +34,17 @@ assert (_INTERN_S1_ROOT / "tools").is_dir(), (
 )
 if str(_INTERN_S1_ROOT) not in sys.path:
     sys.path.insert(0, str(_INTERN_S1_ROOT))
-if "tools" not in sys.modules:
+_TOOLS_PATH = str(_INTERN_S1_ROOT / "tools")
+_existing_tools_pkg = sys.modules.get("tools")
+if _existing_tools_pkg is None:
     _pkg = types.ModuleType("tools")
-    _pkg.__path__ = [str(_INTERN_S1_ROOT / "tools")]
+    _pkg.__path__ = [_TOOLS_PATH]
     _pkg.__package__ = "tools"
     sys.modules["tools"] = _pkg
+else:
+    _existing_path = list(getattr(_existing_tools_pkg, "__path__", []))
+    if _TOOLS_PATH not in _existing_path:
+        _existing_tools_pkg.__path__ = [_TOOLS_PATH, *_existing_path]
 
 
 # ---------------------------------------------------------------------------

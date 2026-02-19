@@ -10,12 +10,33 @@ and callable wrappers as ``HAYDN_CALLABLES`` (dict[str, Callable]).
 """
 
 import json
+import importlib.util
+import sys
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 
 # ---------------------------------------------------------------------------
 # Wrappers (10 functions)
 # ---------------------------------------------------------------------------
+
+_HAYDN_MODULE_NAME = "_openrlhf_haydn_tools_python_311"
+
+
+def _load_haydn_module():
+    module = sys.modules.get(_HAYDN_MODULE_NAME)
+    if module is not None:
+        return module
+
+    project_root = Path(__file__).resolve().parent.parent.parent
+    module_path = project_root / "Intern-S1-recipe" / "tools" / "haydn_tools_python_311.py"
+    spec = importlib.util.spec_from_file_location(_HAYDN_MODULE_NAME, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Failed to load Haydn tools module from: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    sys.modules[_HAYDN_MODULE_NAME] = module
+    return module
 
 def compute_similarity_wrapper(
     smiles: str,
@@ -42,8 +63,8 @@ def score_structural_alerts_wrapper(
     smiles: str,
     alert_library: str = "all",
 ) -> str:
-    from tools.haydn_tools_python_311 import score_structural_alerts, AlertLibrary
-    result = score_structural_alerts(smiles, AlertLibrary(alert_library))
+    haydn = _load_haydn_module()
+    result = haydn.score_structural_alerts(smiles, haydn.AlertLibrary(alert_library))
     return result.model_dump_json(indent=2)
 
 
@@ -102,8 +123,8 @@ def get_murcko_scaffold_wrapper(
     smiles: str,
     generic: bool = False,
 ) -> str:
-    from tools.haydn_tools_python_311 import get_murcko_scaffold
-    result = get_murcko_scaffold(smiles, generic=generic)
+    haydn = _load_haydn_module()
+    result = haydn.get_murcko_scaffold(smiles, generic=generic)
     return result.model_dump_json(indent=2)
 
 

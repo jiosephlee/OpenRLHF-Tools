@@ -318,6 +318,12 @@ class SamplesGenerator:
         decoded["sections"] = sections
         return decoded
 
+    def _strip_token_ids(self, trace: dict) -> dict:
+        trace_no_ids = dict(trace)
+        for key in ("observation_tokens", "token_ids", "prompt_token_ids"):
+            trace_no_ids.pop(key, None)
+        return trace_no_ids
+
     def _write_step_trace(self, step_idx: int, episode_traces: list, prompts_consumed: int, filtered_count: int, total_episodes: int = 0):
         if not self.rollout_trace_run_dir or not episode_traces:
             return
@@ -332,11 +338,26 @@ class SamplesGenerator:
             "prompts_consumed": prompts_consumed,
             "filtered_count": filtered_count,
             "total_episodes": total_episodes,
-            "trace": trace,
+            "trace": self._strip_token_ids(trace),
             "decoded": self._decode_trace(trace),
         }
         with open(trace_path, "w") as f:
             f.write(json.dumps(self._to_jsonable(record), ensure_ascii=True) + "\n")
+
+    def _write_eval_trace(self, eval_idx: int, episode_trace: tuple, total_episodes: int):
+        if not self.rollout_trace_run_dir or episode_trace is None:
+            return
+        engine_idx, trace = episode_trace
+        trace_path = os.path.join(self.rollout_trace_run_dir, f"eval_{eval_idx}.json")
+        record = {
+            "eval": eval_idx,
+            "engine_idx": engine_idx,
+            "total_episodes": total_episodes,
+            "trace": self._strip_token_ids(trace),
+            "decoded": self._decode_trace(trace),
+        }
+        with open(trace_path, "w") as f:
+            f.write(json.dumps(self._to_jsonable(record), ensure_ascii=True))
 
     @torch.no_grad()
     def generate_eval_samples(self, **generate_kwargs) -> Tuple[List[Experience], Optional[float], int, bool]:
@@ -351,7 +372,13 @@ class SamplesGenerator:
             dataloader_iter=self._eval_dataloader_iter,
             num_prompts=len(self.eval_dataloader),
             dynamic_filtering=False,
+            log_step_trace=False,
             **generate_kwargs,
+        )
+        self._write_eval_trace(
+            int(generate_kwargs.get("global_step", 0)),
+            getattr(self, "_last_episode_trace", None),
+            getattr(self, "_last_total_episodes", 0),
         )
 
         # Reclaim host RAM in vLLM engine workers accumulated during generation.
@@ -505,7 +532,10 @@ class SamplesGenerator:
                     if exhausted:
                         for remaining_ref in pending_refs:
                             ray.cancel(remaining_ref)
-                        self._write_step_trace(step_idx, episode_traces, prompts_consumed, filtered_count, total_episodes)
+                        self._last_episode_trace = episode_traces[0] if episode_traces else None
+                        self._last_total_episodes = total_episodes
+                        if generate_kwargs.get("log_step_trace", True):
+                            self._write_step_trace(step_idx, episode_traces, prompts_consumed, filtered_count, total_episodes)
                         return [], prompts_consumed, True
                     # Otherwise dispatch the new prompt to keep filling the queue.
                     else:
@@ -515,7 +545,10 @@ class SamplesGenerator:
                             ref_to_engine[new_ref] = new_engine_idx
                             engine_pending[new_engine_idx] += 1
 
-        self._write_step_trace(step_idx, episode_traces, prompts_consumed, filtered_count, total_episodes)
+        self._last_episode_trace = episode_traces[0] if episode_traces else None
+        self._last_total_episodes = total_episodes
+        if generate_kwargs.get("log_step_trace", True):
+            self._write_step_trace(step_idx, episode_traces, prompts_consumed, filtered_count, total_episodes)
         return accepted_experiences, prompts_consumed, exhausted
 
     def _dispatch_prompts_to_vllm(self, prompts: List[str], labels: List[str], **generate_kwargs) -> List:

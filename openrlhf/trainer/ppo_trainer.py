@@ -149,7 +149,7 @@ class BasePPOTrainer(ABC):
                 prompt_to_datasource[prompt] = datasource
 
         # Generate samples and calculate rewards
-        samples_list = self.samples_generator.generate_eval_samples(**generate_kwargs)
+        samples_list = self.samples_generator.generate_eval_samples(global_step=global_step, **generate_kwargs)
 
         # duplicate prompts and labels for each sample
         all_prompts = sum([s.prompts for s in samples_list], [])

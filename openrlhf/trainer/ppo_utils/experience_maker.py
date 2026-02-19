@@ -413,11 +413,14 @@ class SamplesGenerator:
         if exhausted:
             return [], prompts_consumed, exhausted
 
-        # Staged dispatch (50/25/25): send the first half immediately, hold the
-        # rest in a queue.  Each subsequent stage dispatches when an engine is
+        # Staged dispatch (50/35/15): send half immediately, hold the rest
+        # in a queue.  Each subsequent stage dispatches when an engine is
         # nearly idle, so the heap-based balancer sees real load imbalance.
-        mid = max(1, len(prompts) // 2)
-        q3 = mid + max(1, (len(prompts) - mid) // 2)
+        # The small final reserve (15%) means the balancer has the most
+        # information from completed jobs before the last rebalancing decision.
+        n = len(prompts)
+        mid = max(1, n // 2)
+        q3 = mid + max(1, int(n * 0.35))
         staged_batches = [
             (prompts[mid:q3], labels[mid:q3]),
             (prompts[q3:], labels[q3:]),

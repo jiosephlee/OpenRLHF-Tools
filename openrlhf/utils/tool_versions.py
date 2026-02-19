@@ -182,7 +182,7 @@ except ImportError:
     HAYDN_OPENAI_TOOLS = []
     HAYDN_CALLABLES = {}
 
-_V4_HAYDN_NAMES = {"compute_similarity", "score_structural_alerts", "match_substructure"}
+_V4_HAYDN_NAMES = {"score_structural_alerts", "get_murcko_scaffold"}
 _V4_SCHEMAS: List[Dict[str, Any]] = _V3_SCHEMAS + [
     t for t in HAYDN_OPENAI_TOOLS if t["function"]["name"] in _V4_HAYDN_NAMES
 ]

@@ -25,7 +25,7 @@ NUM_GPUS=$SLURM_GPUS_ON_NODE
 DEBUG_TRACES=${3:-"0"}
 
 ### MULTI-TASK: AMES, BBB_Martins, Bioavailability_Ma, hERG ###
-TASK_NAMES=(Bioavailability_Ma)
+TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
 TASK_LABEL="Base"
 
 # ### NCCL / IB / NETWORK CONFIG ###
@@ -78,7 +78,7 @@ SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_LABEL}/$RUN_ID"
 HUB_REPO_ID="jiosephlee/grpo-tdc-intern-s1-${TASK_LABEL}"
 
 ### GPU LAYOUT (colocated — shared GPUs) ###
-TRAIN_BATCH_SIZE=32
+TRAIN_BATCH_SIZE=64
 VLLM_NUM_ENGINES=$NUM_GPUS
 
 ### TOOL-CALLING CONFIG ###
@@ -242,7 +242,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --delete_local_after_push \
     --use_dynamic_batch \
     --smart_replay \
-    --max_replay_rounds 2 \
+    --max_replay_rounds 3 \
     --curriculum_balanced
 
 ### CLEANUP ###

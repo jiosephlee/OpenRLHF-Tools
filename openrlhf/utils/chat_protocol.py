@@ -294,17 +294,86 @@ class InternS1Protocol(ChatProtocol):
 
 
 class GPTOSSProtocol(ChatProtocol):
-    """GPT-OSS Harmony protocol using token-ID parser."""
+    """GPT-OSS Harmony protocol using token-ID parser.
+
+    Mirrors vLLM's ``OpenAIToolParser`` — uses ``parse_output_into_messages``
+    from the ``openai_harmony`` / ``harmony_utils`` library.
+
+    Harmony message format (tool call)::
+
+        <|start|>assistant\\nto=functions.tool_name<|channel|>commentary<|message|>{"arg": "val"}<|end|>
+
+    Tool feedback (function → assistant)::
+
+        <|start|>functions.tool_name\\nto=assistant<|channel|>commentary<|message|>result<|end|>
+
+    Generation prompt::
+
+        <|start|>assistant
+
+    **Stop-string semantics** (different from InternS1):
+
+    InternS1 uses *two* stop tokens — ``<|action_end|>`` (tool call) vs
+    ``<|im_end|>`` (final answer) — so the stop token itself tells us what
+    happened.
+
+    Harmony uses a *single* ``<|end|>`` token for **both** tool calls and
+    final answers.  The distinction is made by parsing the message structure:
+
+    - ``msg.recipient.startswith("functions.")`` → tool call → continue
+    - otherwise → final answer → done
+
+    This is exactly how vLLM's ``OpenAIToolParser.extract_tool_calls()``
+    works: it inspects ``msg.recipient``, not the stop token.
+    """
 
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
+        # Cache <|start|>assistant token IDs for the fallback path.
+        self._cached_header_ids: Optional[List[int]] = None
+
+    @property
+    def _assistant_header_ids(self) -> List[int]:
+        """Token IDs for ``<|start|>assistant`` (computed once, cached)."""
+        if self._cached_header_ids is None:
+            self._cached_header_ids = self.tokenizer.encode(
+                "<|start|>assistant", add_special_tokens=False
+            )
+        return self._cached_header_ids
 
     def parse_assistant_text(self, text: str, token_ids: Optional[List[int]] = None) -> Dict[str, Any]:
+        """Parse assistant output using the Harmony token-ID parser.
+
+        Matches vLLM's ``OpenAIToolParser.extract_tool_calls()``: passes
+        output token IDs directly to ``parse_output_into_messages``.
+
+        If the direct parse fails (e.g. the parser expects a complete
+        ``<|start|>``-prefixed message), falls back to prepending the
+        ``<|start|>assistant`` header that was part of the generation prompt.
+        """
         if token_ids is None:
             raise NotImplementedError("GPT-OSS parsing requires generated token IDs.")
 
         harmony_utils = importlib.import_module("vllm.entrypoints.openai.parser.harmony_utils")
-        parser = harmony_utils.parse_output_into_messages(token_ids)
+
+        # Primary path: pass output tokens directly (matches vLLM serving).
+        try:
+            parser = harmony_utils.parse_output_into_messages(token_ids)
+        except Exception:
+            # Fallback: prepend <|start|>assistant header that was part of
+            # the prompt/feedback and retry.
+            parser = harmony_utils.parse_output_into_messages(
+                self._assistant_header_ids + list(token_ids)
+            )
+
+        return self._extract_from_parser(parser, text)
+
+    def _extract_from_parser(self, parser, raw_text: str) -> Dict[str, Any]:
+        """Extract tool calls / content from a parsed Harmony message.
+
+        Closely mirrors the extraction logic in vLLM's
+        ``OpenAIToolParser.extract_tool_calls()``.
+        """
         tool_calls: List[Dict[str, Any]] = []
         final_content = None
         commentary_content = None
@@ -316,17 +385,29 @@ class GPTOSSProtocol(ChatProtocol):
 
             if msg.recipient and msg.recipient.startswith("functions."):
                 name = msg.recipient.split("functions.", 1)[1]
-                args: Any = json.loads(msg_text)
+                # Parse JSON arguments; tolerate malformed model output.
+                if not getattr(msg, "content_type", None) or "json" in (getattr(msg, "content_type", "") or ""):
+                    try:
+                        args: Any = json.loads(msg_text)
+                    except json.JSONDecodeError:
+                        args = msg_text
+                else:
+                    args = msg_text
+                # Double-encoded JSON strings (model quirk)
                 if isinstance(args, str):
-                    args = json.loads(args)
+                    try:
+                        args = json.loads(args)
+                    except (json.JSONDecodeError, TypeError):
+                        args = {"raw": args}
                 if not isinstance(args, dict):
-                    raise ValueError(f"GPT-OSS tool arguments must decode to dict, got {type(args).__name__}")
+                    args = {"raw": args}
                 tool_calls.append({"name": name, "arguments": args})
             elif msg.channel == "final":
                 final_content = msg_text
             elif msg.channel == "commentary" and not msg.recipient:
                 commentary_content = msg_text
 
+        # Handle truncated output (model hit max_tokens before <|end|>).
         if parser.current_content:
             if parser.current_channel == "final":
                 final_content = parser.current_content
@@ -334,19 +415,35 @@ class GPTOSSProtocol(ChatProtocol):
                 commentary_content = parser.current_content
 
         return {
-            "content": final_content or commentary_content or text,
+            "content": final_content or commentary_content or raw_text,
             "tool_calls": tool_calls,
         }
 
     def render_tool_feedback(self, tool_results: List[Dict[str, str]]) -> str:
+        """Build bridge text: tool responses + generation prompt.
+
+        The Harmony wire format for function→assistant messages uses ``\\n``
+        between the source role and the ``to=`` directive::
+
+            <|start|>functions.tool_name\\nto=assistant<|channel|>commentary<|message|>content<|end|>
+
+        The model's output already includes ``<|end|>`` (via
+        ``include_stop_str_in_output=True``), so the feedback just appends
+        the function response(s) and a new generation prompt.
+
+        ``tool_content`` is already a JSON string produced by
+        ``json.dumps(...)`` in the tool executor — embedded directly
+        (no second ``json.dumps``).
+        """
         feedback = ""
         for tr in tool_results:
             tool_name = tr["name"]
-            tool_content = json.dumps(tr["content"], ensure_ascii=False)
+            tool_content = tr["content"]
             feedback += (
-                f"<|start|>functions.{tool_name} to=assistant<|channel|>commentary"
-                f"<|message|>{tool_content}<|end|>"
+                f"<|start|>functions.{tool_name}\nto=assistant"
+                f"<|channel|>commentary<|message|>{tool_content}<|end|>"
             )
+        # Generation prompt for the next assistant turn
         feedback += "<|start|>assistant"
         return feedback
 

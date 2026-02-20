@@ -257,10 +257,19 @@ class SingleTurnAgentExecutor(AgentExecutorBase):
                     rewards_info_list = await self._fetch_rewards_via_http([query], [prompt], [label])
                 rewards_info = rewards_info_list[0] if rewards_info_list else None
                 if rewards_info:
+                    r = rewards_info.get("rewards")
+                    s = rewards_info.get("scores") or rewards_info.get("rewards")
+                    el = rewards_info.get("extra_logs") or {}
+                    
+                    if isinstance(r, list):
+                        r = r[0]
+                    if isinstance(s, list):
+                        s = s[0]
+                    
                     output.update(
-                        reward=rewards_info.get("rewards"),
-                        scores=rewards_info.get("scores") or rewards_info.get("rewards"),
-                        extra_logs=rewards_info.get("extra_logs") or {},
+                        reward=r,
+                        scores=s,
+                        extra_logs={k: v[0] if isinstance(v, list) else v for k, v in el.items()}
                     )
             except Exception as e:
                 logger.info(f"[SingleTurnExecutor] Failed to fetch reward from remote RM: {e}")

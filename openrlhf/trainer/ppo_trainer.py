@@ -86,13 +86,6 @@ def prepare_datasets(strategy, tokenizer):
     max_steps = (
         len(prompts_dataset) * args.n_samples_per_prompt // args.train_batch_size * args.num_episodes * args.max_epochs
     )
-    if getattr(args, "smart_replay", False):
-        # With smart replay the true step count is unknowable ahead of time,
-        # so we force a constant LR with linear warmup (20 rollout steps).
-        args.lr_scheduler = "constant_with_warmup"
-        args.lr_warmup_ratio = 0  # ignored — we use absolute warmup steps below
-        args.smart_replay_warmup_steps = 20
-        logger.info("[SmartReplay] Overriding LR scheduler to constant_with_warmup (warmup=20 steps)")
     return prompts_dataloader, eval_dataloader, max_steps
 
 

@@ -553,6 +553,8 @@ if __name__ == "__main__":
     # Smart replay (selective prompt repetition after primary pass)
     parser.add_argument("--smart_replay", action="store_true", default=False,
                         help="After each episode, replay filtered prompts the model can still learn from")
+    parser.add_argument("--constant_lr_with_warm_up", action="store_true", default=False,
+                        help="Force a constant LR with 20 steps linear warmup")
     parser.add_argument("--max_replay_rounds", type=int, default=2,
                         help="Max replay rounds per episode (default: 2)")
     parser.add_argument("--curriculum_balanced", action="store_true", default=False,
@@ -658,6 +660,12 @@ if __name__ == "__main__":
 
     if args.smart_replay:
         assert args.dynamic_filtering, "--smart_replay requires --dynamic_filtering"
+
+    if args.smart_replay or args.constant_lr_with_warm_up:
+        print("[SmartReplay/ConstantLR] Overriding LR scheduler to constant_with_warmup (warmup=20 steps)")
+        args.lr_scheduler = "constant_with_warmup"
+        args.lr_warmup_ratio = 0.0
+        args.smart_replay_warmup_steps = 20
 
     assert (
         args.n_samples_per_prompt * args.rollout_batch_size // args.micro_rollout_batch_size

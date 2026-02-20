@@ -345,6 +345,12 @@ if __name__ == "__main__":
 
     # LoRA
     parser.add_argument("--load_in_4bit", action="store_true", default=False)
+    parser.add_argument(
+        "--mxfp4_dequantize",
+        action="store_true",
+        default=False,
+        help="Use Mxfp4Config(dequantize=True) for GPT-OSS models. Forces eager attention.",
+    )
     parser.add_argument("--lora_rank", type=int, default=0)
     parser.add_argument("--lora_alpha", type=int, default=16)
     parser.add_argument("--target_modules", type=str, nargs="*", default="all-linear")
@@ -549,6 +555,8 @@ if __name__ == "__main__":
                         help="After each episode, replay filtered prompts the model can still learn from")
     parser.add_argument("--max_replay_rounds", type=int, default=2,
                         help="Max replay rounds per episode (default: 2)")
+    parser.add_argument("--curriculum_balanced", action="store_true", default=False,
+                        help="Evenly interleave samples from each dataset across training")
 
     # TensorBoard parameters
     parser.add_argument("--use_tensorboard", type=str, default=None, help="TensorBoard logging path")

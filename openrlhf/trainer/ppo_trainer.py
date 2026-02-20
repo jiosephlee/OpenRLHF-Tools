@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
 from openrlhf.datasets import PromptDataset
+from openrlhf.datasets.prompts_dataset import interleave_indices_by_datasource
 from openrlhf.datasets.utils import blending_datasets
 from openrlhf.trainer.ppo_utils.experience_maker import RemoteExperienceMaker, SamplesGenerator
 from openrlhf.trainer.ppo_utils.kl_controller import AdaptiveKLController, FixedKLController
@@ -64,7 +65,8 @@ def prepare_datasets(strategy, tokenizer):
     # Create train dataset
     train_data = train_data.select(range(min(args.max_samples, len(train_data))))
     prompts_dataset = PromptDataset(train_data, tokenizer, strategy, input_template=args.input_template)
-    prompts_dataloader = strategy.setup_dataloader(prompts_dataset, 1, True, True, prompts_dataset.collate_fn)
+    shuffle = not getattr(args, "curriculum_balanced", False)
+    prompts_dataloader = strategy.setup_dataloader(prompts_dataset, 1, True, shuffle, prompts_dataset.collate_fn)
 
     # Create eval dataset if eval data exists
     if getattr(args, "eval_dataset", None):
@@ -481,9 +483,17 @@ class PPOTrainer(BasePPOTrainer):
             )
 
             # Build a dataloader over the replay subset.
+            if getattr(self.args, "curriculum_balanced", False):
+                replay_indices = interleave_indices_by_datasource(
+                    replay_indices, original_dataloader.dataset.datasources, self.args.seed
+                )
+                replay_shuffle = False
+            else:
+                replay_shuffle = True
+
             subset = Subset(original_dataloader.dataset, replay_indices)
             replay_dataloader = DataLoader(
-                subset, batch_size=1, shuffle=True,
+                subset, batch_size=1, shuffle=replay_shuffle,
                 collate_fn=original_dataloader.dataset.collate_fn,
             )
             self.samples_generator.prompts_dataloader = replay_dataloader

@@ -9,6 +9,11 @@ import torch.nn as nn
 from peft import LoraConfig, TaskType, get_peft_model
 from peft.tuners.lora import LoraLayer
 from transformers import AutoModelForCausalLM, BitsAndBytesConfig
+
+try:
+    from transformers import Mxfp4Config
+except ImportError:
+    Mxfp4Config = None
 from transformers.integrations.deepspeed import HfDeepSpeedConfig
 
 from .ring_attn_utils import gather_and_pad_tensor, unpad_and_slice_tensor
@@ -54,6 +59,7 @@ class Actor(nn.Module):
         packing_samples=False,
         temperature=1.0,
         use_liger_kernel=False,
+        mxfp4_dequantize=False,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -75,16 +81,25 @@ class Actor(nn.Module):
 
             torch_dtype = convert_to_torch_dtype(param_dtype)
 
-            if load_in_4bit:
+            if mxfp4_dequantize:
+                assert Mxfp4Config is not None, (
+                    "Mxfp4Config requires transformers >= 4.52. "
+                    "Please upgrade: pip install -U transformers"
+                )
+                quant_config = Mxfp4Config(dequantize=True)
+                # GPT-OSS models require eager attention
+                attn_impl = "eager"
+                logger.info("Using Mxfp4Config(dequantize=True) with eager attention for GPT-OSS model")
+            elif load_in_4bit:
                 assert param_dtype == "bf16", "we only support bnb_4bit_compute_dtype = bf16"
-                nf4_config = BitsAndBytesConfig(
+                quant_config = BitsAndBytesConfig(
                     load_in_4bit=True,
                     bnb_4bit_quant_type="nf4",
                     bnb_4bit_use_double_quant=True,
                     bnb_4bit_compute_dtype=torch.bfloat16,
                 )
             else:
-                nf4_config = None
+                quant_config = None
 
             if use_liger_kernel:
                 from liger_kernel.transformers import AutoLigerKernelForCausalLM
@@ -97,7 +112,7 @@ class Actor(nn.Module):
                 pretrain_or_model,
                 trust_remote_code=True,
                 attn_implementation=attn_impl,
-                quantization_config=nf4_config,
+                quantization_config=quant_config,
                 torch_dtype=torch_dtype,  # default: bf16
                 device_map=device_map,
             )

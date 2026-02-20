@@ -1,7 +1,47 @@
 import json
+import random
+from collections import defaultdict
 
 from torch.utils.data import Dataset
 from tqdm import tqdm
+
+
+def interleave_indices_by_datasource(indices, datasources_list, seed):
+    """Reorder indices so each datasource is evenly distributed across the sequence.
+
+    Args:
+        indices: list of integer indices into datasources_list
+        datasources_list: list where datasources_list[i] gives the datasource name for index i
+        seed: random seed for reproducible within-group shuffling
+
+    Returns:
+        Reordered list of indices with even spacing per datasource.
+    """
+    # Group indices by datasource
+    groups = defaultdict(list)
+    for idx in indices:
+        groups[datasources_list[idx]].append(idx)
+
+    if len(groups) <= 1:
+        return list(indices)
+
+    # Shuffle within each group (reproducible)
+    rng = random.Random(seed)
+    for group_indices in groups.values():
+        rng.shuffle(group_indices)
+
+    # Assign evenly-spaced positions
+    n = len(indices)
+    positioned = []
+    for ds_name in sorted(groups.keys()):  # sorted for determinism
+        group_indices = groups[ds_name]
+        stride = n / len(group_indices)
+        for j, idx in enumerate(group_indices):
+            positioned.append((j * stride, ds_name, idx))
+
+    # Sort by position, break ties by datasource name
+    positioned.sort(key=lambda x: (x[0], x[1]))
+    return [idx for _, _, idx in positioned]
 
 
 def preprocess_data(data, input_template=None, input_key="input", label_key=None, apply_chat_template=None, tools_map=None) -> str:
@@ -75,6 +115,21 @@ class PromptDataset(Dataset):
             self.prompts.append(prompt)
             self.labels.append(label)
             self.datasources.append(data.get("datasource", "default"))
+
+        if getattr(self.strategy.args, "curriculum_balanced", False):
+            self._apply_curriculum_balancing(getattr(self.strategy.args, "seed", 42))
+
+    def _apply_curriculum_balancing(self, seed):
+        """Reorder samples so each datasource is evenly distributed across training."""
+        if len(set(self.datasources)) <= 1:
+            return
+
+        order = interleave_indices_by_datasource(
+            list(range(len(self.prompts))), self.datasources, seed
+        )
+        self.prompts = [self.prompts[i] for i in order]
+        self.labels = [self.labels[i] for i in order]
+        self.datasources = [self.datasources[i] for i in order]
 
     def __len__(self):
         length = len(self.prompts)

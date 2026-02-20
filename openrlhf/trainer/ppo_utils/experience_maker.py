@@ -527,6 +527,7 @@ class SamplesGenerator:
         filtered_count = 0
         episode_traces: list = []
         total_episodes = 0
+        exhausted_during_refill = False
 
         while pending_refs:
             ready_refs, pending_refs = ray.wait(pending_refs, num_returns=1, timeout=10.0)
@@ -608,21 +609,14 @@ class SamplesGenerator:
                     # Pull another prompt when the current one fails filtering.
                     new_ds_indices, new_prompts, new_labels, exhausted = _collect_prompt_batch(dataloader_iter, 1)
                     prompts_consumed += len(new_prompts)
-                    # Cancel outstanding work if the dataloader is drained.
+                    # Dataloader drained: stop adding work and drain in-flight refs.
+                    # This avoids racing vLLM sleep/wake against active decode kernels.
                     if exhausted:
-                        for remaining_ref in pending_refs:
-                            ray.cancel(remaining_ref)
-                        self._last_episode_trace = episode_traces[0] if episode_traces else None
-                        self._last_total_episodes = total_episodes
-                        if generate_kwargs.get("log_step_trace", True):
-                            self._write_step_trace(step_idx, episode_traces, prompts_consumed, filtered_count, total_episodes)
-                        if smart_replay:
-                            logger.info(
-                                f"[SmartReplay] Step done (exhausted): replay buffer now has "
-                                f"{len(self._replay_hard_indices)} hard + {len(self._replay_kept_indices)} kept "
-                                f"= {len(self._replay_hard_indices) + len(self._replay_kept_indices)} total prompts"
-                            )
-                        return [], prompts_consumed, True
+                        logger.info(
+                            "Prompt dataloader exhausted during refill; "
+                            f"draining {len(pending_refs)} in-flight vLLM refs before sleep."
+                        )
+                        exhausted_during_refill = True
                     # Otherwise dispatch the new prompt to keep filling the queue.
                     else:
                         new_dispatches = self._dispatch_prompts_to_vllm(new_prompts, new_labels, **generate_kwargs)
@@ -637,12 +631,21 @@ class SamplesGenerator:
         if generate_kwargs.get("log_step_trace", True):
             self._write_step_trace(step_idx, episode_traces, prompts_consumed, filtered_count, total_episodes)
 
-        if smart_replay:
+        if smart_replay and not exhausted_during_refill:
             logger.info(
                 f"[SmartReplay] Step done: replay buffer now has "
                 f"{len(self._replay_hard_indices)} hard + {len(self._replay_kept_indices)} kept "
                 f"= {len(self._replay_hard_indices) + len(self._replay_kept_indices)} total prompts"
             )
+
+        if exhausted_during_refill:
+            if smart_replay:
+                logger.info(
+                    f"[SmartReplay] Step done (exhausted): replay buffer now has "
+                    f"{len(self._replay_hard_indices)} hard + {len(self._replay_kept_indices)} kept "
+                    f"= {len(self._replay_hard_indices) + len(self._replay_kept_indices)} total prompts"
+                )
+            return [], prompts_consumed, True
 
         return accepted_experiences, prompts_consumed, exhausted
 

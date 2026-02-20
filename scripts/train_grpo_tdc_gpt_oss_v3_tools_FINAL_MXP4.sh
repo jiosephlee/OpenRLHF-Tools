@@ -242,7 +242,10 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_path "$SAVE_PATH" \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
-    --use_dynamic_batch
+    --use_dynamic_batch \
+    --smart_replay \
+    --max_replay_rounds 2 \
+    --curriculum_balanced
 
 ### CLEANUP ###
 echo "Training complete! Stopping Ray..."

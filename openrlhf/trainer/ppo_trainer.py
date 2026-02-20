@@ -348,6 +348,16 @@ class BasePPOTrainer(ABC):
             pass
 
     def train_step(self, rollout_samples, global_step: int) -> Tuple[Dict, int]:
+        # Strip tool_count__* keys from rollout samples before they enter the
+        # training pipeline.  These per-tool counters are sparse (each sample
+        # only records the tools it actually called) and are only consumed
+        # during eval in _collect_eval_tool_usage.  Letting them flow into
+        # concat_experiences / balance_experiences / replay buffer / actor
+        # training would require every downstream consumer to handle
+        # mismatched key sets across ranks — so we remove them early.
+        for sample in rollout_samples:
+            sample.info = {k: v for k, v in sample.info.items() if not k.startswith("tool_count__")}
+
         # Turn raw rollouts into PPO-ready trajectories with rewards.
         experiences = self.experience_maker.make_experience_batch(rollout_samples)
 

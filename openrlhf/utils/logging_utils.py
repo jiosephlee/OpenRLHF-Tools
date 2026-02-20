@@ -79,6 +79,8 @@ class WandbLogger:
         wandb.define_metric("train/*", step_metric="train/global_step", step_sync=True)
         wandb.define_metric("eval/global_step")
         wandb.define_metric("eval/*", step_metric="eval/global_step", step_sync=True)
+        wandb.define_metric("episode/episode")
+        wandb.define_metric("episode/*", step_metric="episode/episode", step_sync=True)
         self.handle = wandb
         self.samples_table = wandb.Table(columns=["global_step", "text", "reward"])
 
@@ -102,6 +104,11 @@ class WandbLogger:
 
         metrics = {k: v for k, v in logs_dict.items() if v is not None}
         logs = {"eval/%s" % k: v for k, v in {**metrics, "global_step": global_step}.items()}
+        self.handle.log(logs)
+
+    def log_episode(self, episode: int, logs_dict: Dict[str, Any]) -> None:
+        metrics = {k: v for k, v in logs_dict.items() if v is not None}
+        logs = {"episode/%s" % k: v for k, v in {**metrics, "episode": episode}.items()}
         self.handle.log(logs)
 
     def close(self) -> None:

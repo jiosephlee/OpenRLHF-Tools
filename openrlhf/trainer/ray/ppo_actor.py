@@ -483,10 +483,11 @@ class PolicyModelActor(BaseModelActor):
             actor, lr=args.actor_learning_rate, betas=strategy.args.adam_betas, weight_decay=args.l2
         )
 
+        num_warmup_steps = getattr(args, "smart_replay_warmup_steps", None) or math.ceil(max_steps * args.lr_warmup_ratio)
         actor_scheduler = get_scheduler(
             args.lr_scheduler,
             actor_optim,
-            num_warmup_steps=math.ceil(max_steps * args.lr_warmup_ratio),
+            num_warmup_steps=num_warmup_steps,
             num_training_steps=max_steps,
             scheduler_specific_kwargs={"min_lr": args.actor_learning_rate * 0.1},
         )

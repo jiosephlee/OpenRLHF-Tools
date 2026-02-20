@@ -1,43 +1,24 @@
-"""Chat protocol abstractions for format-specific rendering and parsing.
+"""Chat protocol abstractions for format-specific parsing and feedback.
 
 This module provides:
-- ChatProtocol ABC: Abstract interface for model-specific formats
+- ChatProtocol ABC: Abstract interface for model-specific tool-call handling
 - GLMFlashProtocol: Implementation for GLM Flash XML tool calling format
 - InternS1Protocol: Implementation for Intern-S1-mini JSON tool calling format
 - Extensible design for adding new protocols (Qwen3, Claude, etc.)
 """
 
-import os
 import re
 import json
+import importlib
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
 
 class ChatProtocol(ABC):
-    """Abstract protocol for format-specific message rendering and parsing."""
+    """Abstract protocol for format-specific parsing and feedback."""
 
     @abstractmethod
-    def render_messages(
-        self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[Dict] = None,
-        add_generation_prompt: bool = False
-    ) -> str:
-        """Render messages to text using format-specific template.
-
-        Args:
-            messages: List of message dicts with 'role' and 'content'
-            tools: Optional tool definitions
-            add_generation_prompt: Whether to add generation prompt at end
-
-        Returns:
-            Formatted prompt string
-        """
-        pass
-
-    @abstractmethod
-    def parse_assistant_text(self, text: str) -> Dict[str, Any]:
+    def parse_assistant_text(self, text: str, token_ids: Optional[List[int]] = None) -> Dict[str, Any]:
         """Parse assistant text into structured action dict.
 
         Args:
@@ -90,33 +71,8 @@ class GLMFlashProtocol(ChatProtocol):
             tokenizer: HuggingFace tokenizer for the model
         """
         self.tokenizer = tokenizer
-        self.mode = os.environ.get("OPENRLHF_PROMPT_CONSTRUCTION_MODE", "manual")
 
-    def render_messages(
-        self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[Dict] = None,
-        add_generation_prompt: bool = False
-    ) -> str:
-        """Render messages using GLM Flash chat template.
-
-        Supports two modes:
-        - auto: Uses tokenizer.apply_chat_template (robust, slower)
-        - manual: Manual string construction (fast, brittle)
-        """
-        if self.mode == "auto":
-            # Use tokenizer's chat template with tools parameter
-            return self.tokenizer.apply_chat_template(
-                messages,
-                tools=tools,
-                tokenize=False,
-                add_generation_prompt=add_generation_prompt
-            )
-        else:
-            # Manual mode: simple string concatenation
-            return self._format_manual(messages, tools, add_generation_prompt)
-
-    def parse_assistant_text(self, text: str) -> Dict[str, Any]:
+    def parse_assistant_text(self, text: str, token_ids: Optional[List[int]] = None) -> Dict[str, Any]:
         """Parse GLM Flash tool call format.
 
         Uses vLLM's official parser if available, falls back to regex.
@@ -182,38 +138,6 @@ class GLMFlashProtocol(ChatProtocol):
             "function_name": function_name,
             "arguments": arguments
         }
-
-    def _format_manual(
-        self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[Dict],
-        add_generation_prompt: bool
-    ) -> str:
-        """Manual string concatenation for GLM Flash format.
-
-        Fast but brittle - format is hardcoded.
-        """
-        formatted = ""
-
-        for msg in messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-
-            if role == "system":
-                formatted += f"<|im_start|>system\n{content}<|im_end|>\n"
-            elif role == "user":
-                formatted += f"<|im_start|>user\n{content}<|im_end|>\n"
-            elif role == "assistant":
-                formatted += f"<|im_start|>assistant\n{content}<|im_end|>\n"
-            elif role == "tool":
-                # Tool response format
-                formatted += f"<|observation|>\n<tool_response>{content}</tool_response>\n"
-
-        if add_generation_prompt:
-            formatted += "<|assistant|>\n"
-
-        return formatted
-
 
 _VALID_JSON_ESC = set(['"', "\\", "/", "b", "f", "n", "r", "t", "u"])
 
@@ -291,52 +215,10 @@ class InternS1Protocol(ChatProtocol):
     _START_RE = re.compile(r"<\|action_start\|>\s*<\|plugin\|>")
     _END_RE = re.compile(r"<\|action_end\|>")
 
-    _TOOL_INSTRUCTION = (
-        'Your response should consist of a reasoning step (**thought**) '
-        'followed immediately by a function call in valid JSON format. '
-        'Wrap each function call using the `<|action_start|><|plugin|>` '
-        'and `<|action_end|>` tags.\n'
-        '\n'
-        '**Format example:**\n'
-        '\n'
-        '```\n'
-        '(Your thought goes here...)\n'
-        '\n'
-        '<|action_start|><|plugin|>\n'
-        '{\n'
-        '    "name": "tool_name",\n'
-        '    "parameters": {\n'
-        '        "parameter1": "value1",\n'
-        '        "parameter2": "value2"\n'
-        '    }\n'
-        '}\n'
-        '<|action_end|>\n'
-        '```\n'
-        '\n'
-        '# External Tools\n'
-        'You have access to these tools:\n'
-    )
-
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
-        self.mode = os.environ.get("OPENRLHF_PROMPT_CONSTRUCTION_MODE", "manual")
 
-    def render_messages(
-        self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[Dict] = None,
-        add_generation_prompt: bool = False,
-    ) -> str:
-        if self.mode == "auto":
-            return self.tokenizer.apply_chat_template(
-                messages,
-                tools=tools,
-                tokenize=False,
-                add_generation_prompt=add_generation_prompt,
-            )
-        return self._format_manual(messages, tools, add_generation_prompt)
-
-    def parse_assistant_text(self, text: str) -> Dict[str, Any]:
+    def parse_assistant_text(self, text: str, token_ids: Optional[List[int]] = None) -> Dict[str, Any]:
         """Parse Intern-S1 tool call blocks from assistant output.
 
         Extracts all ``<|action_start|><|plugin|>...json...<|action_end|>``
@@ -410,60 +292,63 @@ class InternS1Protocol(ChatProtocol):
         feedback += "<|im_start|>assistant\n\n<think>\n"
         return feedback
 
-    # ------------------------------------------------------------------
-    # Manual rendering
-    # ------------------------------------------------------------------
 
-    def _format_manual(
-        self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[Dict],
-        add_generation_prompt: bool,
-    ) -> str:
-        """Manual string construction matching the Intern-S1 Jinja template."""
-        formatted = ""
+class GPTOSSProtocol(ChatProtocol):
+    """GPT-OSS Harmony protocol using token-ID parser."""
 
-        for i, msg in enumerate(messages):
-            role = msg.get("role", "")
-            content = msg.get("content", "") or ""
-            tool_calls_list = msg.get("tool_calls", [])
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
 
-            if role == "system":
-                header = "<|im_start|>system"
-                if tools:
-                    header += " name=<|plugin|>"
-                    tool_json = json.dumps(tools, indent=2, ensure_ascii=False) if tools else "[]"
-                    content = content.rstrip("\n") + "\n\n" + self._TOOL_INSTRUCTION + tool_json
-                formatted += f"{header}\n\n{content}<|im_end|>\n"
+    def parse_assistant_text(self, text: str, token_ids: Optional[List[int]] = None) -> Dict[str, Any]:
+        if token_ids is None:
+            raise NotImplementedError("GPT-OSS parsing requires generated token IDs.")
 
-            elif role == "user":
-                formatted += f"<|im_start|>user\n\n{content}<|im_end|>\n"
+        harmony_utils = importlib.import_module("vllm.entrypoints.openai.parser.harmony_utils")
+        parser = harmony_utils.parse_output_into_messages(token_ids)
+        tool_calls: List[Dict[str, Any]] = []
+        final_content = None
+        commentary_content = None
 
-            elif role == "assistant":
-                tc_text = ""
-                for tc in tool_calls_list:
-                    func = tc.get("function", tc)
-                    name = func.get("name", "")
-                    args = func.get("arguments", func.get("parameters", {}))
-                    if isinstance(args, str):
-                        args_str = args
-                    else:
-                        args_str = json.dumps(args, ensure_ascii=False)
-                    tc_text += (
-                        f'{self._START}\n'
-                        f'{{"name": "{name}", "parameters": {args_str}}}\n'
-                        f'{self._END}'
-                    )
-                formatted += f"<|im_start|>assistant\n\n{content}{tc_text}<|im_end|>\n"
+        for msg in parser.messages:
+            if not msg.content:
+                continue
+            msg_text = msg.content[0].text
 
-            elif role in ("tool", "environment"):
-                formatted += f"<|im_start|>environment name=<|plugin|>\n\n{content}<|im_end|>\n"
+            if msg.recipient and msg.recipient.startswith("functions."):
+                name = msg.recipient.split("functions.", 1)[1]
+                args: Any = json.loads(msg_text)
+                if isinstance(args, str):
+                    args = json.loads(args)
+                if not isinstance(args, dict):
+                    raise ValueError(f"GPT-OSS tool arguments must decode to dict, got {type(args).__name__}")
+                tool_calls.append({"name": name, "arguments": args})
+            elif msg.channel == "final":
+                final_content = msg_text
+            elif msg.channel == "commentary" and not msg.recipient:
+                commentary_content = msg_text
 
-        if add_generation_prompt:
-            formatted += "<|im_start|>assistant\n\n<think>\n"
+        if parser.current_content:
+            if parser.current_channel == "final":
+                final_content = parser.current_content
+            elif parser.current_channel == "commentary" and not parser.current_recipient:
+                commentary_content = parser.current_content
 
-        return formatted
+        return {
+            "content": final_content or commentary_content or text,
+            "tool_calls": tool_calls,
+        }
 
+    def render_tool_feedback(self, tool_results: List[Dict[str, str]]) -> str:
+        feedback = ""
+        for tr in tool_results:
+            tool_name = tr["name"]
+            tool_content = json.dumps(tr["content"], ensure_ascii=False)
+            feedback += (
+                f"<|start|>functions.{tool_name} to=assistant<|channel|>commentary"
+                f"<|message|>{tool_content}<|end|>"
+            )
+        feedback += "<|start|>assistant"
+        return feedback
 
 # Export public API
-__all__ = ["ChatProtocol", "GLMFlashProtocol", "InternS1Protocol"]
+__all__ = ["ChatProtocol", "GLMFlashProtocol", "InternS1Protocol", "GPTOSSProtocol"]

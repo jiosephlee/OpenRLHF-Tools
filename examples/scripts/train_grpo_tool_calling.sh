@@ -14,11 +14,9 @@ SAVE_PATH="./checkpoint_grpo_tool_calling"
 AGENT_SCRIPT="openrlhf/utils/tool_calling_turn.py"
 AGENT_MAX_STEPS=40  # Max turns per episode
 STOP_STRINGS="</tool_call>"  # Stop generation at tool call boundary
-PROMPT_MODE="manual"  # "manual" (fast) or "auto" (robust)
 
 # Environment variables for agent
 export OPENRLHF_MODEL_PATH="$PRETRAIN_MODEL_PATH"
-export OPENRLHF_PROMPT_CONSTRUCTION_MODE="$PROMPT_MODE"
 export VLLM_NO_USAGE_STATS=1
 export VLLM_DISABLE_TELEMETRY=1
 
@@ -82,7 +80,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --agent_func_path $AGENT_SCRIPT \
     --agent_max_steps $AGENT_MAX_STEPS \
     --vllm_stop_strings $STOP_STRINGS \
-    --prompt_construction_mode $PROMPT_MODE \
     --push_to_hub "" \
     --delete_local_after_push \
     --use_wandb $WANDB_API_KEY \

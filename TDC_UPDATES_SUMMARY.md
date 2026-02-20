@@ -82,7 +82,6 @@ ADVANTAGE_ESTIMATOR = "dr_grpo"
 
 # Tool-calling settings
 AGENT_MAX_STEPS = 40
-PROMPT_CONSTRUCTION_MODE = "manual"
 
 # GRPO settings
 DYNAMIC_FILTERING = true

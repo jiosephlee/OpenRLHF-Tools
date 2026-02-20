@@ -102,7 +102,6 @@ TRAIN_BATCH_SIZE=$((ACTOR_GPUS * 16))
 # ── Tool-calling configuration ──────────────────────────────────
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
 AGENT_MAX_STEPS=50
-PROMPT_CONSTRUCTION_MODE="manual"
 
 # ── GRPO configuration ──────────────────────────────────────────
 N_SAMPLES_PER_PROMPT=8
@@ -136,7 +135,6 @@ export VLLM_DISABLE_TELEMETRY=1
 
 # Agent env vars (also set by vllm_engine.py, but export here for visibility)
 export OPENRLHF_MODEL_PATH="$PRETRAIN_PATH"
-export OPENRLHF_PROMPT_CONSTRUCTION_MODE="$PROMPT_CONSTRUCTION_MODE"
 export OPENRLHF_MAX_STEPS="$AGENT_MAX_STEPS"
 
 # NCCL — keep debug on until the init issue is resolved
@@ -232,7 +230,6 @@ echo "TRAIN_BATCH_SIZE: $TRAIN_BATCH_SIZE"
 echo "----------------------------------------"
 echo "Agent Max Steps: $AGENT_MAX_STEPS"
 echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
-echo "Prompt Mode: $PROMPT_CONSTRUCTION_MODE"
 echo "----------------------------------------"
 echo "W&B: project=$WANDB_PROJECT group=TDC-$TASK_NAME run=$RUN_ID"
 echo "========================================"
@@ -296,7 +293,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --agent_func_path "$AGENT_FUNC_PATH" \
     --agent_max_steps $AGENT_MAX_STEPS \
     --vllm_stop_strings "</tool_call>" \
-    --prompt_construction_mode "$PROMPT_CONSTRUCTION_MODE" \
     --use_wandb 1 \
     --wandb_project "$WANDB_PROJECT" \
     --wandb_group "TDC-$TASK_NAME" \

@@ -129,7 +129,6 @@ run_task() {
     # Tool-calling configuration — Intern-S1 format
     AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
     AGENT_MAX_STEPS=30
-    PROMPT_CONSTRUCTION_MODE="auto"   # "manual" (fast) or "auto" (robust)
     CHAT_PROTOCOL="intern_s1"         # Intern-S1 JSON format with <|action_start|><|plugin|> markers
 
     # GRPO configuration
@@ -163,7 +162,6 @@ run_task() {
 
     # OpenRLHF environment variables (for agent)
     export OPENRLHF_MODEL_PATH="$PRETRAIN_PATH"
-    export OPENRLHF_PROMPT_CONSTRUCTION_MODE="$PROMPT_CONSTRUCTION_MODE"
     export OPENRLHF_CHAT_PROTOCOL="$CHAT_PROTOCOL"
     export OPENRLHF_MAX_STEPS="$AGENT_MAX_STEPS"
     export DEBUG_TRACES="${DEBUG_TRACES:-0}"
@@ -264,7 +262,6 @@ run_task() {
     echo "----------------------------------------"
     echo "Agent Max Steps: $AGENT_MAX_STEPS"
     echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
-    echo "Prompt Mode: $PROMPT_CONSTRUCTION_MODE"
     echo "Temperature: $TEMPERATURE"
     echo "Top-p: $TOP_P"
     echo "----------------------------------------"
@@ -351,7 +348,6 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --agent_func_path "$AGENT_FUNC_PATH" \
         --agent_max_steps $AGENT_MAX_STEPS \
         --vllm_stop_strings "<|action_end|>" "<|im_end|>" \
-        --prompt_construction_mode "$PROMPT_CONSTRUCTION_MODE" \
         --chat_protocol "$CHAT_PROTOCOL" \
         --use_wandb 1 \
         --wandb_project "$WANDB_PROJECT" \

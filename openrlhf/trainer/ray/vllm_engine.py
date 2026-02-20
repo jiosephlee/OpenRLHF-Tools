@@ -169,7 +169,11 @@ class LLMRayActor:
                   Use None to wake up everything.
         """
         logger.info(f"vLLM wake_up requested (tags={tags})")
-        await self.llm.wake_up(tags=tags)
+        # Wake tags sequentially to avoid peak memory spike from
+        # simultaneous weights + kv_cache allocation (can OOM after
+        # a few rollouts due to GPU memory fragmentation).
+        for tag in tags:
+            await self.llm.wake_up(tags=[tag])
 
     async def generate(self, prompt_token_ids, sampling_params):
         """Token-level generation for rollout executors."""

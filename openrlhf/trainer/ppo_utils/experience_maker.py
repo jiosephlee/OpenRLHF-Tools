@@ -268,6 +268,7 @@ class SamplesGenerator:
 
         # Per-step filtering stats (reset each generate_samples call).
         self._step_too_easy_count = 0
+        self._step_too_hard_count = 0
         self._step_prompts_consumed = 0
         # Per-episode filtering stats (reset each episode).
         self._episode_easy_count = 0
@@ -423,6 +424,13 @@ class SamplesGenerator:
         return self._step_too_easy_count / self._step_prompts_consumed * 100
 
     @property
+    def step_too_hard_pct(self) -> float:
+        """Percentage of prompts consumed this step that were too hard."""
+        if self._step_prompts_consumed == 0:
+            return 0.0
+        return self._step_too_hard_count / self._step_prompts_consumed * 100
+
+    @property
     def episode_filter_stats(self) -> dict:
         """Per-episode filtering stats for W&B logging."""
         return {
@@ -441,6 +449,7 @@ class SamplesGenerator:
 
         # Reset per-step counters.
         self._step_too_easy_count = 0
+        self._step_too_hard_count = 0
         self._step_prompts_consumed = 0
 
         # Wake sleeping vLLM engines before dispatching.
@@ -572,6 +581,7 @@ class SamplesGenerator:
                     elif avg_reward <= min_r:
                         # Too hard — queue index for replay
                         filtered_count += 1
+                        self._step_too_hard_count += 1
                         self._episode_hard_count += 1
                         if smart_replay and ds_idx is not None:
                             self._replay_hard_indices.add(ds_idx)

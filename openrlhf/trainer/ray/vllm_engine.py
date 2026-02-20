@@ -13,8 +13,11 @@ from vllm.inputs import TokensPrompt
 from vllm.utils import random_uuid
 
 from openrlhf.utils.agent import AgentExecutorBase, SingleTurnAgentExecutor
+from openrlhf.utils.logging_utils import init_logger
 
 from .utils import get_bundle_indices, ray_noset_visible_devices
+
+logger = init_logger(__name__)
 
 
 def _load_agent_executor(agent_func_path: str) -> AgentExecutorBase:
@@ -153,6 +156,7 @@ class LLMRayActor:
         await self.llm.reset_prefix_cache()
 
     async def sleep(self, level=1):
+        logger.info(f"vLLM sleep requested (level={level})")
         await self.llm.sleep(level=level)
 
     async def wake_up(self, tags=["weights", "kv_cache"]):
@@ -164,8 +168,8 @@ class LLMRayActor:
                   Use ["kv_cache"] to wake up only KV cache (after weight sync).
                   Use None to wake up everything.
         """
-        for tag in tags:
-            await self.llm.wake_up(tags=[tag])
+        logger.info(f"vLLM wake_up requested (tags={tags})")
+        await self.llm.wake_up(tags=tags)
 
     async def generate(self, prompt_token_ids, sampling_params):
         """Token-level generation for rollout executors."""

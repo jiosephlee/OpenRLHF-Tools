@@ -168,13 +168,28 @@ class Experience:
         elif isinstance(items[0], list):
             return sum(items, [])
         elif isinstance(items[0], dict):
-            result = {}
-            # Collect all values for each key
+            # Collect ALL keys across every dict so that sparse keys
+            # (e.g. tool_count__X present in only some samples) are
+            # filled with a zero-tensor default for the missing samples.
+            all_keys: set = set()
             for d in items:
-                for key, value in d.items():
-                    if key not in result:
-                        result[key] = []
-                    result[key].append(value)
+                all_keys.update(d.keys())
+
+            result = {key: [] for key in all_keys}
+            for d in items:
+                for key in all_keys:
+                    if key in d:
+                        result[key].append(d[key])
+                    else:
+                        # Infer a zero-valued placeholder that matches the
+                        # type/shape of a real entry for this key.
+                        _exemplar = next(dd[key] for dd in items if key in dd)
+                        if isinstance(_exemplar, torch.Tensor):
+                            result[key].append(torch.zeros_like(_exemplar))
+                        elif isinstance(_exemplar, (int, float)):
+                            result[key].append(type(_exemplar)(0))
+                        else:
+                            result[key].append(_exemplar)  # fallback: repeat as-is
             # Merge all values for each key at once
             return {key: Experience._merge_item(values, pad_value) for key, values in result.items()}
         elif items[0] is None:

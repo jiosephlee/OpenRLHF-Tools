@@ -1,5 +1,6 @@
 import ctypes
 import gc
+import json
 import os
 import time
 from abc import ABC
@@ -140,6 +141,90 @@ class BasePPOTrainer(ABC):
     def fit(self):
         raise NotImplementedError("fit method is not implemented")
 
+    def _collect_eval_tool_usage(self, all_prompts, samples_list, prompt_to_datasource):
+        per_dataset_counts = defaultdict(lambda: defaultdict(int))
+        for prompt, sample in zip(all_prompts, samples_list):
+            datasource = prompt_to_datasource[prompt]
+            for key, value in sample.info.items():
+                if not key.startswith("tool_count__"):
+                    continue
+                tool_name = key[len("tool_count__") :]
+                tool_count = int(value.flatten()[0].item())
+                per_dataset_counts[datasource][tool_name] += tool_count
+
+        per_dataset_counts = {
+            ds: dict(sorted(tool_counts.items()))
+            for ds, tool_counts in sorted(per_dataset_counts.items())
+            if tool_counts
+        }
+        per_dataset_normalized = {}
+        totals = {}
+        for ds, tool_counts in per_dataset_counts.items():
+            total = sum(tool_counts.values())
+            totals[ds] = total
+            per_dataset_normalized[ds] = {tool: count / total for tool, count in tool_counts.items()}
+
+        return per_dataset_counts, per_dataset_normalized, totals
+
+    def _write_eval_tool_usage(self, global_step, per_dataset_counts, per_dataset_normalized, totals):
+        if not per_dataset_counts:
+            return
+        run_dir = self.samples_generator.runs_dir
+        output_dir = os.path.join(run_dir, "tool_usage_eval")
+        os.makedirs(output_dir, exist_ok=True)
+        payload = {
+            "global_step": global_step,
+            "per_dataset_counts": per_dataset_counts,
+            "per_dataset_normalized": per_dataset_normalized,
+            "totals": totals,
+        }
+        with open(os.path.join(output_dir, f"eval_step_{global_step}.json"), "w") as f:
+            json.dump(payload, f, ensure_ascii=True)
+        if not hasattr(self, "_eval_tool_usage_history"):
+            self._eval_tool_usage_history = []
+        self._eval_tool_usage_history.append(payload)
+
+    def _write_final_tool_usage_plot(self):
+        history = getattr(self, "_eval_tool_usage_history", [])
+        if not history:
+            return
+
+        import matplotlib.pyplot as plt
+
+        output_dir = os.path.join(self.samples_generator.runs_dir, "tool_usage_eval")
+        os.makedirs(output_dir, exist_ok=True)
+        datasets = sorted({ds for entry in history for ds in entry["per_dataset_normalized"].keys()})
+        if not datasets:
+            return
+
+        nrows = len(datasets)
+        fig, axes = plt.subplots(nrows, 1, figsize=(14, max(4, 3 * nrows)), squeeze=False)
+        for row, ds in enumerate(datasets):
+            ax = axes[row][0]
+            tools = sorted(
+                {tool for entry in history for tool in entry["per_dataset_normalized"].get(ds, {}).keys()}
+            )
+            if not tools:
+                ax.set_axis_off()
+                continue
+            matrix = [[entry["per_dataset_normalized"].get(ds, {}).get(tool, 0.0) for tool in tools] for entry in history]
+            heatmap = ax.imshow(matrix, aspect="auto", cmap="viridis", vmin=0.0, vmax=1.0)
+            ax.set_title(ds)
+            ax.set_xlabel("tool")
+            ax.set_ylabel("eval_step")
+            ax.set_xticks(range(len(tools)))
+            ax.set_xticklabels(tools, rotation=45, ha="right", fontsize=8)
+            y_labels = [str(entry["global_step"]) for entry in history]
+            ax.set_yticks(range(len(y_labels)))
+            ax.set_yticklabels(y_labels, fontsize=8)
+            fig.colorbar(heatmap, ax=ax, fraction=0.025, pad=0.02)
+
+        fig.tight_layout()
+        output_path = os.path.join(output_dir, "tool_usage_phase_histograms.png")
+        fig.savefig(output_path, dpi=200)
+        plt.close(fig)
+        logger.info(f"Saved tool usage phase plot to {output_path}")
+
     @torch.no_grad()
     def evaluate(self, global_step, **generate_kwargs):
         """Evaluate model performance on eval dataset."""
@@ -228,6 +313,11 @@ class BasePPOTrainer(ABC):
                 macro_f1_values.append(macro_f1)
             if macro_f1_values:
                 logs["eval_avg_macro_f1"] = sum(macro_f1_values) / len(macro_f1_values)
+
+        per_dataset_counts, per_dataset_normalized, totals = self._collect_eval_tool_usage(
+            all_prompts, samples_list, prompt_to_datasource
+        )
+        self._write_eval_tool_usage(global_step, per_dataset_counts, per_dataset_normalized, totals)
 
         # Log to wandb/tensorboard
         if self.wandb_logger:
@@ -642,6 +732,7 @@ class PPOTrainer(BasePPOTrainer):
                 if self.args.dynamic_filtering:
                     status["dynamic_filtering_pass_rate"] = filter_pass_rate
                     status["too_easy_pct"] = self.samples_generator.step_too_easy_pct
+                    status["too_hard_pct"] = self.samples_generator.step_too_hard_pct
                 log_status = {k: v for k, v in status.items() if k not in ["generated_samples"]}
                 logger.info(f"✨ Global step {global_step}: {log_status}")
 
@@ -674,12 +765,21 @@ class PPOTrainer(BasePPOTrainer):
                     self.wandb_logger.log_episode(episode, self.samples_generator.episode_filter_stats)
                 global_step = self._run_replay_episodes(episode, global_step, total_consumed_prompts)
 
+        # Final eval at end of training (skip if last step already ran eval)
+        if self.eval_dataloader and (global_step % self.args.eval_steps != 0):
+            eval_generate_kwargs = self.generate_kwargs.copy()
+            eval_generate_kwargs["temperature"] = self.args.eval_temperature
+            eval_generate_kwargs["n_samples_per_prompt"] = self.args.eval_n_samples_per_prompt
+            logger.info(f"Running final evaluation at global_step {global_step}")
+            self.evaluate(global_step, **eval_generate_kwargs)
+
         try:
             ctypes.CDLL("libc.so.6").malloc_trim(0)
         except Exception:
             pass
 
         # Close trackers
+        self._write_final_tool_usage_plot()
         if self.wandb_logger:
             self.wandb_logger.close()
         if self.tensorboard_logger:

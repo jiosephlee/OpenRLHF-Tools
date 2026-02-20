@@ -84,9 +84,14 @@ class ToolCallingTurn(AgentInstanceBase):
         if tool_calls:
             # Execute tools and build result dicts
             tool_msgs = []
+            extra_logs = {"tool_call_count": len(tool_calls)}
             for tc in tool_calls:
+                tool_name = tc.get("name", "")
                 result = await self._execute_tool(tc)
-                tool_msgs.append({"name": tc.get("name", ""), "content": result})
+                tool_msgs.append({"name": tool_name, "content": result})
+                if tool_name:
+                    key = f"tool_count__{tool_name}"
+                    extra_logs[key] = extra_logs.get(key, 0) + 1
 
             # Bridge text: close assistant turn + tool responses + open next turn
             feedback = self.protocol.render_tool_feedback(tool_msgs)
@@ -95,7 +100,7 @@ class ToolCallingTurn(AgentInstanceBase):
                 "rewards": torch.tensor(0.0),
                 "done": False,
                 "scores": 0.0,
-                "extra_logs": {"tool_call_count": len(tool_calls)},
+                "extra_logs": extra_logs,
             }
 
         # No tool calls → final answer

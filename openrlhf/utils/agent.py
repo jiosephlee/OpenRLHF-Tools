@@ -86,9 +86,13 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
                 break
 
             # Generate response asynchronously (input and output are token ids)
-            request_output = await llm_engine.generate(current_obs_tokens, deepcopy(sampling_params))
-            action_tokens = request_output.outputs[0].token_ids
-            action_text = request_output.outputs[0].text
+            try:
+                request_output = await llm_engine.generate(current_obs_tokens, deepcopy(sampling_params))
+                action_tokens = request_output.outputs[0].token_ids
+                action_text = request_output.outputs[0].text
+            except Exception as e:
+                logger.error(f"[MultiTurnAgent] vLLM generation failed or aborted: {e}")
+                break
 
             # Record action range in token space
             action_start = len(current_obs_tokens)
@@ -202,12 +206,17 @@ class SingleTurnAgentExecutor(AgentExecutorBase):
             prompt_token_ids = prompt_token_ids[-max_prompt_length:]
 
         # Generate one continuation from the engine.
-        request_output = await llm_engine.generate(prompt_token_ids, deepcopy(sampling_params))
-        generation_output = request_output.outputs[0]
-        action_token_ids = generation_output.token_ids
+        try:
+            request_output = await llm_engine.generate(prompt_token_ids, deepcopy(sampling_params))
+            generation_output = request_output.outputs[0]
+            action_token_ids = generation_output.token_ids
 
-        # Check if response was truncated (hit max_tokens length limit)
-        is_truncated = generation_output.finish_reason == "length"
+            # Check if response was truncated (hit max_tokens length limit)
+            is_truncated = generation_output.finish_reason == "length"
+        except Exception as e:
+            logger.error(f"[SingleTurnExecutor] vLLM generation failed or aborted: {e}")
+            action_token_ids = []
+            is_truncated = True
 
         # Stitch prompt + action together for downstream consumers.
         observation_token_ids = prompt_token_ids + action_token_ids

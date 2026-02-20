@@ -78,7 +78,7 @@ SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_LABEL}/$RUN_ID"
 HUB_REPO_ID="jiosephlee/grpo-tdc-intern-s1-${TASK_LABEL}"
 
 ### GPU LAYOUT (colocated — shared GPUs) ###
-TRAIN_BATCH_SIZE=32
+TRAIN_BATCH_SIZE=64
 VLLM_NUM_ENGINES=$NUM_GPUS
 
 ### TOOL-CALLING CONFIG ###
@@ -242,7 +242,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --delete_local_after_push \
     --use_dynamic_batch \
     --smart_replay \
-    --max_replay_rounds 2 \
+    --max_replay_rounds 8 \
     --curriculum_balanced
 
 ### CLEANUP ###

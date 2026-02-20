@@ -209,7 +209,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --generate_max_len 2048 \
     --max_samples 1000000 \
     --enable_prefix_caching \
-    --zero_stage 2 \
+    --zero_stage 3 \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \
     --prompt_data "$TRAIN_DATA" \

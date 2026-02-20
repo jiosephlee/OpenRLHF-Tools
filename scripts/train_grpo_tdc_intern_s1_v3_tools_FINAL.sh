@@ -25,7 +25,7 @@ NUM_GPUS=$SLURM_GPUS_ON_NODE
 DEBUG_TRACES=${3:-"0"}
 
 ### MULTI-TASK: AMES, BBB_Martins, Bioavailability_Ma, hERG ###
-TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
+TASK_NAMES=(Bioavailability_Ma)
 TASK_LABEL="Base"
 
 # ### NCCL / IB / NETWORK CONFIG ###

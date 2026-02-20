@@ -258,7 +258,7 @@ class BasePPOTrainer(ABC):
             experiences[0].info["reward"][0].item(),
         ]
         trace_interval = int(os.environ.get("OPENRLHF_TRACE_INTERVAL", "10"))
-        if global_step % max(trace_interval, 1) == 0:
+        if global_step >= 5 and (global_step - 5) % max(trace_interval, 1) == 0:
             sample_preview = sample0[0].replace("\n", "\\n")
             logger.info(
                 f"[trace] step={global_step} reward={sample0[1]:.3f} "
@@ -503,8 +503,11 @@ class PPOTrainer(BasePPOTrainer):
                 desc=f"Episode [{episode + 1}] Replay round {replay_round + 1}",
             )
             while True:
+                log_step_trace = global_step >= 5 and (global_step - 5) % 10 == 0
                 rollout_samples, filter_pass_rate, prompts_consumed, is_exhausted = (
-                    self.samples_generator.generate_samples(global_step=global_step, **self.generate_kwargs)
+                    self.samples_generator.generate_samples(
+                        global_step=global_step, log_step_trace=log_step_trace, **self.generate_kwargs
+                    )
                 )
                 total_consumed_prompts += prompts_consumed
                 if is_exhausted:
@@ -548,6 +551,48 @@ class PPOTrainer(BasePPOTrainer):
         self.samples_generator.prompts_dataloader = original_dataloader
         return global_step
 
+    def _log_dataloader_order(self):
+        """Log first/last 100 samples from the dataloader for validation."""
+        import json as _json
+
+        run_name = getattr(self.args, "wandb_run_name", "run").replace("/", "_")
+        date_stamp = time.strftime("%Y%m%d")
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        log_dir = os.path.join(project_root, "runs", run_name, date_stamp, "dataloader_logs")
+        os.makedirs(log_dir, exist_ok=True)
+
+        # Collect all samples (iterate the full dataloader once)
+        all_samples = []
+        for _indices, datasources, prompts, _labels in self.prompts_dataloader:
+            for ds, prompt in zip(datasources, prompts):
+                all_samples.append((ds, prompt))
+
+        n = len(all_samples)
+        head = 100
+        tail = 100
+
+        log_path = os.path.join(log_dir, "dataset_order.jsonl")
+        with open(log_path, "w") as f:
+            f.write(_json.dumps({"total_samples": n, "head": head, "tail": tail}) + "\n")
+            for i in range(min(head, n)):
+                ds, prompt = all_samples[i]
+                f.write(_json.dumps({
+                    "index": i,
+                    "datasource": ds,
+                    "prompt_tail": prompt[-100:] if len(prompt) > 100 else prompt,
+                }) + "\n")
+            if n > head + tail:
+                f.write(_json.dumps({"gap": f"...skipped indices {head} to {n - tail - 1}..."}) + "\n")
+            for i in range(max(head, n - tail), n):
+                ds, prompt = all_samples[i]
+                f.write(_json.dumps({
+                    "index": i,
+                    "datasource": ds,
+                    "prompt_tail": prompt[-100:] if len(prompt) > 100 else prompt,
+                }) + "\n")
+
+        logger.info(f"[DataloaderLog] Wrote {n} sample summary to {log_path}")
+
     def fit(self) -> None:
         checkpoint_states = self.init_checkpoint_states()
         # Restore step and start_epoch
@@ -560,6 +605,9 @@ class PPOTrainer(BasePPOTrainer):
             state_dict = checkpoint_states["data_loader_state_dict"]
             if state_dict:
                 self.prompts_dataloader.load_state_dict(state_dict)
+
+        # Log dataloader ordering for validation before training begins.
+        self._log_dataloader_order()
 
         # Evaluate at step 0 (before any training) unless resuming from a checkpoint.
         if global_step == 0 and self.eval_dataloader and not self.args.skip_eval_step_zero:
@@ -577,8 +625,11 @@ class PPOTrainer(BasePPOTrainer):
             )
             while True:
                 # Draw one mini-batch of prompts; stop when loader is exhausted.
+                log_step_trace = global_step >= 5 and (global_step - 5) % 10 == 0
                 rollout_samples, filter_pass_rate, prompts_consumed, is_exhausted = (
-                    self.samples_generator.generate_samples(global_step=global_step, **self.generate_kwargs)
+                    self.samples_generator.generate_samples(
+                        global_step=global_step, log_step_trace=log_step_trace, **self.generate_kwargs
+                    )
                 )
                 total_consumed_prompts += prompts_consumed
                 if is_exhausted:

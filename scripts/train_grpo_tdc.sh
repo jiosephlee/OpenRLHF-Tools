@@ -92,7 +92,6 @@ VLLM_NUM_ENGINES=$((NUM_GPUS / 2))
 # Tool-calling configuration
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
 AGENT_MAX_STEPS=40
-PROMPT_CONSTRUCTION_MODE="manual"  # "manual" (fast) or "auto" (robust)
 
 # GRPO configuration
 N_SAMPLES_PER_PROMPT=8
@@ -119,7 +118,6 @@ export VLLM_DISABLE_TELEMETRY=1
 
 # OpenRLHF environment variables (for agent)
 export OPENRLHF_MODEL_PATH="$PRETRAIN_PATH"
-export OPENRLHF_PROMPT_CONSTRUCTION_MODE="$PROMPT_CONSTRUCTION_MODE"
 export OPENRLHF_MAX_STEPS="$AGENT_MAX_STEPS"
 
 # NCCL/distributed training settings
@@ -223,7 +221,6 @@ echo "RAY_NODE_IP_ADDRESS: $RAY_NODE_IP_ADDRESS"
 echo "----------------------------------------"
 echo "Agent Max Steps: $AGENT_MAX_STEPS"
 echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
-echo "Prompt Mode: $PROMPT_CONSTRUCTION_MODE"
 echo "========================================"
 
 ############################
@@ -288,7 +285,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --agent_func_path "$AGENT_FUNC_PATH" \
     --agent_max_steps $AGENT_MAX_STEPS \
     --vllm_stop_strings "</tool_call>" \
-    --prompt_construction_mode "$PROMPT_CONSTRUCTION_MODE" \
     $([ -n "${WANDB_API_KEY:-}" ] && echo "--use_wandb $WANDB_API_KEY --wandb_group 'TDC-$TASK_NAME' --wandb_run_name '$RUN_ID'" || echo "")
 
 ############################

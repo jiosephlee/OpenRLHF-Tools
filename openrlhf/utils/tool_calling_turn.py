@@ -18,7 +18,7 @@ from transformers import AutoTokenizer
 
 from openrlhf.utils.tool_versions import get_version
 from openrlhf.utils.agent import AgentInstanceBase, MultiTurnAgentExecutor
-from openrlhf.utils.chat_protocol import GLMFlashProtocol, InternS1Protocol
+from openrlhf.utils.chat_protocol import GLMFlashProtocol, GPTOSSProtocol, InternS1Protocol
 
 
 class ToolCallingTurn(AgentInstanceBase):
@@ -48,8 +48,12 @@ class ToolCallingTurn(AgentInstanceBase):
         protocol_name = os.environ.get("OPENRLHF_CHAT_PROTOCOL", "glm_flash")
         if protocol_name == "intern_s1":
             self.protocol = InternS1Protocol(self.tokenizer)
-        else:
+        elif protocol_name == "gpt_oss":
+            self.protocol = GPTOSSProtocol(self.tokenizer)
+        elif protocol_name in {"glm_flash", "qwen3"}:
             self.protocol = GLMFlashProtocol(self.tokenizer)
+        else:
+            raise ValueError(f"Unsupported chat protocol: {protocol_name}")
 
         # ---- tool callables (from version registry) ----
         tool_version = os.environ.get("OPENRLHF_TOOL_VERSION")
@@ -72,8 +76,9 @@ class ToolCallingTurn(AgentInstanceBase):
     async def step(self, state_dict: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         """Parse tool calls, execute, return upstream-contract dict."""
         action_text = state_dict["action_text"]
+        action_token_ids = state_dict.get("action_token_ids")
         label = state_dict.get("label", "")
-        action = self.protocol.parse_assistant_text(action_text)
+        action = self.protocol.parse_assistant_text(action_text, token_ids=action_token_ids)
         tool_calls = action.get("tool_calls", [])
 
         if tool_calls:
@@ -131,23 +136,31 @@ class ToolCallingTurn(AgentInstanceBase):
             })
 
     _ANSWER_RE = re.compile(r"Answer\s*:\s*\(?\s*([A-Za-z])\s*\)?")
+    _PAREN_ANSWER_RE = re.compile(r"\(\s*([A-Za-z])\s*\)")
 
     def _compute_reward(self, generated_text: str, label: Optional[str]) -> float:
         """Reward = 1.0 iff the model's Answer: (X) after </think> matches the label."""
         if not label:
             return 0.0
 
-        # Only consider text after the closing </think> tag
+        # Prefer the post-think region when present; otherwise evaluate full text.
         think_end = generated_text.find("</think>")
-        if think_end == -1:
-            return 0.0
-        answer_region = generated_text[think_end:]
+        answer_region = generated_text[think_end:] if think_end != -1 else generated_text
 
         match = self._ANSWER_RE.search(answer_region)
-        if not match:
-            return 0.0
-
-        pred = match.group(1).upper()
+        if match:
+            pred = match.group(1).upper()
+        else:
+            # GPT-OSS frequently emits bare "(A)"/"(B)" without "Answer:" prefix.
+            paren_matches = self._PAREN_ANSWER_RE.findall(answer_region)
+            if paren_matches:
+                pred = paren_matches[-1].upper()
+            else:
+                stripped = answer_region.strip()
+                if len(stripped) == 1 and stripped.isalpha():
+                    pred = stripped.upper()
+                else:
+                    return 0.0
 
         # Extract letter from label too (handles "A", "(A)", "Answer: (A)", etc.)
         label_match = self._ANSWER_RE.search(label)

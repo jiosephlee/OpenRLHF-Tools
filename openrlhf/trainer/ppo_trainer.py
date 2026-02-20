@@ -9,6 +9,7 @@ from typing import Dict, Tuple
 
 import ray
 import torch
+from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
 from openrlhf.datasets import PromptDataset
@@ -82,6 +83,13 @@ def prepare_datasets(strategy, tokenizer):
     max_steps = (
         len(prompts_dataset) * args.n_samples_per_prompt // args.train_batch_size * args.num_episodes * args.max_epochs
     )
+    if getattr(args, "smart_replay", False):
+        # With smart replay the true step count is unknowable ahead of time,
+        # so we force a constant LR with linear warmup (20 rollout steps).
+        args.lr_scheduler = "constant_with_warmup"
+        args.lr_warmup_ratio = 0  # ignored — we use absolute warmup steps below
+        args.smart_replay_warmup_steps = 20
+        logger.info("[SmartReplay] Overriding LR scheduler to constant_with_warmup (warmup=20 steps)")
     return prompts_dataloader, eval_dataloader, max_steps
 
 
@@ -143,7 +151,7 @@ class BasePPOTrainer(ABC):
 
         # First collect all prompts and labels
         prompt_to_datasource = {}  # Dictionary to store mapping between prompts and their data sources
-        for datasources, prompts, labels in self.eval_dataloader:
+        for _indices, datasources, prompts, labels in self.eval_dataloader:
             # Create mapping for each prompt to its corresponding data source
             for prompt, datasource in zip(prompts, datasources):
                 prompt_to_datasource[prompt] = datasource
@@ -452,6 +460,84 @@ class PPOTrainer(BasePPOTrainer):
     def get_max_steps(self):
         return self.max_steps
 
+    def _run_replay_episodes(self, episode: int, global_step: int, total_consumed_prompts: int) -> int:
+        """After the primary episode, replay filtered prompts for up to max_replay_rounds."""
+        hard_indices, kept_indices = self.samples_generator.get_replay_indices()
+        replay_indices = list(hard_indices | kept_indices)
+        max_replay_rounds = getattr(self.args, "max_replay_rounds", 2)
+        original_dataloader = self.samples_generator.prompts_dataloader
+
+        for replay_round in range(max_replay_rounds):
+            if len(replay_indices) < self.args.rollout_batch_size:
+                logger.info(
+                    f"[SmartReplay] Round {replay_round + 1}: only {len(replay_indices)} prompts "
+                    f"(< rollout_batch_size={self.args.rollout_batch_size}), skipping."
+                )
+                break
+
+            logger.info(
+                f"[SmartReplay] Episode {episode + 1}, round {replay_round + 1}/{max_replay_rounds}: "
+                f"replaying {len(replay_indices)} prompts (hard={len(hard_indices)}, kept={len(kept_indices)})"
+            )
+
+            # Build a dataloader over the replay subset.
+            subset = Subset(original_dataloader.dataset, replay_indices)
+            replay_dataloader = DataLoader(
+                subset, batch_size=1, shuffle=True,
+                collate_fn=original_dataloader.dataset.collate_fn,
+            )
+            self.samples_generator.prompts_dataloader = replay_dataloader
+
+            pbar = tqdm(
+                range(len(replay_dataloader)),
+                desc=f"Episode [{episode + 1}] Replay round {replay_round + 1}",
+            )
+            while True:
+                rollout_samples, filter_pass_rate, prompts_consumed, is_exhausted = (
+                    self.samples_generator.generate_samples(global_step=global_step, **self.generate_kwargs)
+                )
+                total_consumed_prompts += prompts_consumed
+                if is_exhausted:
+                    break
+
+                status, global_step = self.train_step(rollout_samples, global_step)
+                if self.args.dynamic_filtering:
+                    status["dynamic_filtering_pass_rate"] = filter_pass_rate
+                status["replay/round"] = replay_round + 1
+
+                log_status = {k: v for k, v in status.items() if k not in ["generated_samples"]}
+                logger.info(f"✨ Global step {global_step} [replay]: {log_status}")
+
+                client_states = {
+                    "episode": episode,
+                    "global_step": global_step,
+                    "total_consumed_prompts": total_consumed_prompts,
+                    "data_loader_state_dict": {},  # replay dataloader state is ephemeral
+                }
+                self.save_logs_and_checkpoints(global_step, status, client_states)
+
+                if global_step % self.args.eval_steps == 0 and self.eval_dataloader:
+                    eval_generate_kwargs = self.generate_kwargs.copy()
+                    eval_generate_kwargs["temperature"] = self.args.eval_temperature
+                    eval_generate_kwargs["n_samples_per_prompt"] = self.args.eval_n_samples_per_prompt
+                    self.evaluate(global_step, **eval_generate_kwargs)
+
+                pbar.update(prompts_consumed)
+                del rollout_samples, status
+                gc.collect()
+
+            # Collect new replay indices from this round (everything that wasn't too easy).
+            hard_indices, kept_indices = self.samples_generator.get_replay_indices()
+            replay_indices = list(hard_indices | kept_indices)
+            logger.info(
+                f"[SmartReplay] Round {replay_round + 1} done. "
+                f"{len(replay_indices)} non-easy prompts remain (hard={len(hard_indices)}, kept={len(kept_indices)})."
+            )
+
+        # Restore original dataloader.
+        self.samples_generator.prompts_dataloader = original_dataloader
+        return global_step
+
     def fit(self) -> None:
         checkpoint_states = self.init_checkpoint_states()
         # Restore step and start_epoch
@@ -494,6 +580,7 @@ class PPOTrainer(BasePPOTrainer):
                 # Add generated samples to status dictionary
                 if self.args.dynamic_filtering:
                     status["dynamic_filtering_pass_rate"] = filter_pass_rate
+                    status["too_easy_pct"] = self.samples_generator.step_too_easy_pct
                 log_status = {k: v for k, v in status.items() if k not in ["generated_samples"]}
                 logger.info(f"✨ Global step {global_step}: {log_status}")
 
@@ -519,6 +606,13 @@ class PPOTrainer(BasePPOTrainer):
                 # prevent host-RAM growth across training steps.
                 del rollout_samples, status
                 gc.collect()
+
+            # --- Smart replay: log episode stats and run replay episodes ---
+            if getattr(self.args, "smart_replay", False):
+                if self.wandb_logger:
+                    self.wandb_logger.log_episode(episode, self.samples_generator.episode_filter_stats)
+                global_step = self._run_replay_episodes(episode, global_step, total_consumed_prompts)
+
         try:
             ctypes.CDLL("libc.so.6").malloc_trim(0)
         except Exception:

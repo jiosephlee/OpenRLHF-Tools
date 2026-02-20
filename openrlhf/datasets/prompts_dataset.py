@@ -81,15 +81,17 @@ class PromptDataset(Dataset):
         return length
 
     def __getitem__(self, idx):
-        return self.datasources[idx], self.prompts[idx], self.labels[idx]
+        return idx, self.datasources[idx], self.prompts[idx], self.labels[idx]
 
     def collate_fn(self, item_list):
+        indices = []
         datasources = []
         prompts = []
         labels = []
-        for datasource, prompt, label in item_list:
+        for idx, datasource, prompt, label in item_list:
+            indices.append(idx)
             datasources.append(datasource)
             prompts.append(prompt)
             labels.append(label)
 
-        return datasources, prompts, labels
+        return indices, datasources, prompts, labels

@@ -133,7 +133,6 @@ run_task() {
     # ── Tool-calling configuration ──────────────────────────────────
     AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
     AGENT_MAX_STEPS=50
-    PROMPT_CONSTRUCTION_MODE="manual"
 
     # ── GRPO configuration ──────────────────────────────────────────
     N_SAMPLES_PER_PROMPT=8
@@ -163,7 +162,6 @@ run_task() {
 
     # Agent env vars (also set by vllm_engine.py, but export here for visibility)
     export OPENRLHF_MODEL_PATH="$PRETRAIN_PATH"
-    export OPENRLHF_PROMPT_CONSTRUCTION_MODE="$PROMPT_CONSTRUCTION_MODE"
     export OPENRLHF_MAX_STEPS="$AGENT_MAX_STEPS"
 
     ############################
@@ -249,7 +247,6 @@ run_task() {
     echo "----------------------------------------"
     echo "Agent Max Steps: $AGENT_MAX_STEPS"
     echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
-    echo "Prompt Mode: $PROMPT_CONSTRUCTION_MODE"
     echo "----------------------------------------"
     echo "RAY_NODE_IP_ADDRESS: $RAY_NODE_IP_ADDRESS"
     echo "RAY_PYTHON_EXECUTABLE: $RAY_PYTHON_EXECUTABLE"
@@ -314,7 +311,6 @@ run_task() {
         --agent_func_path "$AGENT_FUNC_PATH" \
         --agent_max_steps $AGENT_MAX_STEPS \
         --vllm_stop_strings "</tool_call>" \
-        --prompt_construction_mode "$PROMPT_CONSTRUCTION_MODE" \
         --use_wandb 1 \
         --wandb_project "$WANDB_PROJECT" \
         --wandb_group "TDC-$TASK_NAME" \

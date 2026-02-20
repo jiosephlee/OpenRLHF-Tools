@@ -88,6 +88,7 @@ Abstract interface for model-specific tool-call formats.
 **Implementations:**
 - `GLMFlashProtocol`: XML format (`<tool_call>func<arg_key>k</arg_key><arg_value>v</arg_value></tool_call>`)
 - `InternS1Protocol`: JSON format with `<|action_start|><|plugin|>` delimiters, includes SMILES-safe JSON escape repair
+- `GPTOSSProtocol`: Harmony-format parser for `gpt_oss` using generated token IDs
 - Qwen3 support via `--chat_protocol qwen3`
 
 Selected via `OPENRLHF_CHAT_PROTOCOL` env var (propagated by `vllm_engine.py`).
@@ -118,8 +119,7 @@ GRPO Training Loop
 - `--agent_func_path`: Path to agent implementation
 - `--agent_max_steps`: Max turns per episode (default: 5)
 - `--vllm_stop_strings`: Stop generation tokens (e.g., `"</tool_call>"`)
-- `--chat_protocol`: Protocol name (`glm_flash`, `intern_s1`, `qwen3`)
-- `--prompt_construction_mode`: `"manual"` (fast) or `"auto"` (robust)
+- `--chat_protocol`: Protocol name (`glm_flash`, `intern_s1`, `gpt_oss`, `qwen3`)
 
 **TDC:**
 - `--tdc_tools`: Path to per-task tool schema JSON
@@ -137,7 +137,6 @@ GRPO Training Loop
 
 Set automatically by vllm_engine.py:
 - `OPENRLHF_MODEL_PATH`: Model path for tokenizer
-- `OPENRLHF_PROMPT_CONSTRUCTION_MODE`: Prompt mode
 - `OPENRLHF_MAX_STEPS`: Max agent steps
 - `OPENRLHF_CHAT_PROTOCOL`: Chat protocol name
 
@@ -149,7 +148,7 @@ Debug flags:
 
 | File | Changes |
 |---|---|
-| `openrlhf/utils/chat_protocol.py` | New: ChatProtocol ABC, GLMFlashProtocol, InternS1Protocol |
+| `openrlhf/utils/chat_protocol.py` | New: ChatProtocol ABC, GLMFlashProtocol, InternS1Protocol, GPTOSSProtocol |
 | `openrlhf/utils/tool_calling_turn.py` | New: ToolCallingTurn agent class |
 | `openrlhf/utils/tdc_reward_model.py` | New: binary answer extractor for TDC eval |
 | `openrlhf/datasets/tdc_loader.py` | New: TDCDatasetLoader |

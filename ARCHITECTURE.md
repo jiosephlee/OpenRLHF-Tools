@@ -3,7 +3,7 @@ Pipeline Trace: scripts/train_grpo_tdc.sh
   Phase 0: Shell Setup
 
   The script parses args (TASK_NAME, PRETRAIN_PATH, LEARNING_RATE, NUM_GPUS), sets environment variables (OPENRLHF_MODEL_PATH,
-  OPENRLHF_PROMPT_CONSTRUCTION_MODE, OPENRLHF_MAX_STEPS), starts a Ray cluster (ray start --head), then invokes:
+  OPENRLHF_MAX_STEPS), starts a Ray cluster (ray start --head), then invokes:
 
   python -m openrlhf.cli.train_ppo_ray  --agent_func_path ... --agent_max_steps 40 ...
 
@@ -25,7 +25,7 @@ Pipeline Trace: scripts/train_grpo_tdc.sh
 
   File: openrlhf/trainer/ray/vllm_engine.py
 
-  1. Sets agent env vars: OPENRLHF_MODEL_PATH, OPENRLHF_PROMPT_CONSTRUCTION_MODE, OPENRLHF_MAX_STEPS
+  1. Sets agent env vars: OPENRLHF_MODEL_PATH, OPENRLHF_MAX_STEPS
   2. Calls _load_agent_executor(agent_func_path):
     - Dynamically imports tool_calling_turn.py
     - Finds the AgentExecutor class (subclass of MultiTurnAgentExecutor)
@@ -104,7 +104,7 @@ Pipeline Trace: scripts/train_grpo_tdc.sh
 
   ToolCallingTurn.step(state_dict) (tool_calling_turn.py):
   1. GLMFlashProtocol.parse_assistant_text(action_text) — parses <tool_call>func<arg_key>k</arg_key><arg_value>v</arg_value></tool_call>
-  2. If tool call found: executes the tool function, renders feedback via protocol.render_messages(), returns {environment_feedback, rewards=0, done=False}
+  2. If tool call found: executes the tool function, renders feedback via protocol.render_tool_feedback(), returns {environment_feedback, rewards=0, done=False}
   3. If no tool call (final answer): computes reward, returns {environment_feedback="", rewards=score, done=True}
 
   ---
@@ -171,7 +171,7 @@ Pipeline Trace: scripts/train_grpo_tdc.sh
               │    └─ LLMRayActor.generate_responses()
               │         └─ MultiTurnAgentExecutor.execute()  ← multi-turn loop
               │              ├─ ToolCallingTurn.reset()
-              │              │    └─ GLMFlashProtocol.render_messages()
+              │              │    └─ GLMFlashProtocol.parse_assistant_text() / render_tool_feedback()
               │              └─ loop:
               │                   ├─ vLLM generate → action_tokens
               │                   ├─ action_ranges.append((start, end))

@@ -69,7 +69,6 @@ def train(args):
             remote_rm_url=args.remote_rm_url,
             agent_max_steps=args.agent_max_steps,
             vllm_stop_strings=args.vllm_stop_strings,
-            prompt_construction_mode=args.prompt_construction_mode,
             chat_protocol=args.chat_protocol,
             tool_version=args.tool_version,
         )
@@ -486,17 +485,11 @@ if __name__ == "__main__":
         help="Enable Vision-Language Model support"
     )
     parser.add_argument(
-        "--prompt_construction_mode",
-        type=str,
-        choices=["auto", "manual"],
-        default="manual",
-        help="Prompt construction mode: 'manual' (fast) or 'auto' (robust with chat template)"
-    )
-    parser.add_argument(
         "--chat_protocol",
         type=str,
         default="glm_flash",
-        help="Chat protocol for tool-calling format: 'glm_flash' or 'intern_s1'"
+        choices=["glm_flash", "intern_s1", "gpt_oss", "qwen3"],
+        help="Chat protocol for tool-calling format."
     )
 
     # Custom dataset
@@ -551,6 +544,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dynamic_filtering_reward_range", nargs=2, default=(0, 1), type=float, help="Dynamic filtering rewards range"
     )
+    # Smart replay (selective prompt repetition after primary pass)
+    parser.add_argument("--smart_replay", action="store_true", default=False,
+                        help="After each episode, replay filtered prompts the model can still learn from")
+    parser.add_argument("--max_replay_rounds", type=int, default=2,
+                        help="Max replay rounds per episode (default: 2)")
+
     # TensorBoard parameters
     parser.add_argument("--use_tensorboard", type=str, default=None, help="TensorBoard logging path")
 
@@ -648,6 +647,9 @@ if __name__ == "__main__":
         assert (
             args.n_samples_per_prompt > 1
         ), "n_samples_per_prompt must be greater than 1 when using dynamic filtering"
+
+    if args.smart_replay:
+        assert args.dynamic_filtering, "--smart_replay requires --dynamic_filtering"
 
     assert (
         args.n_samples_per_prompt * args.rollout_batch_size // args.micro_rollout_batch_size

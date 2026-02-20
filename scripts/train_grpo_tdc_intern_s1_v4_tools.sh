@@ -84,7 +84,6 @@ VLLM_NUM_ENGINES=$NUM_GPUS
 ### TOOL-CALLING CONFIG ###
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
 AGENT_MAX_STEPS=30
-PROMPT_CONSTRUCTION_MODE="auto"
 CHAT_PROTOCOL="intern_s1"
 
 ### GRPO CONFIG ###
@@ -105,7 +104,6 @@ export VLLM_NO_USAGE_STATS=1
 export VLLM_DISABLE_TELEMETRY=1
 
 export OPENRLHF_MODEL_PATH="$PRETRAIN_PATH"
-export OPENRLHF_PROMPT_CONSTRUCTION_MODE="$PROMPT_CONSTRUCTION_MODE"
 export OPENRLHF_CHAT_PROTOCOL="$CHAT_PROTOCOL"
 export OPENRLHF_MAX_STEPS="$AGENT_MAX_STEPS"
 export DEBUG_TRACES="$DEBUG_TRACES"
@@ -153,7 +151,6 @@ echo "VLLM_NUM_ENGINES: $VLLM_NUM_ENGINES"
 echo "----------------------------------------"
 echo "Agent Max Steps: $AGENT_MAX_STEPS"
 echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
-echo "Prompt Mode: $PROMPT_CONSTRUCTION_MODE"
 echo "Temperature: $TEMPERATURE"
 echo "Top-p: $TOP_P"
 echo "----------------------------------------"
@@ -235,7 +232,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --agent_func_path "$AGENT_FUNC_PATH" \
     --agent_max_steps $AGENT_MAX_STEPS \
     --vllm_stop_strings "<|action_end|>" "<|im_end|>" \
-    --prompt_construction_mode "$PROMPT_CONSTRUCTION_MODE" \
     --chat_protocol "$CHAT_PROTOCOL" \
     --use_wandb 1 \
     --wandb_project "$WANDB_PROJECT" \

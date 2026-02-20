@@ -99,6 +99,7 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
             states = {
                 "observation_text": observation_text,
                 "action_text": action_text,
+                "action_token_ids": action_tokens,
                 "label": label,
                 "sampling_params": sampling_params,
             }

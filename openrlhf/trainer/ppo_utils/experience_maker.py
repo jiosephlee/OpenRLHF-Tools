@@ -214,20 +214,21 @@ class Experience:
 
 def _collect_prompt_batch(dataloader_iter, num_prompts: int):
     """Draw up to `num_prompts` items from the prompt dataloader."""
-    prompts, labels = [], []
+    indices, prompts, labels = [], [], []
     exhausted = False
 
     while len(prompts) < num_prompts:
         try:
-            _, batch_prompts, batch_labels = next(dataloader_iter)
+            batch_indices, _, batch_prompts, batch_labels = next(dataloader_iter)
             remaining = num_prompts - len(prompts)
+            indices.extend(batch_indices[:remaining])
             prompts.extend(batch_prompts[:remaining])
             labels.extend(batch_labels[:remaining])
         except StopIteration:
             exhausted = True
             break
 
-    return prompts, labels, exhausted
+    return indices, prompts, labels, exhausted
 
 
 class SamplesGenerator:
@@ -260,6 +261,17 @@ class SamplesGenerator:
         self.rollout_trace_run_dir = os.path.join(self.runs_dir, "traces")
         os.makedirs(self.rollout_trace_run_dir, exist_ok=True)
         logger.info(f"Rollout traces enabled at: {self.rollout_trace_run_dir}")
+
+        # Smart replay: accumulate dataset indices by filter outcome across the episode.
+        self._replay_hard_indices: set = set()
+        self._replay_kept_indices: set = set()
+
+        # Per-step filtering stats (reset each generate_samples call).
+        self._step_too_easy_count = 0
+        self._step_prompts_consumed = 0
+        # Per-episode filtering stats (reset each episode).
+        self._episode_easy_count = 0
+        self._episode_hard_count = 0
 
     def _to_jsonable(self, value):
         if isinstance(value, torch.Tensor):
@@ -392,13 +404,44 @@ class SamplesGenerator:
 
         return experiences
 
+    def get_replay_indices(self) -> Tuple[set, set]:
+        """Return (hard_indices, kept_indices) accumulated during the episode."""
+        return self._replay_hard_indices, self._replay_kept_indices
+
+    def clear_replay_indices(self):
+        """Reset replay tracking for a new episode."""
+        self._replay_hard_indices = set()
+        self._replay_kept_indices = set()
+        self._episode_easy_count = 0
+        self._episode_hard_count = 0
+
+    @property
+    def step_too_easy_pct(self) -> float:
+        """Percentage of prompts consumed this step that were too easy."""
+        if self._step_prompts_consumed == 0:
+            return 0.0
+        return self._step_too_easy_count / self._step_prompts_consumed * 100
+
+    @property
+    def episode_filter_stats(self) -> dict:
+        """Per-episode filtering stats for W&B logging."""
+        return {
+            "easy_discarded": self._episode_easy_count,
+            "hard_kept": self._episode_hard_count,
+        }
+
     @torch.no_grad()
     def generate_samples(self, **generate_kwargs) -> Tuple[List[Experience], Optional[float], int, bool]:
         """Produce one batch and indicate if the dataloader is exhausted."""
         if getattr(self, "_dataloader_iter", None) is None:
             self._dataloader_iter = iter(self.prompts_dataloader)
+            self.clear_replay_indices()
         trace_step_idx = getattr(self, "_trace_step_idx", 0)
         self._trace_step_idx = trace_step_idx + 1
+
+        # Reset per-step counters.
+        self._step_too_easy_count = 0
+        self._step_prompts_consumed = 0
 
         # Wake sleeping vLLM engines before dispatching.
         if self.args.vllm_enable_sleep:
@@ -411,6 +454,7 @@ class SamplesGenerator:
             trace_step_idx=trace_step_idx,
             **generate_kwargs,
         )
+        self._step_prompts_consumed = prompts_consumed
 
         # Reclaim host RAM in vLLM engine workers accumulated during generation.
         batch_vllm_engine_call(self.vllm_engines, "gc_collect")
@@ -435,10 +479,12 @@ class SamplesGenerator:
         """Generate a batch of Experiences with optional reward filtering."""
         step_idx = int(generate_kwargs.get("trace_step_idx", generate_kwargs.get("global_step", 0)))
         prompts_consumed = 0
-        prompts, labels, exhausted = _collect_prompt_batch(dataloader_iter, num_prompts)
+        dataset_indices, prompts, labels, exhausted = _collect_prompt_batch(dataloader_iter, num_prompts)
         # Stop early if the prompt source is fully consumed.
-        if exhausted:
+        if exhausted and not prompts:
             return [], prompts_consumed, exhausted
+
+        smart_replay = getattr(self.args, "smart_replay", False)
 
         # Staged dispatch (50/35/15): send half immediately, hold the rest
         # in a queue.  Each subsequent stage dispatches when an engine is
@@ -449,15 +495,17 @@ class SamplesGenerator:
         mid = max(1, n // 2)
         q3 = mid + max(1, int(n * 0.35))
         staged_batches = [
-            (prompts[mid:q3], labels[mid:q3]),
-            (prompts[q3:], labels[q3:]),
+            (prompts[mid:q3], labels[mid:q3], dataset_indices[mid:q3]),
+            (prompts[q3:], labels[q3:], dataset_indices[q3:]),
         ]
         # Drop empty trailing stages (e.g. when batch is very small).
-        staged_batches = [(p, l) for p, l in staged_batches if p]
+        staged_batches = [(p, l, ix) for p, l, ix in staged_batches if p]
 
         dispatches = self._dispatch_prompts_to_vllm(prompts[:mid], labels[:mid], **generate_kwargs)
         pending_refs = [ref for ref, _ in dispatches]
         ref_to_engine = {ref: engine_idx for ref, engine_idx in dispatches}
+        # Map each ref → its dataset index for smart replay tracking.
+        ref_to_dataset_idx = {ref: dataset_indices[i] for i, (ref, _) in enumerate(dispatches)}
         prompts_consumed += len(prompts)
 
         # Track how many outstanding requests each engine has.
@@ -475,20 +523,22 @@ class SamplesGenerator:
             ready_refs, pending_refs = ray.wait(pending_refs, num_returns=1, timeout=10.0)
             for ref in ready_refs:
                 engine_idx = ref_to_engine.pop(ref)
+                ds_idx = ref_to_dataset_idx.pop(ref, None)
                 engine_pending[engine_idx] -= 1
 
                 # Dispatch next staged batch when any engine is nearly idle,
                 # so new work is queued before the engine fully drains.
                 if staged_batches and engine_pending[engine_idx] <= 1:
-                    next_prompts, next_labels = staged_batches.pop(0)
+                    next_prompts, next_labels, next_indices = staged_batches.pop(0)
                     logger.info(
                         f"Stage-{3 - len(staged_batches)} dispatch triggered: "
                         f"engine {engine_idx} nearly idle, pending={dict(engine_pending)}"
                     )
                     next_dispatches = self._dispatch_prompts_to_vllm(next_prompts, next_labels, **generate_kwargs)
-                    for new_ref, new_engine_idx in next_dispatches:
+                    for j, (new_ref, new_engine_idx) in enumerate(next_dispatches):
                         pending_refs.append(new_ref)
                         ref_to_engine[new_ref] = new_engine_idx
+                        ref_to_dataset_idx[new_ref] = next_indices[j]
                         engine_pending[new_engine_idx] += 1
 
                 # Build Experience objects for each vLLM response returned from this worker.
@@ -507,15 +557,35 @@ class SamplesGenerator:
                     scores = [e.scores[0].item() for e in experiences]
                     avg_reward = sum(scores) / len(scores)
                     min_r, max_r = self.args.dynamic_filtering_reward_range
-                    if not (min_r < avg_reward < max_r):
+                    if avg_reward >= max_r:
+                        # Too easy — drop; do NOT add to replay
                         filtered_count += 1
+                        self._step_too_easy_count += 1
+                        self._episode_easy_count += 1
                         if filtered_count <= 3 or filtered_count % 25 == 0:
                             logger.info(
-                                "Dynamic filtering rejected group "
-                                f"(rejected={filtered_count}, accepted={len(accepted_experiences)}/{num_prompts}, prompts_consumed={prompts_consumed}, "
-                                f"avg_reward={avg_reward:.2f}, threshold=({min_r:.2f}, {max_r:.2f}), scores={[f'{s:.2f}' for s in scores]})"
+                                "Dynamic filtering rejected group (too easy) "
+                                f"(rejected={filtered_count}, accepted={len(accepted_experiences)}/{num_prompts}, "
+                                f"avg_reward={avg_reward:.2f}, threshold=({min_r:.2f}, {max_r:.2f}))"
                             )
                         experiences = []
+                    elif avg_reward <= min_r:
+                        # Too hard — queue index for replay
+                        filtered_count += 1
+                        self._episode_hard_count += 1
+                        if smart_replay and ds_idx is not None:
+                            self._replay_hard_indices.add(ds_idx)
+                        if filtered_count <= 3 or filtered_count % 25 == 0:
+                            logger.info(
+                                "Dynamic filtering rejected group (too hard) "
+                                f"(rejected={filtered_count}, accepted={len(accepted_experiences)}/{num_prompts}, "
+                                f"avg_reward={avg_reward:.2f}, threshold=({min_r:.2f}, {max_r:.2f}))"
+                            )
+                        experiences = []
+                    else:
+                        # In range — kept; queue index for replay
+                        if smart_replay and ds_idx is not None:
+                            self._replay_kept_indices.add(ds_idx)
 
                 # Accept experiences and stop once enough have been gathered.
                 if experiences:
@@ -526,7 +596,7 @@ class SamplesGenerator:
                 # If rejected, request a new prompt to keep filling the batch.
                 else:
                     # Pull another prompt when the current one fails filtering.
-                    new_prompts, new_labels, exhausted = _collect_prompt_batch(dataloader_iter, 1)
+                    new_ds_indices, new_prompts, new_labels, exhausted = _collect_prompt_batch(dataloader_iter, 1)
                     prompts_consumed += len(new_prompts)
                     # Cancel outstanding work if the dataloader is drained.
                     if exhausted:
@@ -540,9 +610,10 @@ class SamplesGenerator:
                     # Otherwise dispatch the new prompt to keep filling the queue.
                     else:
                         new_dispatches = self._dispatch_prompts_to_vllm(new_prompts, new_labels, **generate_kwargs)
-                        for new_ref, new_engine_idx in new_dispatches:
+                        for j, (new_ref, new_engine_idx) in enumerate(new_dispatches):
                             pending_refs.append(new_ref)
                             ref_to_engine[new_ref] = new_engine_idx
+                            ref_to_dataset_idx[new_ref] = new_ds_indices[j]
                             engine_pending[new_engine_idx] += 1
 
         self._last_episode_trace = episode_traces[0] if episode_traces else None

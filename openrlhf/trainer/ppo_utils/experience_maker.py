@@ -281,6 +281,10 @@ class SamplesGenerator:
         self._replay_hard_indices: set = set()
         self._replay_kept_indices: set = set()
 
+        # Track discarded items for telemetry, regardless of smart replay.
+        self._discarded_easy_indices: set = set()
+        self._discarded_hard_indices: set = set()
+
         # Per-step filtering stats (reset each generate_samples call).
         self._step_too_easy_count = 0
         self._step_too_hard_count = 0
@@ -428,8 +432,24 @@ class SamplesGenerator:
         """Reset replay tracking for a new episode."""
         self._replay_hard_indices = set()
         self._replay_kept_indices = set()
+        self._discarded_easy_indices = set()
+        self._discarded_hard_indices = set()
         self._episode_easy_count = 0
         self._episode_hard_count = 0
+
+    def save_discarded_indices(self, episode: int):
+        """Write the discarded indices of this episode to the runs_dir."""
+        if not self.args.dynamic_filtering:
+            return
+        out_path = os.path.join(self.runs_dir, f"discarded_indices_ep{episode}.json")
+        data = {
+            "episode": episode,
+            "too_easy": sorted(list(self._discarded_easy_indices)),
+            "too_hard": sorted(list(self._discarded_hard_indices))
+        }
+        with open(out_path, "w") as f:
+            json.dump(data, f)
+        logger.info(f"Saved {len(self._discarded_easy_indices)} too_easy and {len(self._discarded_hard_indices)} too_hard indices to {out_path}")
 
     @property
     def step_too_easy_pct(self) -> float:
@@ -587,6 +607,8 @@ class SamplesGenerator:
                         filtered_count += 1
                         self._step_too_easy_count += 1
                         self._episode_easy_count += 1
+                        if ds_idx is not None:
+                            self._discarded_easy_indices.add(ds_idx)
                         if filtered_count <= 3 or filtered_count % 25 == 0:
                             logger.info(
                                 "Dynamic filtering rejected group (too easy) "
@@ -599,6 +621,8 @@ class SamplesGenerator:
                         filtered_count += 1
                         self._step_too_hard_count += 1
                         self._episode_hard_count += 1
+                        if ds_idx is not None:
+                            self._discarded_hard_indices.add(ds_idx)
                         if smart_replay and ds_idx is not None:
                             self._replay_hard_indices.add(ds_idx)
                         if filtered_count <= 3 or filtered_count % 25 == 0:

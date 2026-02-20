@@ -158,7 +158,7 @@ echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-fixed-$TASK_LABEL run=$RUN_
 echo "========================================"
 
 ### GENERATE PER-TASK TOOLS JSON (from Intern-S1-recipe source of truth) ###
-TOOL_VERSION="${TOOL_VERSION:-v3}"
+TOOL_VERSION="${TOOL_VERSION:-v4}"
 TDC_TOOLS_JSON="$PROJECT_ROOT/data/tdc/metadata/tools_per_task_${TOOL_VERSION}.json"
 python "$PROJECT_ROOT/scripts/generate_tools_json.py" --version "$TOOL_VERSION"
 

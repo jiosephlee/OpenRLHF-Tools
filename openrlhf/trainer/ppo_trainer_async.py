@@ -108,6 +108,7 @@ class GenerateSamplesActor:
                     break
 
             pbar.close()
+            self.samples_generator.save_discarded_indices(episode)
 
         self.rollout_queue.put("done", block=True)
 

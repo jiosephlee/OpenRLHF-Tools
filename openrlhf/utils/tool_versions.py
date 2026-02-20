@@ -4,7 +4,7 @@ Versions (incremental):
   - v1: RDKit basic + AccFG
   - v2: v1 + remove_salts (standardize_tools)
   - v3: v2 + predict_pka + estimate_logd + get_3d_exposed_polar_surface
-  - v4: v3 + 10 Haydn tools
+  - v4: v3 + score_structural_alerts (Haydn; no Murcko scaffold)
 
 Usage::
 
@@ -182,7 +182,7 @@ except ImportError:
     HAYDN_OPENAI_TOOLS = []
     HAYDN_CALLABLES = {}
 
-_V4_HAYDN_NAMES = {"score_structural_alerts", "get_murcko_scaffold"}
+_V4_HAYDN_NAMES = {"score_structural_alerts"}
 _V4_SCHEMAS: List[Dict[str, Any]] = _V3_SCHEMAS + [
     t for t in HAYDN_OPENAI_TOOLS if t["function"]["name"] in _V4_HAYDN_NAMES
 ]

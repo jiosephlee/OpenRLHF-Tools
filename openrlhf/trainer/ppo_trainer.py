@@ -778,6 +778,9 @@ class PPOTrainer(BasePPOTrainer):
                 del rollout_samples, status
                 gc.collect()
 
+            # --- Save discarded prompts for offline analysis ---
+            self.samples_generator.save_discarded_indices(episode)
+
             # --- Smart replay: log episode stats and run replay episodes ---
             if getattr(self.args, "smart_replay", False):
                 if self.wandb_logger:

@@ -123,6 +123,26 @@ def get_reward_model():
     return TDCRewardModel()
 
 
+def reward_func(queries: List[str], prompts: List[str], labels: List[str]) -> dict:
+    """
+    Reward logic entry point called by SingleTurnAgentExecutor.
+    
+    Args:
+        queries: List of model outputs (the full string including prompt + generation)
+        prompts: List of original prompts
+        labels: List of ground truth labels
+        
+    Returns:
+        Dict containing lists of rewards and scores.
+    """
+    rewards = []
+    for query, label in zip(queries, labels):
+        reward = compute_reward(query, label)
+        rewards.append(reward)
+        
+    return {"rewards": rewards, "scores": rewards, "extra_logs": {}}
+
+
 # For testing
 if __name__ == "__main__":
     # Test cases

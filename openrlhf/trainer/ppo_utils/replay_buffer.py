@@ -93,10 +93,28 @@ def make_experience_batch(items: List[BufferItem], packing_samples=False) -> Exp
         for key in keys
     }
 
-    # Process info dictionary
+    # Process info dictionary — collect ALL keys across every item
+    # so sparse keys (e.g. tool_count__X) are zero-filled for items
+    # that didn't record them.
+    all_info_keys: set = set()
+    for item in items:
+        all_info_keys.update(item.info.keys())
+
     kwargs["info"] = {}
-    for key in items[0].info.keys():
-        values = [item.info[key] for item in items]
+    for key in all_info_keys:
+        values = []
+        for item in items:
+            if key in item.info:
+                values.append(item.info[key])
+            else:
+                # Find an exemplar from an item that *does* have this key
+                _exemplar = next(it.info[key] for it in items if key in it.info)
+                if isinstance(_exemplar, (int, float)):
+                    values.append(type(_exemplar)(0))
+                elif isinstance(_exemplar, torch.Tensor):
+                    values.append(torch.zeros_like(_exemplar))
+                else:
+                    values.append(_exemplar)
         if not values:
             continue
 

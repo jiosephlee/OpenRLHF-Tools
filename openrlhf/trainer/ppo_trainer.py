@@ -143,14 +143,23 @@ class BasePPOTrainer(ABC):
 
     def _collect_eval_tool_usage(self, all_prompts, samples_list, prompt_to_datasource):
         per_dataset_counts = defaultdict(lambda: defaultdict(int))
-        for prompt, sample in zip(all_prompts, samples_list):
-            datasource = prompt_to_datasource[prompt]
-            for key, value in sample.info.items():
-                if not key.startswith("tool_count__"):
-                    continue
-                tool_name = key[len("tool_count__") :]
-                tool_count = int(value.flatten()[0].item())
-                per_dataset_counts[datasource][tool_name] += tool_count
+        # samples_list is a list of Experience *batches* — each batch may
+        # contain multiple samples.  Iterate over every individual sample
+        # inside every batch to collect the full tool usage picture.
+        prompt_idx = 0
+        for sample in samples_list:
+            batch_size = len(sample.sequences)
+            for i in range(batch_size):
+                if prompt_idx >= len(all_prompts):
+                    break
+                datasource = prompt_to_datasource[all_prompts[prompt_idx]]
+                for key, value in sample.info.items():
+                    if not key.startswith("tool_count__"):
+                        continue
+                    tool_name = key[len("tool_count__"):]
+                    tool_count = int(value.flatten()[i].item())
+                    per_dataset_counts[datasource][tool_name] += tool_count
+                prompt_idx += 1
 
         per_dataset_counts = {
             ds: dict(sorted(tool_counts.items()))

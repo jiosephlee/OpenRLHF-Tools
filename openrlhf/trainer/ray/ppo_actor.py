@@ -335,7 +335,13 @@ class ActorPPOTrainer(ABC):
             status["entropy_loss"] = entropy_loss.detach().item()
 
         # merge logs from info field
+        # Skip tool_count__* keys: they are sparse across ranks (different
+        # ranks may have different sets) and would cause NCCL deadlock in
+        # the downstream strategy.all_reduce() call which iterates over
+        # every key.  Tool counts are only consumed during eval, not training.
         for k, v in experience.info.items():
+            if k.startswith("tool_count__"):
+                continue
             if isinstance(v, list):
                 status[k] = torch.tensor(v, dtype=torch.float).mean().item()
             elif isinstance(v, torch.Tensor):

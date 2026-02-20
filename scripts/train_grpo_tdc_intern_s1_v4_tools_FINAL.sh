@@ -203,7 +203,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --micro_rollout_batch_size 8 \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
-    --max_epochs 1 \
+    --max_epochs 2 \
     --prompt_max_len 10240 \
     --generate_max_len 2048 \
     --max_samples 1000000 \
@@ -241,9 +241,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
     --use_dynamic_batch \
-    --smart_replay \
-    --max_replay_rounds 8 \
-    --curriculum_balanced
+    --constant_lr_with_warm_up
 
 ### CLEANUP ###
 echo "Training complete! Stopping Ray..."

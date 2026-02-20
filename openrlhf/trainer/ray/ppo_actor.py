@@ -346,6 +346,16 @@ class ActorPPOTrainer(ABC):
                 status[k] = torch.tensor(v, dtype=torch.float).mean().item()
             elif isinstance(v, torch.Tensor):
                 status[k] = v.float().mean().item()
+
+        # Sanity check: reward/score/clip_ratio should never exceed reasonable bounds.
+        _BOUNDED_KEYS = {"reward": 10, "score": 10, "return": 100, "response_clip_ratio": 1.01}
+        for k, bound in _BOUNDED_KEYS.items():
+            if k in status and abs(status[k]) > bound:
+                logger.warning(
+                    f"[METRIC SANITY] {k}={status[k]:.4f} exceeds bound {bound}. "
+                    f"info type={type(experience.info.get(k))}, "
+                    f"info value={experience.info.get(k)}"
+                )
         return status
 
     def broadcast_to_vllm(self):

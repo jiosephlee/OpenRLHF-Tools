@@ -430,7 +430,14 @@ class DeepspeedStrategy(ABC):
         assert op in ("mean", "max", "sum")
         if isinstance(data, dict):
             ret = {}
-            for k, v in data.items():
+            keys = sorted(data.keys())
+            if dist.is_initialized():
+                gathered_keys = [None] * self.world_size
+                dist.all_gather_object(gathered_keys, keys)
+                if any(peer_keys != keys for peer_keys in gathered_keys):
+                    raise RuntimeError(f"all_reduce dict key mismatch across ranks: {gathered_keys}")
+            for k in keys:
+                v = data[k]
                 ret[k] = self.all_reduce(v, op)
             return ret
         else:

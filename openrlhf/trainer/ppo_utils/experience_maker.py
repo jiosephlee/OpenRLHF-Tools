@@ -175,9 +175,10 @@ class Experience:
             for d in items:
                 all_keys.update(d.keys())
 
-            result = {key: [] for key in all_keys}
+            sorted_keys = sorted(all_keys)
+            result = {key: [] for key in sorted_keys}
             for d in items:
-                for key in all_keys:
+                for key in sorted_keys:
                     if key in d:
                         result[key].append(d[key])
                     else:

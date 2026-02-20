@@ -80,7 +80,7 @@ class WandbLogger:
         wandb.define_metric("eval/global_step")
         wandb.define_metric("eval/*", step_metric="eval/global_step", step_sync=True)
         wandb.define_metric("episode/episode")
-        wandb.define_metric("episode/*", step_metric="episode/episode", step_sync=True)
+        wandb.define_metric("episode/*", step_metric="episode/episode")
         self.handle = wandb
         self.samples_table = wandb.Table(columns=["global_step", "text", "reward"])
 

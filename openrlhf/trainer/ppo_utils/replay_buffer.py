@@ -101,7 +101,7 @@ def make_experience_batch(items: List[BufferItem], packing_samples=False) -> Exp
         all_info_keys.update(item.info.keys())
 
     kwargs["info"] = {}
-    for key in all_info_keys:
+    for key in sorted(all_info_keys):
         values = []
         for item in items:
             if key in item.info:

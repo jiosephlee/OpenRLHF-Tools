@@ -476,6 +476,11 @@ class BasePPOTrainer(ABC):
             if self.args.save_hf_ckpt and self.args.push_to_hub:
                 hf_ckpt_path = os.path.join(self.args.ckpt_path, f"{tag}_hf")
                 if os.path.exists(hf_ckpt_path):
+                    # Save training config alongside checkpoint
+                    config_path = os.path.join(hf_ckpt_path, "training_config.json")
+                    with open(config_path, "w") as f:
+                        json.dump(vars(self.args), f, indent=2, default=str)
+
                     from huggingface_hub import HfApi
 
                     api = HfApi()

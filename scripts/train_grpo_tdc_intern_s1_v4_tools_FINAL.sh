@@ -73,9 +73,13 @@ done
 IFS=,; TRAIN_DATA="${TRAIN_PARTS[*]}"; unset IFS
 
 ### RUN CONFIG ###
-RUN_ID="S-grpo-fixed-debug-${TASK_LABEL}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
-SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_LABEL}/$RUN_ID"
-HUB_REPO_ID="jiosephlee/grpo-tdc-intern-s1-${TASK_LABEL}"
+N_TASKS=${#TASK_NAMES[@]}
+MAX_EPOCHS=2
+DATE_TAG=$(date +%m%d)
+RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION:-v4}-ep${MAX_EPOCHS}-${DATE_TAG}"
+RUN_ID="${RUN_NAME}"
+SAVE_PATH="$PROJECT_ROOT/saves/tdc/$RUN_NAME"
+HUB_REPO_ID="jiosephlee/${RUN_NAME}"
 
 ### GPU LAYOUT (colocated — shared GPUs) ###
 TRAIN_BATCH_SIZE=64
@@ -203,7 +207,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --micro_rollout_batch_size 8 \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
-    --max_epochs 2 \
+    --max_epochs $MAX_EPOCHS \
+    --num_episodes $MAX_EPOCHS \
     --prompt_max_len 10240 \
     --generate_max_len 2048 \
     --max_samples 1000000 \

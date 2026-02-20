@@ -1,4 +1,6 @@
 import argparse
+import json
+import os
 from datetime import datetime
 
 import ray
@@ -183,6 +185,11 @@ def train(args):
 
     if args.critic_pretrain and args.save_value_network and critic_model is not None:
         ray.get(critic_model.async_save_model())
+
+    # Save training config alongside model
+    config_path = os.path.join(args.save_path, "training_config.json")
+    with open(config_path, "w") as f:
+        json.dump(vars(args), f, indent=2, default=str)
 
     # Push to HuggingFace Hub and optionally clean up
     if args.push_to_hub:

@@ -606,6 +606,12 @@ class SamplesGenerator:
                         self._last_total_episodes = total_episodes
                         if generate_kwargs.get("log_step_trace", True):
                             self._write_step_trace(step_idx, episode_traces, prompts_consumed, filtered_count, total_episodes)
+                        if smart_replay:
+                            logger.info(
+                                f"[SmartReplay] Step done (exhausted): replay buffer now has "
+                                f"{len(self._replay_hard_indices)} hard + {len(self._replay_kept_indices)} kept "
+                                f"= {len(self._replay_hard_indices) + len(self._replay_kept_indices)} total prompts"
+                            )
                         return [], prompts_consumed, True
                     # Otherwise dispatch the new prompt to keep filling the queue.
                     else:
@@ -620,6 +626,14 @@ class SamplesGenerator:
         self._last_total_episodes = total_episodes
         if generate_kwargs.get("log_step_trace", True):
             self._write_step_trace(step_idx, episode_traces, prompts_consumed, filtered_count, total_episodes)
+
+        if smart_replay:
+            logger.info(
+                f"[SmartReplay] Step done: replay buffer now has "
+                f"{len(self._replay_hard_indices)} hard + {len(self._replay_kept_indices)} kept "
+                f"= {len(self._replay_hard_indices) + len(self._replay_kept_indices)} total prompts"
+            )
+
         return accepted_experiences, prompts_consumed, exhausted
 
     def _dispatch_prompts_to_vllm(self, prompts: List[str], labels: List[str], **generate_kwargs) -> List:

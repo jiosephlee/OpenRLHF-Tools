@@ -242,7 +242,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --delete_local_after_push \
     --use_dynamic_batch \
     --smart_replay \
-    --max_replay_rounds 3 \
+    --max_replay_rounds 8 \
     --curriculum_balanced
 
 ### CLEANUP ###

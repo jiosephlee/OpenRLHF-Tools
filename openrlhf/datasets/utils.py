@@ -77,6 +77,12 @@ def blending_datasets(
         if dataset_split and dataset_split in data:
             data = data[dataset_split]
         data = data.select(range(min(max_count, len(data))))
+
+        # Inject datasource column from filename (unless already present)
+        if "datasource" not in data.column_names:
+            datasource_name = os.path.splitext(os.path.basename(dataset))[0]
+            data = data.map(lambda x: {**x, "datasource": datasource_name})
+
         data_list.append(data)
 
     # merge datasets

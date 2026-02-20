@@ -1,25 +1,24 @@
 #!/bin/bash
 #
-# INTERACTIVE DEBUG version of the GPT-OSS GRPO training script (FIXED, CUDA 13).
+# Single-turn no-tools version of the Intern-S1 GRPO training script.
 #
 # Hybrid (colocated) mode — Actor and vLLM share the same GPUs via sleep mode.
-# Uses GPT-OSS Harmony tool-calling format:
-#   <|start|>assistant to=functions.<name><|channel|>commentary json<|message|>...
+# No tool-calling: model answers TDC binary classification (A/B) directly.
 #
 # Usage:
 #   1. Get an interactive node:  srun --partition=dgx-b200 --gpus=2 --mem-per-gpu=128G --cpus-per-gpu=4 --time=1:00:00 --pty bash
 #   2. Activate env:             module load MAMBA && module load cuda/13.1.0 && micromamba activate /vast/projects/myatskar/design-documents/conda_env/openrlhf_tfv4
-#   3. Run:                      bash scripts/train_grpo_tdc_gpt_oss_v3_tools_FINAL.sh [model_path] [learning_rate]
+#   3. Run:                      bash scripts/train_grpo_tdc_intern_s1_no_tools.sh [model_path] [learning_rate]
 #
 # Example:
-#   bash scripts/train_grpo_tdc_gpt_oss_v3_tools_FINAL.sh openai/gpt-oss-20b 1e-6
+#   bash scripts/train_grpo_tdc_intern_s1_no_tools.sh jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05 5e-7
 #
 
 set -euo pipefail
 export RAY_TMPDIR=/tmp/jojolee/ray
 export MALLOC_TRIM_THRESHOLD_=0
 ### ARGS ###
-PRETRAIN_PATH=${1:-"openai/gpt-oss-20b"}
+PRETRAIN_PATH=${1:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}
 LEARNING_RATE=${2:-"1e-6"}
 NUM_GPUS=$SLURM_GPUS_ON_NODE
 DEBUG_TRACES=${3:-"0"}
@@ -73,18 +72,13 @@ done
 IFS=,; TRAIN_DATA="${TRAIN_PARTS[*]}"; unset IFS
 
 ### RUN CONFIG ###
-RUN_ID="S-grpo-fixed-debug-${TASK_LABEL}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
+RUN_ID="S-grpo-no-tools-${TASK_LABEL}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
 SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_LABEL}/$RUN_ID"
-HUB_REPO_ID="jiosephlee/grpo-tdc-gpt-oss-${TASK_LABEL}"
+HUB_REPO_ID="jiosephlee/grpo-tdc-intern-s1-${TASK_LABEL}"
 
 ### GPU LAYOUT (colocated — shared GPUs) ###
 TRAIN_BATCH_SIZE=32
 VLLM_NUM_ENGINES=$NUM_GPUS
-
-### TOOL-CALLING CONFIG ###
-AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
-AGENT_MAX_STEPS=30
-CHAT_PROTOCOL="gpt_oss"
 
 ### GRPO CONFIG ###
 N_SAMPLES_PER_PROMPT=8
@@ -103,13 +97,7 @@ mkdir -p "$RAY_TMPDIR"
 export VLLM_NO_USAGE_STATS=1
 export VLLM_DISABLE_TELEMETRY=1
 
-export OPENRLHF_MODEL_PATH="$PRETRAIN_PATH"
-export OPENRLHF_CHAT_PROTOCOL="$CHAT_PROTOCOL"
-export OPENRLHF_MAX_STEPS="$AGENT_MAX_STEPS"
 export DEBUG_TRACES="$DEBUG_TRACES"
-export OPENRLHF_DEBUG_LOGITS=0
-export OPENRLHF_DEBUG_NAN_GUARD=0
-
 
 ### RAY ###
 export RAY_NODE_IP_ADDRESS=$(hostname -I | awk '{print $1}')
@@ -134,11 +122,10 @@ export RAY_ADDRESS="auto"
 
 ### PRINT CONFIG ###
 echo "========================================"
-echo "TDC GRPO Training — GPT-OSS (FIXED INTERACTIVE DEBUG)"
+echo "TDC GRPO Training — Intern-S1-mini (Single-Turn No-Tools)"
 echo "========================================"
 echo "Tasks: ${TASK_NAMES[*]}"
 echo "Model: $PRETRAIN_PATH"
-echo "Chat Protocol: $CHAT_PROTOCOL"
 echo "Learning Rate: $LEARNING_RATE"
 echo "Run ID: $RUN_ID"
 echo "----------------------------------------"
@@ -149,18 +136,12 @@ echo "NUM_GPUS: $NUM_GPUS (colocated — shared between actor and vLLM)"
 echo "TRAIN_BATCH_SIZE: $TRAIN_BATCH_SIZE"
 echo "VLLM_NUM_ENGINES: $VLLM_NUM_ENGINES"
 echo "----------------------------------------"
-echo "Agent Max Steps: $AGENT_MAX_STEPS"
 echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
 echo "Temperature: $TEMPERATURE"
 echo "Top-p: $TOP_P"
 echo "----------------------------------------"
-echo "W&B: project=$WANDB_PROJECT group=TDC-GPTOss-fixed-$TASK_LABEL run=$RUN_ID"
+echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-no-tools-$TASK_LABEL run=$RUN_ID"
 echo "========================================"
-
-### GENERATE PER-TASK TOOLS JSON (from Intern-S1-recipe source of truth) ###
-TOOL_VERSION="${TOOL_VERSION:-v3}"
-TDC_TOOLS_JSON="$PROJECT_ROOT/data/tdc/metadata/tools_per_task_${TOOL_VERSION}.json"
-python "$PROJECT_ROOT/scripts/generate_tools_json.py" --version "$TOOL_VERSION"
 
 ### BUILD TDC EVAL DATASET ###
 EVAL_DATA="$DATA_DIR/eval_tdc.jsonl"
@@ -204,8 +185,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs 1 \
-    --prompt_max_len 12288 \
-    --generate_max_len 2048 \
+    --prompt_max_len 2048 \
+    --generate_max_len 8192 \
     --max_samples 1000000 \
     --enable_prefix_caching \
     --zero_stage 1 \
@@ -219,24 +200,17 @@ python -m openrlhf.cli.train_ppo_ray \
     --input_key messages \
     --label_key answer \
     --apply_chat_template \
-    --tdc_tools "$TDC_TOOLS_JSON" \
-    --tool_version "$TOOL_VERSION" \
     --gradient_checkpointing \
     --packing_samples \
     --vllm_sync_backend nccl \
-    --mxfp4_dequantize \
     --vllm_enable_sleep \
     --deepspeed_enable_sleep \
     $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \
     --top_p $TOP_P \
     --temperature $TEMPERATURE \
-    --agent_func_path "$AGENT_FUNC_PATH" \
-    --agent_max_steps $AGENT_MAX_STEPS \
-    --vllm_stop_strings "<|call|>" "<|return|>" \
-    --chat_protocol "$CHAT_PROTOCOL" \
     --use_wandb 1 \
     --wandb_project "$WANDB_PROJECT" \
-    --wandb_group "TDC-GPTOss-fixed-$TASK_LABEL" \
+    --wandb_group "TDC-InternS1-no-tools-$TASK_LABEL" \
     --wandb_run_name "$RUN_ID" \
     --save_path "$SAVE_PATH" \
     --push_to_hub "$HUB_REPO_ID" \

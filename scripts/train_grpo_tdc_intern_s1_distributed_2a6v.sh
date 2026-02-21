@@ -20,31 +20,25 @@
 
 set -euo pipefail
 export RAY_TMPDIR=/tmp/jojolee/ray
-export MALLOC_TRIM_THRESHOLD_=0
 
 ### ARGS ###
 PRETRAIN_PATH=${1:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}
 LEARNING_RATE=${2:-"1e-6"}
-NUM_GPUS=$SLURM_GPUS_ON_NODE
+NUM_GPUS=8
 DEBUG_TRACES=${3:-"0"}
 
 ### MULTI-TASK ###
 TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
 TASK_LABEL="Base"
 
-### AUTOTP CONFIG ###
-RING_ATTN_SIZE=1
-RING_HEAD_STRIDE=8
-DS_TP_SIZE=2
 
 ### GPU LAYOUT (distributed — separate actor and vLLM GPUs) ###
-ACTOR_GPUS=2
-VLLM_GPUS=6
-VLLM_NUM_ENGINES=6
+ACTOR_GPUS=1
+VLLM_GPUS=7
+VLLM_NUM_ENGINES=7
 VLLM_TENSOR_PARALLEL_SIZE=1
-TRAIN_BATCH_SIZE=32
+TRAIN_BATCH_SIZE=4
 
-ACTOR_MIN_GPUS=$((RING_ATTN_SIZE * DS_TP_SIZE))
 MIN_GPUS=$((ACTOR_GPUS + VLLM_GPUS))
 if [ "$NUM_GPUS" -lt "$MIN_GPUS" ]; then
     echo "Error: Need at least $MIN_GPUS GPUs ($ACTOR_GPUS actor + $VLLM_GPUS vLLM), got $NUM_GPUS" >&2
@@ -104,16 +98,20 @@ done
 IFS=,; TRAIN_DATA="${TRAIN_PARTS[*]}"; unset IFS
 
 ### RUN CONFIG ###
-RUN_ID="InternS1-grpo-dist-2a6v-${TASK_LABEL}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
+N_TASKS=${#TASK_NAMES[@]}
+MAX_EPOCHS=1
+DATE_TAG=$(date +%m%d)
+RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION:-v4}-ep${MAX_EPOCHS}-dist-${ACTOR_GPUS}a${VLLM_GPUS}v-${DATE_TAG}"
+RUN_ID="${RUN_NAME}"
 DATE_STAMP=$(date +%Y%m%d)
-RUNS_DIR="$PROJECT_ROOT/runs/${RUN_ID}/${DATE_STAMP}"
+RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}/${DATE_STAMP}"
 mkdir -p "$RUNS_DIR"
-SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_LABEL}/$RUN_ID"
-HUB_REPO_ID="jiosephlee/grpo-tdc-intern-s1-${TASK_LABEL}"
+SAVE_PATH="$PROJECT_ROOT/saves/tdc/$RUN_NAME"
+HUB_REPO_ID="jiosephlee/${RUN_NAME}"
 
 ### TOOL-CALLING CONFIG ###
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
-AGENT_MAX_STEPS=30
+AGENT_MAX_STEPS=35
 CHAT_PROTOCOL="intern_s1"
 
 ### GRPO CONFIG ###
@@ -232,21 +230,21 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_hf_ckpt \
     --logging_steps 1 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
-    --micro_train_batch_size 1 \
-    --micro_rollout_batch_size 2 \
+    --micro_train_batch_size 2 \
+    --micro_rollout_batch_size 4 \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
-    --max_epochs 1 \
+    --max_epochs $MAX_EPOCHS \
     --prompt_max_len 10240 \
     --generate_max_len 2048 \
     --max_samples 1000000 \
     --enable_prefix_caching \
-    --zero_stage 2 \
+    --zero_stage 0 \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \
     --prompt_data "$TRAIN_DATA" \
     --eval_dataset "$EVAL_DATA" \
-    --eval_steps 20 \
+    --eval_steps 128 \
     --eval_temperature $TEMPERATURE \
     --eval_n_samples_per_prompt 1 \
     --input_key messages \
@@ -273,12 +271,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_path "$SAVE_PATH" \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
-    --ring_attn_size $RING_ATTN_SIZE \
-    --ring_head_stride $RING_HEAD_STRIDE \
-    --ds_tensor_parallel_size $DS_TP_SIZE \
     --use_dynamic_batch \
-    --smart_replay \
-    --skip_eval_step_zero \
     2>&1 | tee "$RUN_LOG"
 
 ### CLEANUP ###

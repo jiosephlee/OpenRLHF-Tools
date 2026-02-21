@@ -216,7 +216,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
     --use_dynamic_batch \
-    --curriculum_balanced
 
 ### CLEANUP ###
 echo "Training complete! Stopping Ray..."

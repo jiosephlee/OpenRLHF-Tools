@@ -251,7 +251,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --tool_version "$TOOL_VERSION" \
     --gradient_checkpointing \
     --packing_samples \
-    --vllm_sync_backend nccl \
+    --vllm_sync_backend gloo \
     --async_train \
     --async_queue_size 1 \
     $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \

@@ -19,11 +19,11 @@
 #SBATCH --error=logs/grpo-tdc-s1-tools_%j.err
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
-#SBATCH --gpus=2
+#SBATCH --gpus=8
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem-per-gpu=128G
-#SBATCH --cpus-per-gpu=4
-#SBATCH --time=00-12:00:00
+#SBATCH --cpus-per-gpu=8
+#SBATCH --time=00-24:00:00
 
 ### SCHEDULER PARAMETERS ###
 export OMP_NUM_THREADS=16
@@ -39,7 +39,7 @@ export UCX_TLS=rc
 ### BEGIN BATCH SCRIPT ###
 module load MAMBA
 module load cuda/13.1.0
-export ENV_NAME="openrlhf_tfv4"
+export ENV_NAME="open_rlhf_intern"
 
 ############################
 #        TASK SCRIPT       #
@@ -94,7 +94,7 @@ run_task() {
     ### RUN CONFIG ###
     N_TASKS=${#TASK_NAMES[@]}
     MAX_EPOCHS=1
-    TOOL_VERSION="${TOOL_VERSION:-v4}"
+    TOOL_VERSION="${TOOL_VERSION:-v3}"
     DATE_TAG=$(date +%m%d)
     RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
     RUN_ID="${RUN_NAME}"
@@ -253,7 +253,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --rollout_batch_size $TRAIN_BATCH_SIZE \
         --max_epochs $MAX_EPOCHS \
         --num_episodes $MAX_EPOCHS \
-        --prompt_max_len 10240 \
+        --prompt_max_len 12288 \
         --generate_max_len 2048 \
         --max_samples 1000000 \
         --enable_prefix_caching \
@@ -289,7 +289,10 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --save_path "$SAVE_PATH" \
         --push_to_hub "$HUB_REPO_ID" \
         --delete_local_after_push \
-        --constant_lr_with_warm_up
+        --constant_lr_with_warm_up \
+        --smart_replay \
+        --max_replay_rounds 2 \
+        --curriculum_balanced
 
     ### CLEANUP ###
     echo "Training complete! Stopping Ray..."

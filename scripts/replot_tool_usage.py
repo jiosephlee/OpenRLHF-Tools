@@ -57,6 +57,11 @@ def plot(entries: list[dict], output_path: str, use_raw: bool):
             dtype=float,
         )
 
+        # Rescale so the largest value becomes 1.0 (approx "fraction of prompts")
+        global_max = matrix.max()
+        if global_max > 0:
+            matrix = matrix / global_max
+
         # Relative scale: let the colorbar adapt to the actual data range
         vmin = matrix.min()
         vmax = matrix.max()
@@ -64,7 +69,7 @@ def plot(entries: list[dict], output_path: str, use_raw: bool):
             vmax = vmin + 1.0  # avoid degenerate range
 
         heatmap = ax.imshow(matrix, aspect="auto", cmap="viridis", vmin=vmin, vmax=vmax)
-        ax.set_title(f"{ds}  ({'raw counts' if use_raw else '% prompts used tool'})")
+        ax.set_title(f"{ds}  ({'raw counts' if use_raw else 'normalized (max=1)'})")
         ax.set_xlabel("tool")
         ax.set_ylabel("eval step")
         ax.set_xticks(range(len(tools)))

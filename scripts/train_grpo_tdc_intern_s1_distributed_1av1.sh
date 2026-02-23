@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Intern-S1-mini GRPO training — DISTRIBUTED (1 actor + 7 vLLM GPUs).
+# Intern-S1-mini GRPO training — DISTRIBUTED (1 actor + 1 vLLM GPU).
 #
 # Distributed (non-colocated) mode — Actor and vLLM run on separate GPU sets.
 # Single actor GPU (no tensor parallelism needed).
@@ -9,12 +9,12 @@
 #   <|action_start|><|plugin|>{"name": "...", "parameters": {...}}<|action_end|>
 #
 # Usage:
-#   1. Get an interactive node:  srun --partition=dgx-b200 --gpus=8 --mem-per-gpu=128G --cpus-per-gpu=8 --time=1:00:00 --pty bash
+#   1. Get an interactive node:  srun --partition=dgx-b200 --gpus=2 --mem-per-gpu=128G --cpus-per-gpu=8 --time=1:00:00 --pty bash
 #   2. Activate env:             module load MAMBA && module load cuda/13.1.0 && micromamba activate /vast/projects/myatskar/design-documents/conda_env/openrlhf_tfv4
-#   3. Run:                      bash scripts/train_grpo_tdc_intern_s1_distributed_1av7.sh [model_path] [learning_rate]
+#   3. Run:                      bash scripts/train_grpo_tdc_intern_s1_distributed_1av1.sh [model_path] [learning_rate]
 #
 # Example:
-#   bash scripts/train_grpo_tdc_intern_s1_distributed_1av7.sh jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05 5e-7
+#   bash scripts/train_grpo_tdc_intern_s1_distributed_1av1.sh jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05 5e-7
 #
 
 set -euo pipefail
@@ -23,7 +23,7 @@ export RAY_TMPDIR=/tmp/jojolee/ray
 ### ARGS ###
 PRETRAIN_PATH=${1:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}
 LEARNING_RATE=${2:-"1e-6"}
-NUM_GPUS=4
+NUM_GPUS=2
 DEBUG_TRACES=${3:-"0"}
 
 ### MULTI-TASK ###
@@ -32,8 +32,8 @@ TASK_LABEL="Base"
 
 ### GPU LAYOUT (distributed — separate actor and vLLM GPUs) ###
 ACTOR_GPUS=1
-VLLM_GPUS=3
-VLLM_NUM_ENGINES=3
+VLLM_GPUS=1
+VLLM_NUM_ENGINES=1
 VLLM_TENSOR_PARALLEL_SIZE=1
 TRAIN_BATCH_SIZE=4
 
@@ -160,7 +160,7 @@ export RAY_ADDRESS="auto"
 
 ### PRINT CONFIG ###
 echo "========================================"
-echo "TDC GRPO Training — Intern-S1-mini (DISTRIBUTED, 1 actor + 7 vLLM GPUs)"
+echo "TDC GRPO Training — Intern-S1-mini (DISTRIBUTED, 1 actor + 1 vLLM GPU)"
 echo "========================================"
 echo "Tasks: ${TASK_NAMES[*]}"
 echo "Model: $PRETRAIN_PATH"
@@ -181,7 +181,7 @@ echo "Temperature: $TEMPERATURE"
 echo "Top-p: $TOP_P"
 echo "----------------------------------------"
 echo "Runs Dir: $RUNS_DIR"
-echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-dist-1av7-$TASK_LABEL run=$RUN_ID"
+echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-dist-1av1-$TASK_LABEL run=$RUN_ID"
 echo "========================================"
 
 ### GENERATE PER-TASK TOOLS JSON ###
@@ -264,7 +264,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --chat_protocol "$CHAT_PROTOCOL" \
     --use_wandb 1 \
     --wandb_project "$WANDB_PROJECT" \
-    --wandb_group "TDC-InternS1-dist-1av7-$TASK_LABEL" \
+    --wandb_group "TDC-InternS1-dist-1av1-$TASK_LABEL" \
     --wandb_run_name "$RUN_ID" \
     --save_path "$SAVE_PATH" \
     --push_to_hub "$HUB_REPO_ID" \

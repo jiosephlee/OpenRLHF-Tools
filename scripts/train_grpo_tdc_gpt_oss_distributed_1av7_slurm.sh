@@ -98,17 +98,23 @@ run_task() {
     MAX_EPOCHS=1
     TOOL_VERSION="${TOOL_VERSION:-v3}"
     DATE_TAG=$(date +%m%d)
-    RUN_NAME="grpo-tdc-gptoss-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
+    RUN_NAME="grpo-tdc-gptoss-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-dist-${LAYOUT_TAG}-${DATE_TAG}"
     RUN_ID="${RUN_NAME}"
+    # HF repo name excludes GPU layout so the same model name works across configs
+    HUB_NAME="grpo-tdc-gptoss-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
     SAVE_PATH="$PROJECT_ROOT/saves/tdc/$RUN_NAME"
-    HUB_REPO_ID="jiosephlee/${RUN_NAME}"
+    HUB_REPO_ID="jiosephlee/${HUB_NAME}"
 
-    ### GPU LAYOUT (distributed — separate actor and vLLM GPUs) ###
-    ACTOR_GPUS=1
-    VLLM_GPUS=7
-    VLLM_NUM_ENGINES=7
+    ### PRIMARY KNOBS ###
+    ACTOR_GPUS="${ACTOR_GPUS:-1}"
+    VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-7}"
+
+    ### DERIVED GPU LAYOUT ###
+    VLLM_GPUS=$VLLM_NUM_ENGINES
     VLLM_TENSOR_PARALLEL_SIZE=1
     TRAIN_BATCH_SIZE=32
+    ROLLOUT_BATCH_SIZE=$TRAIN_BATCH_SIZE
+    LAYOUT_TAG="${ACTOR_GPUS}a${VLLM_GPUS}v"
 
     MIN_GPUS=$((ACTOR_GPUS + VLLM_GPUS))
     if [ "$NUM_GPUS" -lt "$MIN_GPUS" ]; then
@@ -193,7 +199,7 @@ run_task() {
 
     ### PRINT CONFIG ###
     echo "========================================"
-    echo "TDC GRPO Training — GPT-OSS (DISTRIBUTED, 1 actor + 7 vLLM GPUs, SLURM BATCH)"
+    echo "TDC GRPO Training — GPT-OSS (DISTRIBUTED, ${LAYOUT_TAG}, SLURM BATCH)"
     echo "========================================"
     echo "SLURM Job ID: $SLURM_JOB_ID"
     echo "Tasks: ${TASK_NAMES[*]}"
@@ -214,7 +220,7 @@ run_task() {
     echo "Temperature: $TEMPERATURE"
     echo "Top-p: $TOP_P"
     echo "----------------------------------------"
-    echo "W&B: project=$WANDB_PROJECT group=TDC-GPTOss-dist-1av7-$TASK_LABEL run=$RUN_ID"
+    echo "W&B: project=$WANDB_PROJECT group=TDC-GPTOss-dist-${LAYOUT_TAG}-$TASK_LABEL run=$RUN_ID"
     echo "========================================"
 
     ### GENERATE PER-TASK TOOLS JSON ###
@@ -295,7 +301,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --chat_protocol "$CHAT_PROTOCOL" \
         --use_wandb 1 \
         --wandb_project "$WANDB_PROJECT" \
-        --wandb_group "TDC-GPTOss-dist-1av7-$TASK_LABEL" \
+        --wandb_group "TDC-GPTOss-dist-${LAYOUT_TAG}-$TASK_LABEL" \
         --wandb_run_name "$RUN_ID" \
         --save_path "$SAVE_PATH" \
         --push_to_hub "$HUB_REPO_ID" \

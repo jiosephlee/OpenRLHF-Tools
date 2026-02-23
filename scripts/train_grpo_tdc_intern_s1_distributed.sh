@@ -1,60 +1,79 @@
 #!/bin/bash
 #
-# INTERACTIVE DEBUG version of the GLM-4.7-Flash GRPO training script — DISTRIBUTED (non-colocated).
+# Intern-S1-mini GRPO training — DISTRIBUTED (configurable actor + vLLM GPUs).
 #
-# Actor and vLLM run on separate GPU sets (no colocation).
-# Uses the GLM Flash XML tool-calling format:
-#   <tool_call>func_name<arg_key>key</arg_key><arg_value>value</arg_value></tool_call>
+# Distributed (non-colocated) mode — Actor and vLLM run on separate GPU sets.
+#
+# Uses the Intern-S1 JSON tool-calling format:
+#   <|action_start|><|plugin|>{"name": "...", "parameters": {...}}<|action_end|>
 #
 # Usage:
-#   1. Get an interactive node:  srun --partition=dgx-b200 --gpus=4 --mem-per-gpu=128G --cpus-per-gpu=8 --time=1:00:00 --pty bash
-#   2. Activate env:             module load MAMBA && module load cuda/13.1.0 && micromamba activate /vast/projects/myatskar/design-documents/conda_env/openrlhf_tfv4
-#   3. Run:                      bash scripts/train_grpo_tdc_glm_debug_distributed_fixed_cuda_13.sh [model_path] [learning_rate]
+#   bash scripts/train_grpo_tdc_intern_s1_distributed.sh <actor_gpus> <vllm_engines> [model_path] [learning_rate]
 #
-# Example:
-#   bash scripts/train_grpo_tdc_glm_debug_distributed_fixed_cuda_13.sh zai-org/GLM-4.7-Flash 1e-6
+# Examples:
+#   bash scripts/train_grpo_tdc_intern_s1_distributed.sh 1 1   # 2 GPUs total
+#   bash scripts/train_grpo_tdc_intern_s1_distributed.sh 1 3   # 4 GPUs total
+#   bash scripts/train_grpo_tdc_intern_s1_distributed.sh 2 6   # 8 GPUs total
 #
 
 set -euo pipefail
 export RAY_TMPDIR=/tmp/jojolee/ray
 
+### PRIMARY KNOBS — change these two ###
+ACTOR_GPUS=${1:?"Usage: $0 <actor_gpus> <vllm_engines> [model_path] [learning_rate]"}
+VLLM_NUM_ENGINES=${2:?"Usage: $0 <actor_gpus> <vllm_engines> [model_path] [learning_rate]"}
+
 ### ARGS ###
-PRETRAIN_PATH=${1:-"zai-org/GLM-4.7-Flash"}
-LEARNING_RATE=${2:-"1e-6"}
-NUM_GPUS=$SLURM_GPUS_ON_NODE
-DEBUG_TRACES=${3:-"0"}
+PRETRAIN_PATH=${3:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}
+LEARNING_RATE=${4:-"1e-6"}
+DEBUG_TRACES=${5:-"0"}
+
+### DERIVED GPU LAYOUT ###
+VLLM_GPUS=$VLLM_NUM_ENGINES
+VLLM_TENSOR_PARALLEL_SIZE=1
+NUM_GPUS=$((ACTOR_GPUS + VLLM_GPUS))
+
+# Batch sizes: scale train_batch_size with actor GPUs, keep rollout manageable
+TRAIN_BATCH_SIZE=$((16 / ACTOR_GPUS))
+ROLLOUT_BATCH_SIZE=$((TRAIN_BATCH_SIZE < 4 ? TRAIN_BATCH_SIZE : 4))
+
+# Layout tag used in run names and W&B
+LAYOUT_TAG="${ACTOR_GPUS}a${VLLM_GPUS}v"
 
 ### MULTI-TASK ###
 TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
 TASK_LABEL="Base"
 
+### GPU CHECK ###
+MIN_GPUS=$((ACTOR_GPUS + VLLM_GPUS))
+if [ "$NUM_GPUS" -lt "$MIN_GPUS" ]; then
+    echo "Error: Need at least $MIN_GPUS GPUs ($ACTOR_GPUS actor + $VLLM_GPUS vLLM), got $NUM_GPUS" >&2
+    exit 1
+fi
+
 ### NCCL / IB / NETWORK CONFIG ###
-unset NCCL_NVLS_ENABLE
-unset NCCL_IB_ADAPTIVE_ROUTING
-unset NCCL_IB_SL
-unset NCCL_IB_QPS_PER_CONNECTION
-unset NCCL_IB_SPLIT_DATA_ON_QPS
-unset UCX_TLS
+# unset NCCL_NVLS_ENABLE
+# unset NCCL_IB_ADAPTIVE_ROUTING
+# unset NCCL_IB_SL
+# unset NCCL_IB_QPS_PER_CONNECTION
+# unset NCCL_IB_SPLIT_DATA_ON_QPS
+# unset UCX_TLS
+
 # Keep
-export NCCL_P2P_DISABLE=1
-export NCCL_IB_DISABLE=1
-export NCCL_DEBUG=INFO
+export OMP_NUM_THREADS=16
+export NCCL_NVLS_ENABLE=1
+export NCCL_IB_ADAPTIVE_ROUTING=1
+export NCCL_IB_SL=1
+export NCCL_IB_QPS_PER_CONNECTION=2
+export NCCL_IB_SPLIT_DATA_ON_QPS=0
+export NCCL_IB_HCA=mlx5_15,mlx5_10,mlx5_14,mlx5_13,mlx5_8,mlx5_7,mlx5_9,mlx5_4
 export NCCL_SOCKET_IFNAME=bond0
-export NCCL_IB_HCA=mlx5_4,mlx5_7,mlx5_8,mlx5_9,mlx5_10,mlx5_14,mlx5_15
+export UCX_TLS=rc
 
 # Add for diagnosis/stability
 export NCCL_ASYNC_ERROR_HANDLING=1
 export NCCL_BLOCKING_WAIT=1
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
-# export OMP_NUM_THREADS=16
-# export NCCL_NVLS_ENABLE=1
-# export NCCL_IB_ADAPTIVE_ROUTING=1
-# export NCCL_IB_SL=1
-# export NCCL_IB_QPS_PER_CONNECTION=2
-# export NCCL_IB_SPLIT_DATA_ON_QPS=0
-# export NCCL_IB_HCA=mlx5_15,mlx5_10,mlx5_14,mlx5_13,mlx5_8,mlx5_7,mlx5_9,mlx5_4
-# export NCCL_SOCKET_IFNAME=bond0
-# export UCX_TLS=rc
 
 ### W&B ###
 if [ -z "${WANDB_API_KEY:-}" ]; then
@@ -90,24 +109,24 @@ done
 IFS=,; TRAIN_DATA="${TRAIN_PARTS[*]}"; unset IFS
 
 ### RUN CONFIG ###
-RUN_ID="GLM-grpo-fixed-debug-distributed-${TASK_LABEL}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
+N_TASKS=${#TASK_NAMES[@]}
+MAX_EPOCHS=1
+TOOL_VERSION="${TOOL_VERSION:-v3}"
+DATE_TAG=$(date +%m%d)
+RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-dist-${LAYOUT_TAG}-${DATE_TAG}"
+RUN_ID="${RUN_NAME}"
+# HF repo name excludes GPU layout so the same model name works across configs
+HUB_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
 DATE_STAMP=$(date +%Y%m%d)
-RUNS_DIR="$PROJECT_ROOT/runs/${RUN_ID}/${DATE_STAMP}"
+RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}/${DATE_STAMP}"
 mkdir -p "$RUNS_DIR"
-SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_LABEL}/$RUN_ID"
-HUB_REPO_ID="jiosephlee/grpo-tdc-glm-flash-${TASK_LABEL}"
-
-### GPU LAYOUT (distributed — separate actor and vLLM GPUs) ###
-ACTOR_GPUS=4
-VLLM_GPUS=4
-VLLM_NUM_ENGINES=4
-VLLM_TENSOR_PARALLEL_SIZE=1
-TRAIN_BATCH_SIZE=32
+SAVE_PATH="$PROJECT_ROOT/saves/tdc/$RUN_NAME"
+HUB_REPO_ID="jiosephlee/${HUB_NAME}"
 
 ### TOOL-CALLING CONFIG ###
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
-AGENT_MAX_STEPS=30
-CHAT_PROTOCOL="glm_flash"
+AGENT_MAX_STEPS=35
+CHAT_PROTOCOL="intern_s1"
 
 ### GRPO CONFIG ###
 N_SAMPLES_PER_PROMPT=8
@@ -156,7 +175,7 @@ export RAY_ADDRESS="auto"
 
 ### PRINT CONFIG ###
 echo "========================================"
-echo "TDC GRPO Training — GLM-4.7-Flash (DISTRIBUTED INTERACTIVE DEBUG)"
+echo "TDC GRPO Training — Intern-S1-mini (DISTRIBUTED, ${LAYOUT_TAG})"
 echo "========================================"
 echo "Tasks: ${TASK_NAMES[*]}"
 echo "Model: $PRETRAIN_PATH"
@@ -169,6 +188,7 @@ echo "Save Path: $SAVE_PATH"
 echo "----------------------------------------"
 echo "NUM_GPUS: $NUM_GPUS  ACTOR: $ACTOR_GPUS  VLLM: $VLLM_GPUS"
 echo "TRAIN_BATCH_SIZE: $TRAIN_BATCH_SIZE"
+echo "ROLLOUT_BATCH_SIZE: $ROLLOUT_BATCH_SIZE"
 echo "VLLM_NUM_ENGINES: $VLLM_NUM_ENGINES"
 echo "----------------------------------------"
 echo "Agent Max Steps: $AGENT_MAX_STEPS"
@@ -177,11 +197,10 @@ echo "Temperature: $TEMPERATURE"
 echo "Top-p: $TOP_P"
 echo "----------------------------------------"
 echo "Runs Dir: $RUNS_DIR"
-echo "W&B: project=$WANDB_PROJECT group=TDC-GLMFlash-fixed-$TASK_LABEL run=$RUN_ID"
+echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-dist-${LAYOUT_TAG}-$TASK_LABEL run=$RUN_ID"
 echo "========================================"
 
 ### GENERATE PER-TASK TOOLS JSON ###
-TOOL_VERSION="${TOOL_VERSION:-v3}"
 TDC_TOOLS_JSON="$PROJECT_ROOT/data/tdc/metadata/tools_per_task_${TOOL_VERSION}.json"
 python "$PROJECT_ROOT/scripts/generate_tools_json.py" --version "$TOOL_VERSION"
 
@@ -213,30 +232,33 @@ python -m openrlhf.cli.train_ppo_ray \
     --actor_num_gpus_per_node $ACTOR_GPUS \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size $VLLM_TENSOR_PARALLEL_SIZE \
-    --vllm_gpu_memory_utilization 0.95 \
+    --vllm_gpu_memory_utilization 0.975 \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \
     --eps_clip_low_high 0.2 0.272 \
     --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
-    --save_steps -1 \
+    --save_steps_ratio 0.5 \
+    --save_hf_ckpt \
     --logging_steps 1 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
     --micro_train_batch_size 1 \
     --micro_rollout_batch_size 2 \
     --train_batch_size $TRAIN_BATCH_SIZE \
-    --rollout_batch_size $TRAIN_BATCH_SIZE \
-    --max_epochs 1 \
-    --prompt_max_len 8192 \
+    --rollout_batch_size $ROLLOUT_BATCH_SIZE \
+    --max_epochs $MAX_EPOCHS \
+    --num_episodes $MAX_EPOCHS \
+    --prompt_max_len 12288 \
     --generate_max_len 2048 \
     --max_samples 1000000 \
     --enable_prefix_caching \
     --zero_stage 2 \
+    --adam_offload \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \
     --prompt_data "$TRAIN_DATA" \
     --eval_dataset "$EVAL_DATA" \
-    --eval_steps 25 \
+    --eval_steps 128 \
     --eval_temperature $TEMPERATURE \
     --eval_n_samples_per_prompt 1 \
     --input_key messages \
@@ -254,18 +276,20 @@ python -m openrlhf.cli.train_ppo_ray \
     --temperature $TEMPERATURE \
     --agent_func_path "$AGENT_FUNC_PATH" \
     --agent_max_steps $AGENT_MAX_STEPS \
-    --vllm_stop_strings "</tool_call>" \
+    --vllm_stop_strings "<|action_end|>" "<|im_end|>" \
     --chat_protocol "$CHAT_PROTOCOL" \
     --use_wandb 1 \
     --wandb_project "$WANDB_PROJECT" \
-    --wandb_group "TDC-GLMFlash-fixed-$TASK_LABEL" \
+    --wandb_group "TDC-InternS1-dist-${LAYOUT_TAG}-$TASK_LABEL" \
     --wandb_run_name "$RUN_ID" \
     --save_path "$SAVE_PATH" \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
+    --constant_lr_with_warm_up \
+    --skip_eval_step_zero \
+    --use_liger_kernel \
     --use_dynamic_batch \
-    --ring_attn_size 2 \
-    --ring_head_stride 1 \
+    --train_max_tokens_per_gpu 16384 \
     2>&1 | tee "$RUN_LOG"
 
 ### CLEANUP ###

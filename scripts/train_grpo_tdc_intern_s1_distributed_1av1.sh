@@ -237,6 +237,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --max_samples 1000000 \
     --enable_prefix_caching \
     --zero_stage 0 \
+    --adam_offload \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \
     --prompt_data "$TRAIN_DATA" \

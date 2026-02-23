@@ -257,8 +257,8 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --save_hf_ckpt \
         --logging_steps 1 \
         --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
-        --micro_train_batch_size 2 \
-        --micro_rollout_batch_size 4 \
+        --micro_train_batch_size 1 \
+        --micro_rollout_batch_size 2 \
         --train_batch_size $TRAIN_BATCH_SIZE \
         --rollout_batch_size $TRAIN_BATCH_SIZE \
         --max_epochs $MAX_EPOCHS \
@@ -282,7 +282,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --tool_version "$TOOL_VERSION" \
         --gradient_checkpointing \
         --packing_samples \
-        --vllm_sync_backend nccl \
+        --vllm_sync_backend gloo \
         --async_train \
         --async_queue_size 1 \
         $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \

@@ -1,30 +1,29 @@
 #!/bin/bash
 #
-# GPT-OSS GRPO training — DISTRIBUTED (1 actor + 7 vLLM GPUs).
+# Intern-S1-mini GRPO training — DISTRIBUTED (1 actor + 7 vLLM GPUs).
 #
 # Distributed (non-colocated) mode — Actor and vLLM run on separate GPU sets.
 # Single actor GPU (no tensor parallelism needed).
 #
-# Uses GPT-OSS Harmony tool-calling format:
-#   <|start|>assistant to=functions.<name><|channel|>commentary json<|message|>...
+# Uses the Intern-S1 JSON tool-calling format:
+#   <|action_start|><|plugin|>{"name": "...", "parameters": {...}}<|action_end|>
 #
 # Usage:
 #   1. Get an interactive node:  srun --partition=dgx-b200 --gpus=8 --mem-per-gpu=128G --cpus-per-gpu=8 --time=1:00:00 --pty bash
 #   2. Activate env:             module load MAMBA && module load cuda/13.1.0 && micromamba activate /vast/projects/myatskar/design-documents/conda_env/openrlhf_tfv4
-#   3. Run:                      bash scripts/train_grpo_tdc_gpt_oss_distributed_1av7.sh [model_path] [learning_rate]
+#   3. Run:                      bash scripts/train_grpo_tdc_intern_s1_distributed_1av7.sh [model_path] [learning_rate]
 #
 # Example:
-#   bash scripts/train_grpo_tdc_gpt_oss_distributed_1av7.sh openai/gpt-oss-20b 1e-6
+#   bash scripts/train_grpo_tdc_intern_s1_distributed_1av7.sh jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05 5e-7
 #
 
 set -euo pipefail
 export RAY_TMPDIR=/tmp/jojolee/ray
-export MALLOC_TRIM_THRESHOLD_=0
 
 ### ARGS ###
-PRETRAIN_PATH=${1:-"openai/gpt-oss-20b"}
+PRETRAIN_PATH=${1:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}
 LEARNING_RATE=${2:-"1e-6"}
-NUM_GPUS=$SLURM_GPUS_ON_NODE
+NUM_GPUS=4
 DEBUG_TRACES=${3:-"0"}
 
 ### MULTI-TASK ###
@@ -33,10 +32,10 @@ TASK_LABEL="Base"
 
 ### GPU LAYOUT (distributed — separate actor and vLLM GPUs) ###
 ACTOR_GPUS=1
-VLLM_GPUS=7
-VLLM_NUM_ENGINES=7
+VLLM_GPUS=3
+VLLM_NUM_ENGINES=3
 VLLM_TENSOR_PARALLEL_SIZE=1
-TRAIN_BATCH_SIZE=32
+TRAIN_BATCH_SIZE=4
 
 MIN_GPUS=$((ACTOR_GPUS + VLLM_GPUS))
 if [ "$NUM_GPUS" -lt "$MIN_GPUS" ]; then
@@ -52,8 +51,8 @@ unset NCCL_IB_QPS_PER_CONNECTION
 unset NCCL_IB_SPLIT_DATA_ON_QPS
 unset UCX_TLS
 # Keep
-export NCCL_P2P_DISABLE=1
-export NCCL_IB_DISABLE=1
+export NCCL_P2P_DISABLE=0
+export NCCL_IB_DISABLE=0
 export NCCL_DEBUG=INFO
 export NCCL_SOCKET_IFNAME=bond0
 export NCCL_IB_HCA=mlx5_4,mlx5_7,mlx5_8,mlx5_9,mlx5_10,mlx5_14,mlx5_15
@@ -97,17 +96,22 @@ done
 IFS=,; TRAIN_DATA="${TRAIN_PARTS[*]}"; unset IFS
 
 ### RUN CONFIG ###
-RUN_ID="GPTOss-grpo-dist-1av7-${TASK_LABEL}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
+N_TASKS=${#TASK_NAMES[@]}
+MAX_EPOCHS=1
+TOOL_VERSION="${TOOL_VERSION:-v3}"
+DATE_TAG=$(date +%m%d)
+RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-dist-${ACTOR_GPUS}a${VLLM_GPUS}v-${DATE_TAG}"
+RUN_ID="${RUN_NAME}"
 DATE_STAMP=$(date +%Y%m%d)
-RUNS_DIR="$PROJECT_ROOT/runs/${RUN_ID}/${DATE_STAMP}"
+RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}/${DATE_STAMP}"
 mkdir -p "$RUNS_DIR"
-SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_LABEL}/$RUN_ID"
-HUB_REPO_ID="jiosephlee/grpo-tdc-gpt-oss-${TASK_LABEL}"
+SAVE_PATH="$PROJECT_ROOT/saves/tdc/$RUN_NAME"
+HUB_REPO_ID="jiosephlee/${RUN_NAME}"
 
 ### TOOL-CALLING CONFIG ###
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
-AGENT_MAX_STEPS=30
-CHAT_PROTOCOL="gpt_oss"
+AGENT_MAX_STEPS=35
+CHAT_PROTOCOL="intern_s1"
 
 ### GRPO CONFIG ###
 N_SAMPLES_PER_PROMPT=8
@@ -156,7 +160,7 @@ export RAY_ADDRESS="auto"
 
 ### PRINT CONFIG ###
 echo "========================================"
-echo "TDC GRPO Training — GPT-OSS (DISTRIBUTED, 1 actor + 7 vLLM GPUs)"
+echo "TDC GRPO Training — Intern-S1-mini (DISTRIBUTED, 1 actor + 7 vLLM GPUs)"
 echo "========================================"
 echo "Tasks: ${TASK_NAMES[*]}"
 echo "Model: $PRETRAIN_PATH"
@@ -177,11 +181,10 @@ echo "Temperature: $TEMPERATURE"
 echo "Top-p: $TOP_P"
 echo "----------------------------------------"
 echo "Runs Dir: $RUNS_DIR"
-echo "W&B: project=$WANDB_PROJECT group=TDC-GPTOss-dist-1av7-$TASK_LABEL run=$RUN_ID"
+echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-dist-1av7-$TASK_LABEL run=$RUN_ID"
 echo "========================================"
 
 ### GENERATE PER-TASK TOOLS JSON ###
-TOOL_VERSION="${TOOL_VERSION:-v3}"
 TDC_TOOLS_JSON="$PROJECT_ROOT/data/tdc/metadata/tools_per_task_${TOOL_VERSION}.json"
 python "$PROJECT_ROOT/scripts/generate_tools_json.py" --version "$TOOL_VERSION"
 
@@ -227,17 +230,18 @@ python -m openrlhf.cli.train_ppo_ray \
     --micro_rollout_batch_size 2 \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
-    --max_epochs 1 \
+    --max_epochs $MAX_EPOCHS \
+    --num_episodes $MAX_EPOCHS \
     --prompt_max_len 12288 \
     --generate_max_len 2048 \
     --max_samples 1000000 \
     --enable_prefix_caching \
-    --zero_stage 2 \
+    --zero_stage 0 \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \
     --prompt_data "$TRAIN_DATA" \
     --eval_dataset "$EVAL_DATA" \
-    --eval_steps 20 \
+    --eval_steps 128 \
     --eval_temperature $TEMPERATURE \
     --eval_n_samples_per_prompt 1 \
     --input_key messages \
@@ -247,8 +251,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --tool_version "$TOOL_VERSION" \
     --gradient_checkpointing \
     --packing_samples \
-    --vllm_sync_backend nccl \
-    --mxfp4_dequantize \
+    --vllm_sync_backend gloo \
     --async_train \
     --async_queue_size 1 \
     $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \
@@ -256,17 +259,18 @@ python -m openrlhf.cli.train_ppo_ray \
     --temperature $TEMPERATURE \
     --agent_func_path "$AGENT_FUNC_PATH" \
     --agent_max_steps $AGENT_MAX_STEPS \
-    --vllm_stop_strings "<|end|>" \
+    --vllm_stop_strings "<|action_end|>" "<|im_end|>" \
     --chat_protocol "$CHAT_PROTOCOL" \
     --use_wandb 1 \
     --wandb_project "$WANDB_PROJECT" \
-    --wandb_group "TDC-GPTOss-dist-1av7-$TASK_LABEL" \
+    --wandb_group "TDC-InternS1-dist-1av7-$TASK_LABEL" \
     --wandb_run_name "$RUN_ID" \
     --save_path "$SAVE_PATH" \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
     --use_dynamic_batch \
-    --skip_eval_step_zero \
+    --constant_lr_with_warm_up \
+    --skip_eval_step_zero
     2>&1 | tee "$RUN_LOG"
 
 ### CLEANUP ###

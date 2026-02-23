@@ -501,12 +501,31 @@ class PolicyModelActor(BaseModelActor):
             actor, lr=args.actor_learning_rate, betas=strategy.args.adam_betas, weight_decay=args.l2
         )
 
-        num_warmup_steps = getattr(args, "smart_replay_warmup_steps", None) or math.ceil(max_steps * args.lr_warmup_ratio)
+        # The scheduler is stepped once per optimizer step inside ppo_train().
+        # With dynamic batch (or without), each ppo_train() call runs
+        # (rollout_batch_size * n_samples_per_prompt / train_batch_size) optimizer steps,
+        # but only 1 global_step is logged. So total scheduler steps = max_steps * steps_per_ppo_train.
+        steps_per_ppo_train = max(1, args.rollout_batch_size * args.n_samples_per_prompt // args.train_batch_size)
+        total_scheduler_steps = max_steps * steps_per_ppo_train
+
+        raw_warmup = getattr(args, "smart_replay_warmup_steps", None)
+        if raw_warmup:
+            # raw_warmup is in global-step (outer) units; convert to scheduler steps
+            num_warmup_steps = raw_warmup * steps_per_ppo_train
+        else:
+            num_warmup_steps = math.ceil(total_scheduler_steps * args.lr_warmup_ratio)
+
+        strategy.print(
+            f"[Scheduler] lr_scheduler={args.lr_scheduler}, "
+            f"outer_max_steps={max_steps}, steps_per_ppo_train={steps_per_ppo_train}, "
+            f"total_scheduler_steps={total_scheduler_steps}, "
+            f"num_warmup_steps={num_warmup_steps} ({raw_warmup or num_warmup_steps // steps_per_ppo_train} global steps)"
+        )
         actor_scheduler = get_scheduler(
             args.lr_scheduler,
             actor_optim,
             num_warmup_steps=num_warmup_steps,
-            num_training_steps=max_steps,
+            num_training_steps=total_scheduler_steps,
             scheduler_specific_kwargs={"min_lr": args.actor_learning_rate * 0.1},
         )
 

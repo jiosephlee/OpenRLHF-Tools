@@ -186,7 +186,7 @@ class TrainingActor(BasePPOTrainer):
 
     def evaluate_step0(self):
         """Run evaluation at step 0 before async training starts."""
-        if self.eval_dataloader:
+        if self.eval_dataloader and not self.args.skip_eval_step_zero:
             eval_generate_kwargs = self.generate_kwargs.copy()
             eval_generate_kwargs["temperature"] = self.args.eval_temperature
             eval_generate_kwargs["n_samples_per_prompt"] = self.args.eval_n_samples_per_prompt

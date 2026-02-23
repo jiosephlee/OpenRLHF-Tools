@@ -268,9 +268,9 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_path "$SAVE_PATH" \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
-    --use_dynamic_batch \
     --constant_lr_with_warm_up \
-    --skip_eval_step_zero
+    --skip_eval_step_zero \
+    --use_liger_kernel
     2>&1 | tee "$RUN_LOG"
 
 ### CLEANUP ###

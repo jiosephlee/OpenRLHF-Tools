@@ -51,8 +51,8 @@ unset NCCL_IB_QPS_PER_CONNECTION
 unset NCCL_IB_SPLIT_DATA_ON_QPS
 unset UCX_TLS
 # Keep
-export NCCL_P2P_DISABLE=1
-export NCCL_IB_DISABLE=1
+export NCCL_P2P_DISABLE=0
+export NCCL_IB_DISABLE=0
 export NCCL_DEBUG=INFO
 export NCCL_SOCKET_IFNAME=bond0
 export NCCL_IB_HCA=mlx5_4,mlx5_7,mlx5_8,mlx5_9,mlx5_10,mlx5_14,mlx5_15
@@ -226,8 +226,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_hf_ckpt \
     --logging_steps 1 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
-    --micro_train_batch_size 2 \
-    --micro_rollout_batch_size 4 \
+    --micro_train_batch_size 1 \
+    --micro_rollout_batch_size 2 \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
     --max_epochs $MAX_EPOCHS \
@@ -270,6 +270,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --delete_local_after_push \
     --use_dynamic_batch \
     --constant_lr_with_warm_up \
+    --skip_eval_step_zero
     2>&1 | tee "$RUN_LOG"
 
 ### CLEANUP ###

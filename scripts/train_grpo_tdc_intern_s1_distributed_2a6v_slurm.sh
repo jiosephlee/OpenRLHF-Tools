@@ -1,24 +1,23 @@
 #!/bin/bash
 #
-# SLURM batch version of the Intern-S1-mini GRPO training script (1 actor + 7 vLLM GPUs).
+# SLURM batch version of the Intern-S1-mini GRPO training script (2 actor + 6 vLLM GPUs).
 #
 # Distributed (non-colocated) mode — Actor and vLLM run on separate GPU sets.
-# Single actor GPU (no tensor parallelism needed).
 #
 # Uses the Intern-S1 JSON tool-calling format:
 #   <|action_start|><|plugin|>{"name": "...", "parameters": {...}}<|action_end|>
 #
 # Usage:
-#   sbatch scripts/train_grpo_tdc_intern_s1_distributed_1av7_slurm.sh
+#   sbatch scripts/train_grpo_tdc_intern_s1_distributed_2a6v_slurm.sh
 #
 # Override defaults via environment:
-#   PRETRAIN_PATH=... LEARNING_RATE=5e-7 sbatch scripts/train_grpo_tdc_intern_s1_distributed_1av7_slurm.sh
+#   PRETRAIN_PATH=... LEARNING_RATE=5e-7 sbatch scripts/train_grpo_tdc_intern_s1_distributed_2a6v_slurm.sh
 #
 
 ### SLURM PARAMETERS ###
-#SBATCH --job-name=grpo-tdc-s1-1av7
-#SBATCH --output=logs/grpo-tdc-s1-1av7_%j.out
-#SBATCH --error=logs/grpo-tdc-s1-1av7_%j.err
+#SBATCH --job-name=grpo-tdc-s1-2a6v
+#SBATCH --output=logs/grpo-tdc-s1-2a6v_%j.out
+#SBATCH --error=logs/grpo-tdc-s1-2a6v_%j.err
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
 #SBATCH --gpus=8
@@ -98,15 +97,15 @@ run_task() {
     MAX_EPOCHS=1
     TOOL_VERSION="${TOOL_VERSION:-v3}"
     DATE_TAG=$(date +%m%d)
-    RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-dist-1a7v-${DATE_TAG}"
+    RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-dist-2a6v-${DATE_TAG}"
     RUN_ID="${RUN_NAME}"
     SAVE_PATH="$PROJECT_ROOT/saves/tdc/$RUN_NAME"
     HUB_REPO_ID="jiosephlee/${RUN_NAME}"
 
     ### GPU LAYOUT (distributed — separate actor and vLLM GPUs) ###
-    ACTOR_GPUS=1
-    VLLM_GPUS=7
-    VLLM_NUM_ENGINES=7
+    ACTOR_GPUS=2
+    VLLM_GPUS=6
+    VLLM_NUM_ENGINES=6
     VLLM_TENSOR_PARALLEL_SIZE=1
     TRAIN_BATCH_SIZE=4
 
@@ -214,7 +213,7 @@ run_task() {
     echo "Temperature: $TEMPERATURE"
     echo "Top-p: $TOP_P"
     echo "----------------------------------------"
-    echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-dist-1av7-$TASK_LABEL run=$RUN_ID"
+    echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-dist-2a6v-$TASK_LABEL run=$RUN_ID"
     echo "========================================"
 
     ### GENERATE PER-TASK TOOLS JSON ###
@@ -267,7 +266,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --generate_max_len 2048 \
         --max_samples 1000000 \
         --enable_prefix_caching \
-        --zero_stage 0 \
+        --zero_stage 2 \
         --param_dtype bf16 \
         --actor_learning_rate $LEARNING_RATE \
         --prompt_data "$TRAIN_DATA" \
@@ -294,7 +293,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --chat_protocol "$CHAT_PROTOCOL" \
         --use_wandb 1 \
         --wandb_project "$WANDB_PROJECT" \
-        --wandb_group "TDC-InternS1-dist-1av7-$TASK_LABEL" \
+        --wandb_group "TDC-InternS1-dist-2a6v-$TASK_LABEL" \
         --wandb_run_name "$RUN_ID" \
         --save_path "$SAVE_PATH" \
         --push_to_hub "$HUB_REPO_ID" \

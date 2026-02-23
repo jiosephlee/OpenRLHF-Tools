@@ -1,10 +1,9 @@
 #!/bin/bash
 #
-# Intern-S1-mini GRPO training — DISTRIBUTED (2 actor + 6 vLLM GPUs).
+# Intern-S1-mini GRPO training — DISTRIBUTED (1 actor + 7 vLLM GPUs).
 #
 # Distributed (non-colocated) mode — Actor and vLLM run on separate GPU sets.
-# Uses DeepSpeed AutoTP (tensor parallelism) with TP=2 on 2 actor GPUs.
-# Actor device mesh: (dp=1, tp=2)
+# Single actor GPU (no tensor parallelism needed).
 #
 # Uses the Intern-S1 JSON tool-calling format:
 #   <|action_start|><|plugin|>{"name": "...", "parameters": {...}}<|action_end|>
@@ -12,10 +11,10 @@
 # Usage:
 #   1. Get an interactive node:  srun --partition=dgx-b200 --gpus=8 --mem-per-gpu=128G --cpus-per-gpu=8 --time=1:00:00 --pty bash
 #   2. Activate env:             module load MAMBA && module load cuda/13.1.0 && micromamba activate /vast/projects/myatskar/design-documents/conda_env/openrlhf_tfv4
-#   3. Run:                      bash scripts/train_grpo_tdc_intern_s1_distributed_2a6v.sh [model_path] [learning_rate]
+#   3. Run:                      bash scripts/train_grpo_tdc_intern_s1_distributed_1av7.sh [model_path] [learning_rate]
 #
 # Example:
-#   bash scripts/train_grpo_tdc_intern_s1_distributed_2a6v.sh jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05 5e-7
+#   bash scripts/train_grpo_tdc_intern_s1_distributed_1av7.sh jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05 5e-7
 #
 
 set -euo pipefail
@@ -30,7 +29,6 @@ DEBUG_TRACES=${3:-"0"}
 ### MULTI-TASK ###
 TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
 TASK_LABEL="Base"
-
 
 ### GPU LAYOUT (distributed — separate actor and vLLM GPUs) ###
 ACTOR_GPUS=1
@@ -100,8 +98,9 @@ IFS=,; TRAIN_DATA="${TRAIN_PARTS[*]}"; unset IFS
 ### RUN CONFIG ###
 N_TASKS=${#TASK_NAMES[@]}
 MAX_EPOCHS=1
+TOOL_VERSION="${TOOL_VERSION:-v4}"
 DATE_TAG=$(date +%m%d)
-RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION:-v4}-ep${MAX_EPOCHS}-dist-${ACTOR_GPUS}a${VLLM_GPUS}v-${DATE_TAG}"
+RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-dist-${ACTOR_GPUS}a${VLLM_GPUS}v-${DATE_TAG}"
 RUN_ID="${RUN_NAME}"
 DATE_STAMP=$(date +%Y%m%d)
 RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}/${DATE_STAMP}"
@@ -161,7 +160,7 @@ export RAY_ADDRESS="auto"
 
 ### PRINT CONFIG ###
 echo "========================================"
-echo "TDC GRPO Training — Intern-S1-mini (DISTRIBUTED, 2 actor + 6 vLLM GPUs)"
+echo "TDC GRPO Training — Intern-S1-mini (DISTRIBUTED, 1 actor + 7 vLLM GPUs)"
 echo "========================================"
 echo "Tasks: ${TASK_NAMES[*]}"
 echo "Model: $PRETRAIN_PATH"
@@ -175,8 +174,6 @@ echo "----------------------------------------"
 echo "NUM_GPUS: $NUM_GPUS  ACTOR: $ACTOR_GPUS  VLLM: $VLLM_GPUS"
 echo "TRAIN_BATCH_SIZE: $TRAIN_BATCH_SIZE"
 echo "VLLM_NUM_ENGINES: $VLLM_NUM_ENGINES"
-echo "DS Tensor Parallel Size: $DS_TP_SIZE"
-echo "Device Mesh: (dp=$((ACTOR_GPUS / RING_ATTN_SIZE / DS_TP_SIZE)), sp=$RING_ATTN_SIZE, tp=$DS_TP_SIZE)"
 echo "----------------------------------------"
 echo "Agent Max Steps: $AGENT_MAX_STEPS"
 echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
@@ -184,11 +181,10 @@ echo "Temperature: $TEMPERATURE"
 echo "Top-p: $TOP_P"
 echo "----------------------------------------"
 echo "Runs Dir: $RUNS_DIR"
-echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-dist-2a6v-$TASK_LABEL run=$RUN_ID"
+echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-dist-1av7-$TASK_LABEL run=$RUN_ID"
 echo "========================================"
 
 ### GENERATE PER-TASK TOOLS JSON ###
-TOOL_VERSION="${TOOL_VERSION:-v3}"
 TDC_TOOLS_JSON="$PROJECT_ROOT/data/tdc/metadata/tools_per_task_${TOOL_VERSION}.json"
 python "$PROJECT_ROOT/scripts/generate_tools_json.py" --version "$TOOL_VERSION"
 
@@ -267,13 +263,13 @@ python -m openrlhf.cli.train_ppo_ray \
     --chat_protocol "$CHAT_PROTOCOL" \
     --use_wandb 1 \
     --wandb_project "$WANDB_PROJECT" \
-    --wandb_group "TDC-InternS1-dist-2a6v-$TASK_LABEL" \
+    --wandb_group "TDC-InternS1-dist-1av7-$TASK_LABEL" \
     --wandb_run_name "$RUN_ID" \
     --save_path "$SAVE_PATH" \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
     --use_dynamic_batch \
-    --constant_lr_with_warm_up
+    --constant_lr_with_warm_up \
     2>&1 | tee "$RUN_LOG"
 
 ### CLEANUP ###

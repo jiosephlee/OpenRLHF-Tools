@@ -136,9 +136,8 @@ class BasePPOTrainer(ABC):
 
     def _collect_eval_tool_usage(self, all_prompts, samples_list, prompt_to_datasource):
         per_dataset_counts = defaultdict(lambda: defaultdict(int))
-        # samples_list is a list of Experience *batches* — each batch may
-        # contain multiple samples.  Iterate over every individual sample
-        # inside every batch to collect the full tool usage picture.
+        per_dataset_prompts_used = defaultdict(lambda: defaultdict(int))  # prompts that used tool at least once
+        per_dataset_total_prompts = defaultdict(int)
         prompt_idx = 0
         for sample in samples_list:
             batch_size = len(sample.sequences)
@@ -146,12 +145,15 @@ class BasePPOTrainer(ABC):
                 if prompt_idx >= len(all_prompts):
                     break
                 datasource = prompt_to_datasource[all_prompts[prompt_idx]]
+                per_dataset_total_prompts[datasource] += 1
                 for key, value in sample.info.items():
                     if not key.startswith("tool_count__"):
                         continue
                     tool_name = key[len("tool_count__"):]
                     tool_count = int(value.flatten()[i].item())
                     per_dataset_counts[datasource][tool_name] += tool_count
+                    if tool_count >= 1:
+                        per_dataset_prompts_used[datasource][tool_name] += 1
                 prompt_idx += 1
 
         per_dataset_counts = {
@@ -166,9 +168,22 @@ class BasePPOTrainer(ABC):
             totals[ds] = total
             per_dataset_normalized[ds] = {tool: count / total for tool, count in tool_counts.items()}
 
-        return per_dataset_counts, per_dataset_normalized, totals
+        # Fraction of prompts (per dataset) that used each tool at least once → 100% if every prompt used it
+        per_dataset_usage_pct = {}
+        for ds in per_dataset_total_prompts:
+            n = per_dataset_total_prompts[ds]
+            if n == 0:
+                continue
+            per_dataset_usage_pct[ds] = {
+                tool: per_dataset_prompts_used[ds].get(tool, 0) / n
+                for tool in per_dataset_counts.get(ds, {})
+            }
+            if not per_dataset_usage_pct[ds]:
+                del per_dataset_usage_pct[ds]
 
-    def _write_eval_tool_usage(self, global_step, per_dataset_counts, per_dataset_normalized, totals):
+        return per_dataset_counts, per_dataset_normalized, totals, per_dataset_usage_pct
+
+    def _write_eval_tool_usage(self, global_step, per_dataset_counts, per_dataset_normalized, totals, per_dataset_usage_pct):
         if not per_dataset_counts:
             return
         run_dir = self.samples_generator.runs_dir
@@ -179,6 +194,7 @@ class BasePPOTrainer(ABC):
             "per_dataset_counts": per_dataset_counts,
             "per_dataset_normalized": per_dataset_normalized,
             "totals": totals,
+            "per_dataset_usage_pct": per_dataset_usage_pct,
         }
         with open(os.path.join(output_dir, f"eval_step_{global_step}.json"), "w") as f:
             json.dump(payload, f, ensure_ascii=True)
@@ -195,7 +211,9 @@ class BasePPOTrainer(ABC):
 
         output_dir = os.path.join(self.samples_generator.runs_dir, "tool_usage_eval")
         os.makedirs(output_dir, exist_ok=True)
-        datasets = sorted({ds for entry in history for ds in entry["per_dataset_normalized"].keys()})
+        # Use % of prompts that used each tool (0–1); fall back to old normalized if missing
+        key = "per_dataset_usage_pct" if history[0].get("per_dataset_usage_pct") else "per_dataset_normalized"
+        datasets = sorted({ds for entry in history for ds in entry.get(key, {}).keys()})
         if not datasets:
             return
 
@@ -203,15 +221,13 @@ class BasePPOTrainer(ABC):
         fig, axes = plt.subplots(nrows, 1, figsize=(14, max(4, 3 * nrows)), squeeze=False)
         for row, ds in enumerate(datasets):
             ax = axes[row][0]
-            tools = sorted(
-                {tool for entry in history for tool in entry["per_dataset_normalized"].get(ds, {}).keys()}
-            )
+            tools = sorted({tool for entry in history for tool in entry.get(key, {}).get(ds, {}).keys()})
             if not tools:
                 ax.set_axis_off()
                 continue
-            matrix = [[entry["per_dataset_normalized"].get(ds, {}).get(tool, 0.0) for tool in tools] for entry in history]
+            matrix = [[entry.get(key, {}).get(ds, {}).get(tool, 0.0) for tool in tools] for entry in history]
             heatmap = ax.imshow(matrix, aspect="auto", cmap="viridis", vmin=0.0, vmax=1.0)
-            ax.set_title(ds)
+            ax.set_title(f"{ds} (% prompts used tool)")
             ax.set_xlabel("tool")
             ax.set_ylabel("eval_step")
             ax.set_xticks(range(len(tools)))
@@ -316,10 +332,10 @@ class BasePPOTrainer(ABC):
             if macro_f1_values:
                 logs["eval_avg_macro_f1"] = sum(macro_f1_values) / len(macro_f1_values)
 
-        per_dataset_counts, per_dataset_normalized, totals = self._collect_eval_tool_usage(
+        per_dataset_counts, per_dataset_normalized, totals, per_dataset_usage_pct = self._collect_eval_tool_usage(
             all_prompts, samples_list, prompt_to_datasource
         )
-        self._write_eval_tool_usage(global_step, per_dataset_counts, per_dataset_normalized, totals)
+        self._write_eval_tool_usage(global_step, per_dataset_counts, per_dataset_normalized, totals, per_dataset_usage_pct)
 
         # Log to wandb/tensorboard
         if self.wandb_logger:

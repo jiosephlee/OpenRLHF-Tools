@@ -1,43 +1,42 @@
 #!/bin/bash
 #
-# Intern-S1-mini GRPO training — DISTRIBUTED (2 actor + 6 vLLM GPUs).
+# GPT-OSS GRPO training — DISTRIBUTED (1 actor + 7 vLLM GPUs).
 #
 # Distributed (non-colocated) mode — Actor and vLLM run on separate GPU sets.
-# Uses DeepSpeed AutoTP (tensor parallelism) with TP=2 on 2 actor GPUs.
-# Actor device mesh: (dp=1, tp=2)
+# Single actor GPU (no tensor parallelism needed).
 #
-# Uses the Intern-S1 JSON tool-calling format:
-#   <|action_start|><|plugin|>{"name": "...", "parameters": {...}}<|action_end|>
+# Uses GPT-OSS Harmony tool-calling format:
+#   <|start|>assistant to=functions.<name><|channel|>commentary json<|message|>...
 #
 # Usage:
 #   1. Get an interactive node:  srun --partition=dgx-b200 --gpus=8 --mem-per-gpu=128G --cpus-per-gpu=8 --time=1:00:00 --pty bash
 #   2. Activate env:             module load MAMBA && module load cuda/13.1.0 && micromamba activate /vast/projects/myatskar/design-documents/conda_env/openrlhf_tfv4
-#   3. Run:                      bash scripts/train_grpo_tdc_intern_s1_distributed_2a6v.sh [model_path] [learning_rate]
+#   3. Run:                      bash scripts/train_grpo_tdc_gpt_oss_distributed_1av7.sh [model_path] [learning_rate]
 #
 # Example:
-#   bash scripts/train_grpo_tdc_intern_s1_distributed_2a6v.sh jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05 5e-7
+#   bash scripts/train_grpo_tdc_gpt_oss_distributed_1av7.sh openai/gpt-oss-20b 1e-6
 #
 
 set -euo pipefail
 export RAY_TMPDIR=/tmp/jojolee/ray
+export MALLOC_TRIM_THRESHOLD_=0
 
 ### ARGS ###
-PRETRAIN_PATH=${1:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}
+PRETRAIN_PATH=${1:-"openai/gpt-oss-20b"}
 LEARNING_RATE=${2:-"1e-6"}
-NUM_GPUS=8
+NUM_GPUS=$SLURM_GPUS_ON_NODE
 DEBUG_TRACES=${3:-"0"}
 
 ### MULTI-TASK ###
 TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
 TASK_LABEL="Base"
 
-
 ### GPU LAYOUT (distributed — separate actor and vLLM GPUs) ###
 ACTOR_GPUS=1
 VLLM_GPUS=7
 VLLM_NUM_ENGINES=7
 VLLM_TENSOR_PARALLEL_SIZE=1
-TRAIN_BATCH_SIZE=4
+TRAIN_BATCH_SIZE=32
 
 MIN_GPUS=$((ACTOR_GPUS + VLLM_GPUS))
 if [ "$NUM_GPUS" -lt "$MIN_GPUS" ]; then
@@ -98,21 +97,17 @@ done
 IFS=,; TRAIN_DATA="${TRAIN_PARTS[*]}"; unset IFS
 
 ### RUN CONFIG ###
-N_TASKS=${#TASK_NAMES[@]}
-MAX_EPOCHS=1
-DATE_TAG=$(date +%m%d)
-RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION:-v4}-ep${MAX_EPOCHS}-dist-${ACTOR_GPUS}a${VLLM_GPUS}v-${DATE_TAG}"
-RUN_ID="${RUN_NAME}"
+RUN_ID="GPTOss-grpo-dist-1av7-${TASK_LABEL}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
 DATE_STAMP=$(date +%Y%m%d)
-RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}/${DATE_STAMP}"
+RUNS_DIR="$PROJECT_ROOT/runs/${RUN_ID}/${DATE_STAMP}"
 mkdir -p "$RUNS_DIR"
-SAVE_PATH="$PROJECT_ROOT/saves/tdc/$RUN_NAME"
-HUB_REPO_ID="jiosephlee/${RUN_NAME}"
+SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_LABEL}/$RUN_ID"
+HUB_REPO_ID="jiosephlee/grpo-tdc-gpt-oss-${TASK_LABEL}"
 
 ### TOOL-CALLING CONFIG ###
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
-AGENT_MAX_STEPS=35
-CHAT_PROTOCOL="intern_s1"
+AGENT_MAX_STEPS=30
+CHAT_PROTOCOL="gpt_oss"
 
 ### GRPO CONFIG ###
 N_SAMPLES_PER_PROMPT=8
@@ -161,7 +156,7 @@ export RAY_ADDRESS="auto"
 
 ### PRINT CONFIG ###
 echo "========================================"
-echo "TDC GRPO Training — Intern-S1-mini (DISTRIBUTED, 2 actor + 6 vLLM GPUs)"
+echo "TDC GRPO Training — GPT-OSS (DISTRIBUTED, 1 actor + 7 vLLM GPUs)"
 echo "========================================"
 echo "Tasks: ${TASK_NAMES[*]}"
 echo "Model: $PRETRAIN_PATH"
@@ -175,8 +170,6 @@ echo "----------------------------------------"
 echo "NUM_GPUS: $NUM_GPUS  ACTOR: $ACTOR_GPUS  VLLM: $VLLM_GPUS"
 echo "TRAIN_BATCH_SIZE: $TRAIN_BATCH_SIZE"
 echo "VLLM_NUM_ENGINES: $VLLM_NUM_ENGINES"
-echo "DS Tensor Parallel Size: $DS_TP_SIZE"
-echo "Device Mesh: (dp=$((ACTOR_GPUS / RING_ATTN_SIZE / DS_TP_SIZE)), sp=$RING_ATTN_SIZE, tp=$DS_TP_SIZE)"
 echo "----------------------------------------"
 echo "Agent Max Steps: $AGENT_MAX_STEPS"
 echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
@@ -184,7 +177,7 @@ echo "Temperature: $TEMPERATURE"
 echo "Top-p: $TOP_P"
 echo "----------------------------------------"
 echo "Runs Dir: $RUNS_DIR"
-echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-dist-2a6v-$TASK_LABEL run=$RUN_ID"
+echo "W&B: project=$WANDB_PROJECT group=TDC-GPTOss-dist-1av7-$TASK_LABEL run=$RUN_ID"
 echo "========================================"
 
 ### GENERATE PER-TASK TOOLS JSON ###
@@ -230,22 +223,21 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_hf_ckpt \
     --logging_steps 1 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
-    --micro_train_batch_size 2 \
-    --micro_rollout_batch_size 4 \
+    --micro_train_batch_size 1 \
+    --micro_rollout_batch_size 2 \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $TRAIN_BATCH_SIZE \
-    --max_epochs $MAX_EPOCHS \
-    --num_episodes $MAX_EPOCHS \
+    --max_epochs 1 \
     --prompt_max_len 12288 \
     --generate_max_len 2048 \
     --max_samples 1000000 \
     --enable_prefix_caching \
-    --zero_stage 0 \
+    --zero_stage 2 \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \
     --prompt_data "$TRAIN_DATA" \
     --eval_dataset "$EVAL_DATA" \
-    --eval_steps 128 \
+    --eval_steps 20 \
     --eval_temperature $TEMPERATURE \
     --eval_n_samples_per_prompt 1 \
     --input_key messages \
@@ -256,6 +248,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --gradient_checkpointing \
     --packing_samples \
     --vllm_sync_backend nccl \
+    --mxfp4_dequantize \
     --async_train \
     --async_queue_size 1 \
     $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \
@@ -263,17 +256,17 @@ python -m openrlhf.cli.train_ppo_ray \
     --temperature $TEMPERATURE \
     --agent_func_path "$AGENT_FUNC_PATH" \
     --agent_max_steps $AGENT_MAX_STEPS \
-    --vllm_stop_strings "<|action_end|>" "<|im_end|>" \
+    --vllm_stop_strings "<|end|>" \
     --chat_protocol "$CHAT_PROTOCOL" \
     --use_wandb 1 \
     --wandb_project "$WANDB_PROJECT" \
-    --wandb_group "TDC-InternS1-dist-2a6v-$TASK_LABEL" \
+    --wandb_group "TDC-GPTOss-dist-1av7-$TASK_LABEL" \
     --wandb_run_name "$RUN_ID" \
     --save_path "$SAVE_PATH" \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
     --use_dynamic_batch \
-    --constant_lr_with_warm_up
+    --skip_eval_step_zero \
     2>&1 | tee "$RUN_LOG"
 
 ### CLEANUP ###

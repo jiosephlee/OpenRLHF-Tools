@@ -4,10 +4,8 @@
 Usage:
     python scripts/replot_tool_usage.py <folder_with_json_files> [--output <path.png>] [--raw]
 
-By default uses per_dataset_normalized values with a relative color scale
-(vmin/vmax derived from the actual data range, not fixed 0-1).
-
-Pass --raw to plot raw counts instead of normalized fractions.
+By default uses per_dataset_usage_pct (fraction of prompts that used each tool at least once;
+0–1 = 0–100%). Falls back to per_dataset_normalized for older JSONs. Pass --raw for raw counts.
 """
 
 import argparse
@@ -35,8 +33,11 @@ def load_jsons(folder: str) -> list[dict]:
 
 
 def plot(entries: list[dict], output_path: str, use_raw: bool):
-    key = "per_dataset_counts" if use_raw else "per_dataset_normalized"
-    datasets = sorted({ds for entry in entries for ds in entry[key].keys()})
+    if use_raw:
+        key = "per_dataset_counts"
+    else:
+        key = "per_dataset_usage_pct" if entries and entries[0].get("per_dataset_usage_pct") else "per_dataset_normalized"
+    datasets = sorted({ds for entry in entries for ds in entry.get(key, {}).keys()})
     if not datasets:
         print("No datasets found in JSON entries.", file=sys.stderr)
         sys.exit(1)
@@ -63,7 +64,7 @@ def plot(entries: list[dict], output_path: str, use_raw: bool):
             vmax = vmin + 1.0  # avoid degenerate range
 
         heatmap = ax.imshow(matrix, aspect="auto", cmap="viridis", vmin=vmin, vmax=vmax)
-        ax.set_title(f"{ds}  ({'raw counts' if use_raw else 'normalized'})")
+        ax.set_title(f"{ds}  ({'raw counts' if use_raw else '% prompts used tool'})")
         ax.set_xlabel("tool")
         ax.set_ylabel("eval step")
         ax.set_xticks(range(len(tools)))

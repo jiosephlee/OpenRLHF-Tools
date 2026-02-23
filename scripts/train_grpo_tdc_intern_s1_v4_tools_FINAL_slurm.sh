@@ -39,7 +39,7 @@ export UCX_TLS=rc
 ### BEGIN BATCH SCRIPT ###
 module load MAMBA
 module load cuda/13.1.0
-export ENV_NAME="openrlhf_tfv4"
+export ENV_NAME="open_rlhf_intern"
 
 ############################
 #        TASK SCRIPT       #
@@ -94,7 +94,7 @@ run_task() {
     ### RUN CONFIG ###
     N_TASKS=${#TASK_NAMES[@]}
     MAX_EPOCHS=1
-    TOOL_VERSION="${TOOL_VERSION:-v4}"
+    TOOL_VERSION="${TOOL_VERSION:-v3}"
     DATE_TAG=$(date +%m%d)
     RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
     RUN_ID="${RUN_NAME}"

@@ -12,8 +12,13 @@
 #   sbatch scripts/train_grpo_tdc_gpt_oss_distributed_1av7_slurm.sh
 #
 # Override defaults via environment:
-#   ACTOR_GPUS=1 VLLM_NUM_ENGINES=7 sbatch scripts/train_grpo_tdc_gpt_oss_distributed_1av7_slurm.sh
-#   ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 PRETRAIN_PATH=... sbatch scripts/train_grpo_tdc_gpt_oss_distributed_1av7_slurm.sh
+#   ACTOR_GPUS=1 VLLM_NUM_ENGINES=7 sbatch scripts/train_grpo_tdc_gpt_oss_distributed_slurm.sh
+#   ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 PRETRAIN_PATH=... sbatch scripts/train_grpo_tdc_gpt_oss_distributed_slurm.sh
+#
+# Feature flags (set via env before sbatch):
+#   TOOL_VERSION=v3          # Tool schema version (default: v3)
+#   SMART_REPLAY=1           # Enable smart replay with max_replay_rounds=2
+#   CURRICULUM_BALANCED=1    # Enable curriculum-balanced sampling
 #
 
 ### SLURM PARAMETERS ###
@@ -63,6 +68,11 @@ run_task() {
     LEARNING_RATE="${LEARNING_RATE:-1e-6}"
     DEBUG_TRACES="${DEBUG_TRACES:-0}"
     NUM_GPUS=$SLURM_GPUS_ON_NODE
+
+    ### FEATURE FLAGS ###
+    TOOL_VERSION="${TOOL_VERSION:-v3}"
+    SMART_REPLAY="${SMART_REPLAY:-0}"
+    CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
 
     ### PRIMARY KNOBS ###
     ACTOR_GPUS="${ACTOR_GPUS:-1}"
@@ -131,7 +141,6 @@ run_task() {
     ### RUN CONFIG ###
     N_TASKS=${#TASK_NAMES[@]}
     MAX_EPOCHS=1
-    TOOL_VERSION="${TOOL_VERSION:-v3}"
     DATE_TAG=$(date +%m%d)
     RUN_NAME="grpo-tdc-gptoss-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-dist-${LAYOUT_TAG}-${DATE_TAG}"
     RUN_ID="${RUN_NAME}"
@@ -250,6 +259,10 @@ run_task() {
     echo "Top-p: $TOP_P"
     echo "Warmup Steps: $WARMUP_STEPS (multiplier: $WARM_STEPS_MULTIPLIER)"
     echo "----------------------------------------"
+    echo "Smart Replay: $SMART_REPLAY"
+    echo "Curriculum Balanced: $CURRICULUM_BALANCED"
+    echo "Tool Version: $TOOL_VERSION"
+    echo "----------------------------------------"
     echo "Runs Dir: $RUNS_DIR"
     echo "W&B: project=$WANDB_PROJECT group=TDC-GPTOss-dist-${LAYOUT_TAG}-$TASK_LABEL run=$RUN_ID"
     echo "========================================"
@@ -352,6 +365,8 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --use_dynamic_batch \
         --train_max_tokens_per_gpu 16384 \
         --adam_offload \
+        $([ "$SMART_REPLAY" = "1" ] && echo "--smart_replay --max_replay_rounds 2" || echo "") \
+        $([ "$CURRICULUM_BALANCED" = "1" ] && echo "--curriculum_balanced" || echo "") \
         $AUTOTP_FLAGS \
         2>&1 | tee "$RUN_LOG"
 

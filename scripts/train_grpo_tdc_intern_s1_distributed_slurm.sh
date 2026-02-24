@@ -1,29 +1,35 @@
 #!/bin/bash
 #
-# SLURM batch version of the Intern-S1 GRPO training script with tool calling.
+# SLURM batch version of the Intern-S1-mini GRPO training script (2 actor + 6 vLLM GPUs).
 #
-# Hybrid (colocated) mode — Actor and vLLM share the same GPUs via sleep mode.
+# Distributed (non-colocated) mode — Actor and vLLM run on separate GPU sets.
+#
 # Uses the Intern-S1 JSON tool-calling format:
 #   <|action_start|><|plugin|>{"name": "...", "parameters": {...}}<|action_end|>
 #
 # Usage:
-#   sbatch scripts/train_grpo_tdc_intern_s1_v4_tools_FINAL_slurm.sh
+#   sbatch scripts/train_grpo_tdc_intern_s1_distributed_2a6v_slurm.sh
 #
 # Override defaults via environment:
-#   PRETRAIN_PATH=... LEARNING_RATE=5e-7 sbatch scripts/train_grpo_tdc_intern_s1_v4_tools_FINAL_slurm.sh
+#   PRETRAIN_PATH=... LEARNING_RATE=5e-7 sbatch scripts/train_grpo_tdc_intern_s1_distributed_2a6v_slurm.sh
+#
+# Feature flags (set via env before sbatch):
+#   TOOL_VERSION=v3          # Tool schema version (default: v3)
+#   SMART_REPLAY=1           # Enable smart replay with max_replay_rounds=2
+#   CURRICULUM_BALANCED=1    # Enable curriculum-balanced sampling
 #
 
 ### SLURM PARAMETERS ###
-#SBATCH --job-name=grpo-tdc-s1-tools
-#SBATCH --output=logs/grpo-tdc-s1-tools_%j.out
-#SBATCH --error=logs/grpo-tdc-s1-tools_%j.err
+#SBATCH --job-name=grpo-tdc-s1-2a6v
+#SBATCH --output=logs/grpo-tdc-s1-2a6v_%j.out
+#SBATCH --error=logs/grpo-tdc-s1-2a6v_%j.err
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
 #SBATCH --gpus=8
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem-per-gpu=128G
-#SBATCH --cpus-per-gpu=8
-#SBATCH --time=00-24:00:00
+#SBATCH --cpus-per-gpu=4
+#SBATCH --time=00-18:00:00
 
 ### SCHEDULER PARAMETERS ###
 export OMP_NUM_THREADS=16
@@ -53,6 +59,11 @@ run_task() {
     LEARNING_RATE="${LEARNING_RATE:-1e-6}"
     DEBUG_TRACES="${DEBUG_TRACES:-0}"
     NUM_GPUS=$SLURM_GPUS_ON_NODE
+
+    ### FEATURE FLAGS ###
+    TOOL_VERSION="${TOOL_VERSION:-v3}"
+    SMART_REPLAY="${SMART_REPLAY:-0}"
+    CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
 
     ### MULTI-TASK ###
     TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
@@ -94,20 +105,28 @@ run_task() {
     ### RUN CONFIG ###
     N_TASKS=${#TASK_NAMES[@]}
     MAX_EPOCHS=1
-    TOOL_VERSION="${TOOL_VERSION:-v3}"
     DATE_TAG=$(date +%m%d)
-    RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
+    RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-dist-2a6v-${DATE_TAG}"
     RUN_ID="${RUN_NAME}"
     SAVE_PATH="$PROJECT_ROOT/saves/tdc/$RUN_NAME"
     HUB_REPO_ID="jiosephlee/${RUN_NAME}"
 
-    ### GPU LAYOUT (colocated — shared GPUs) ###
-    TRAIN_BATCH_SIZE=32
-    VLLM_NUM_ENGINES=$NUM_GPUS
+    ### GPU LAYOUT (distributed — separate actor and vLLM GPUs) ###
+    ACTOR_GPUS=2
+    VLLM_GPUS=6
+    VLLM_NUM_ENGINES=6
+    VLLM_TENSOR_PARALLEL_SIZE=1
+    TRAIN_BATCH_SIZE=4
+
+    MIN_GPUS=$((ACTOR_GPUS + VLLM_GPUS))
+    if [ "$NUM_GPUS" -lt "$MIN_GPUS" ]; then
+        echo "Error: Need at least $MIN_GPUS GPUs ($ACTOR_GPUS actor + $VLLM_GPUS vLLM), got $NUM_GPUS" >&2
+        exit 1
+    fi
 
     ### TOOL-CALLING CONFIG ###
     AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
-    AGENT_MAX_STEPS=30
+    AGENT_MAX_STEPS=35
     CHAT_PROTOCOL="intern_s1"
 
     ### GRPO CONFIG ###
@@ -182,7 +201,7 @@ run_task() {
 
     ### PRINT CONFIG ###
     echo "========================================"
-    echo "TDC GRPO Training — Intern-S1-mini (SLURM BATCH)"
+    echo "TDC GRPO Training — Intern-S1-mini (DISTRIBUTED, 1 actor + 7 vLLM GPUs, SLURM BATCH)"
     echo "========================================"
     echo "SLURM Job ID: $SLURM_JOB_ID"
     echo "Tasks: ${TASK_NAMES[*]}"
@@ -194,7 +213,7 @@ run_task() {
     echo "Training Data: $TRAIN_DATA"
     echo "Save Path: $SAVE_PATH"
     echo "----------------------------------------"
-    echo "NUM_GPUS: $NUM_GPUS (colocated — shared between actor and vLLM)"
+    echo "NUM_GPUS: $NUM_GPUS  ACTOR: $ACTOR_GPUS  VLLM: $VLLM_GPUS"
     echo "TRAIN_BATCH_SIZE: $TRAIN_BATCH_SIZE"
     echo "VLLM_NUM_ENGINES: $VLLM_NUM_ENGINES"
     echo "----------------------------------------"
@@ -203,7 +222,11 @@ run_task() {
     echo "Temperature: $TEMPERATURE"
     echo "Top-p: $TOP_P"
     echo "----------------------------------------"
-    echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-fixed-$TASK_LABEL run=$RUN_ID"
+    echo "Smart Replay: $SMART_REPLAY"
+    echo "Curriculum Balanced: $CURRICULUM_BALANCED"
+    echo "Tool Version: $TOOL_VERSION"
+    echo "----------------------------------------"
+    echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-dist-2a6v-$TASK_LABEL run=$RUN_ID"
     echo "========================================"
 
     ### GENERATE PER-TASK TOOLS JSON ###
@@ -233,11 +256,10 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --reward_num_nodes 0 \
         --reward_num_gpus_per_node 0 \
         --actor_num_nodes 1 \
-        --actor_num_gpus_per_node $NUM_GPUS \
+        --actor_num_gpus_per_node $ACTOR_GPUS \
         --vllm_num_engines $VLLM_NUM_ENGINES \
-        --vllm_tensor_parallel_size 1 \
-        --colocate_all_models \
-        --vllm_gpu_memory_utilization 0.8515 \
+        --vllm_tensor_parallel_size $VLLM_TENSOR_PARALLEL_SIZE \
+        --vllm_gpu_memory_utilization 0.975 \
         --advantage_estimator $ADVANTAGE_ESTIMATOR \
         --init_kl_coef 0 \
         --kl_estimator k1 \
@@ -247,8 +269,8 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --save_hf_ckpt \
         --logging_steps 1 \
         --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
-        --micro_train_batch_size 4 \
-        --micro_rollout_batch_size 8 \
+        --micro_train_batch_size 1 \
+        --micro_rollout_batch_size 2 \
         --train_batch_size $TRAIN_BATCH_SIZE \
         --rollout_batch_size $TRAIN_BATCH_SIZE \
         --max_epochs $MAX_EPOCHS \
@@ -257,12 +279,12 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --generate_max_len 2048 \
         --max_samples 1000000 \
         --enable_prefix_caching \
-        --zero_stage 1 \
+        --zero_stage 2 \
         --param_dtype bf16 \
         --actor_learning_rate $LEARNING_RATE \
         --prompt_data "$TRAIN_DATA" \
         --eval_dataset "$EVAL_DATA" \
-        --eval_steps 32 \
+        --eval_steps 128 \
         --eval_temperature $TEMPERATURE \
         --eval_n_samples_per_prompt 1 \
         --input_key messages \
@@ -272,9 +294,9 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --tool_version "$TOOL_VERSION" \
         --gradient_checkpointing \
         --packing_samples \
-        --vllm_sync_backend nccl \
-        --vllm_enable_sleep \
-        --deepspeed_enable_sleep \
+        --vllm_sync_backend gloo \
+        --async_train \
+        --async_queue_size 1 \
         $([ "$DYNAMIC_FILTERING" = true ] && echo "--dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE" || echo "") \
         --top_p $TOP_P \
         --temperature $TEMPERATURE \
@@ -284,15 +306,15 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --chat_protocol "$CHAT_PROTOCOL" \
         --use_wandb 1 \
         --wandb_project "$WANDB_PROJECT" \
-        --wandb_group "TDC-InternS1-fixed-$TASK_LABEL" \
+        --wandb_group "TDC-InternS1-dist-2a6v-$TASK_LABEL" \
         --wandb_run_name "$RUN_ID" \
         --save_path "$SAVE_PATH" \
         --push_to_hub "$HUB_REPO_ID" \
         --delete_local_after_push \
+        --use_dynamic_batch \
         --constant_lr_with_warm_up \
-        --smart_replay \
-        --max_replay_rounds 2 \
-        --curriculum_balanced
+        $([ "$SMART_REPLAY" = "1" ] && echo "--smart_replay --max_replay_rounds 2" || echo "") \
+        $([ "$CURRICULUM_BALANCED" = "1" ] && echo "--curriculum_balanced" || echo "")
 
     ### CLEANUP ###
     echo "Training complete! Stopping Ray..."

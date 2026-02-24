@@ -10,10 +10,15 @@
 # Usage:
 #   bash scripts/train_grpo_tdc_intern_s1_distributed.sh <actor_gpus> <vllm_engines> [model_path] [learning_rate]
 #
+# Feature flags (set via env before running):
+#   TOOL_VERSION=v3          # Tool schema version (default: v3)
+#   SMART_REPLAY=1           # Enable smart replay with max_replay_rounds=2
+#   CURRICULUM_BALANCED=1    # Enable curriculum-balanced sampling
+#
 # Examples:
 #   bash scripts/train_grpo_tdc_intern_s1_distributed.sh 1 1   # 2 GPUs total
 #   bash scripts/train_grpo_tdc_intern_s1_distributed.sh 1 3   # 4 GPUs total
-#   bash scripts/train_grpo_tdc_intern_s1_distributed.sh 2 6   # 8 GPUs total
+#   SMART_REPLAY=1 bash scripts/train_grpo_tdc_intern_s1_distributed.sh 2 6   # 8 GPUs, with replay
 #
 
 set -euo pipefail
@@ -27,6 +32,11 @@ VLLM_NUM_ENGINES=${2:?"Usage: $0 <actor_gpus> <vllm_engines> [model_path] [learn
 PRETRAIN_PATH=${3:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}
 LEARNING_RATE=${4:-"1e-6"}
 DEBUG_TRACES=${5:-"0"}
+
+### FEATURE FLAGS ###
+TOOL_VERSION="${TOOL_VERSION:-v3}"
+SMART_REPLAY="${SMART_REPLAY:-0}"
+CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
 
 ### DERIVED GPU LAYOUT ###
 VLLM_GPUS=$VLLM_NUM_ENGINES
@@ -111,7 +121,6 @@ IFS=,; TRAIN_DATA="${TRAIN_PARTS[*]}"; unset IFS
 ### RUN CONFIG ###
 N_TASKS=${#TASK_NAMES[@]}
 MAX_EPOCHS=1
-TOOL_VERSION="${TOOL_VERSION:-v3}"
 DATE_TAG=$(date +%m%d)
 RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-dist-${LAYOUT_TAG}-${DATE_TAG}"
 RUN_ID="${RUN_NAME}"
@@ -195,6 +204,10 @@ echo "Agent Max Steps: $AGENT_MAX_STEPS"
 echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
 echo "Temperature: $TEMPERATURE"
 echo "Top-p: $TOP_P"
+echo "----------------------------------------"
+echo "Smart Replay: $SMART_REPLAY"
+echo "Curriculum Balanced: $CURRICULUM_BALANCED"
+echo "Tool Version: $TOOL_VERSION"
 echo "----------------------------------------"
 echo "Runs Dir: $RUNS_DIR"
 echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-dist-${LAYOUT_TAG}-$TASK_LABEL run=$RUN_ID"
@@ -290,6 +303,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --use_liger_kernel \
     --use_dynamic_batch \
     --train_max_tokens_per_gpu 32768 \
+    $([ "$SMART_REPLAY" = "1" ] && echo "--smart_replay --max_replay_rounds 2" || echo "") \
+    $([ "$CURRICULUM_BALANCED" = "1" ] && echo "--curriculum_balanced" || echo "") \
     2>&1 | tee "$RUN_LOG"
 
 ### CLEANUP ###

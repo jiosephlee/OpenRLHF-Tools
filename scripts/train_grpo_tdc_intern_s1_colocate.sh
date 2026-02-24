@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# INTERACTIVE DEBUG version of the Intern-S1 GRPO training script (FIXED, CUDA 13).
+# Intern-S1 GRPO training script — interactive mode.
 #
 # Hybrid (colocated) mode — Actor and vLLM share the same GPUs via sleep mode.
 # Uses the Intern-S1 JSON tool-calling format:
@@ -9,10 +9,15 @@
 # Usage:
 #   1. Get an interactive node:  srun --partition=dgx-b200 --gpus=2 --mem-per-gpu=128G --cpus-per-gpu=4 --time=1:00:00 --pty bash
 #   2. Activate env:             module load MAMBA && module load cuda/13.1.0 && micromamba activate /vast/projects/myatskar/design-documents/conda_env/openrlhf_tfv4
-#   3. Run:                      bash scripts/train_grpo_tdc_intern_s1_debug_fixed_cuda_13_large.sh [model_path] [learning_rate]
+#   3. Run:                      bash scripts/train_grpo_tdc_intern_s1_tools_FINAL.sh [model_path] [learning_rate]
+#
+# Feature flags (set via env before running):
+#   TOOL_VERSION=v3          # Tool schema version (default: v3)
+#   SMART_REPLAY=1           # Enable smart replay with max_replay_rounds=2
+#   CURRICULUM_BALANCED=1    # Enable curriculum-balanced sampling
 #
 # Example:
-#   bash scripts/train_grpo_tdc_intern_s1_debug_fixed_cuda_13_large.sh jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05 5e-7
+#   SMART_REPLAY=1 CURRICULUM_BALANCED=1 bash scripts/train_grpo_tdc_intern_s1_tools_FINAL.sh
 #
 
 set -euo pipefail
@@ -23,6 +28,11 @@ PRETRAIN_PATH=${1:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet
 LEARNING_RATE=${2:-"1e-6"}
 NUM_GPUS=$SLURM_GPUS_ON_NODE
 DEBUG_TRACES=${3:-"0"}
+
+### FEATURE FLAGS ###
+TOOL_VERSION="${TOOL_VERSION:-v3}"
+SMART_REPLAY="${SMART_REPLAY:-0}"
+CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
 
 ### MULTI-TASK: AMES, BBB_Martins, Bioavailability_Ma, hERG ###
 TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
@@ -76,7 +86,7 @@ IFS=,; TRAIN_DATA="${TRAIN_PARTS[*]}"; unset IFS
 N_TASKS=${#TASK_NAMES[@]}
 MAX_EPOCHS=2
 DATE_TAG=$(date +%m%d)
-RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION:-v4}-ep${MAX_EPOCHS}-${DATE_TAG}"
+RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
 RUN_ID="${RUN_NAME}"
 SAVE_PATH="$PROJECT_ROOT/saves/tdc/$RUN_NAME"
 HUB_REPO_ID="jiosephlee/${RUN_NAME}"
@@ -158,11 +168,14 @@ echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
 echo "Temperature: $TEMPERATURE"
 echo "Top-p: $TOP_P"
 echo "----------------------------------------"
+echo "Smart Replay: $SMART_REPLAY"
+echo "Curriculum Balanced: $CURRICULUM_BALANCED"
+echo "Tool Version: $TOOL_VERSION"
+echo "----------------------------------------"
 echo "W&B: project=$WANDB_PROJECT group=TDC-InternS1-fixed-$TASK_LABEL run=$RUN_ID"
 echo "========================================"
 
 ### GENERATE PER-TASK TOOLS JSON (from Intern-S1-recipe source of truth) ###
-TOOL_VERSION="${TOOL_VERSION:-v4}"
 TDC_TOOLS_JSON="$PROJECT_ROOT/data/tdc/metadata/tools_per_task_${TOOL_VERSION}.json"
 python "$PROJECT_ROOT/scripts/generate_tools_json.py" --version "$TOOL_VERSION"
 
@@ -246,7 +259,9 @@ python -m openrlhf.cli.train_ppo_ray \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
     --use_dynamic_batch \
-    --constant_lr_with_warm_up
+    --constant_lr_with_warm_up \
+    $([ "$SMART_REPLAY" = "1" ] && echo "--smart_replay --max_replay_rounds 2" || echo "") \
+    $([ "$CURRICULUM_BALANCED" = "1" ] && echo "--curriculum_balanced" || echo "")
 
 ### CLEANUP ###
 echo "Training complete! Stopping Ray..."

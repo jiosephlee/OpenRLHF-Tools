@@ -47,7 +47,7 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 ### BEGIN BATCH SCRIPT ###
 module load MAMBA
 module load cuda/13.1.0
-export ENV_NAME="openrlhf_tfv4"
+export ENV_NAME="open_rlhf_intern"
 
 ############################
 #        TASK SCRIPT       #

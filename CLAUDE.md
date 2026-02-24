@@ -11,9 +11,8 @@ This fork extends OpenRLHF with multi-turn tool-calling support for GRPO trainin
 - Multiple chat protocol support: GLM Flash XML, Intern-S1, Qwen3, GPT-OSS
 - Transformers v4/v5 backward compatibility
 - 3-stage deferred GPU dispatch for better load balancing
-- AutoTP OOM fix and DeepSpeed ZeRO-2 CPU offload fix
-- Memory optimization with Liger kernels
-- NaN-safe masked operations (`torch.where` instead of `tensor * mask`)
+- AutoTP OOM fix (free pre-sharded weights before DeepSpeed init)
+- NaN-safe masked operations (`torch.where` instead of `tensor * mask` in action log probs)
 - Eval at step 0, macro-F1 for TDC, `eval/global_step` W&B axis
 - Checkpoint uploading to HF Hub
 - Rollout trace logging to `runs/<run_name>/<date>/traces/`
@@ -42,9 +41,9 @@ This dramatically improves GPU utilization when generation times vary (common wi
 After `tp_model_init()` shards the model, the old optimizer still holds references to full-size pre-sharded parameters (~80 GiB). Fix: explicitly delete old optimizer, break scheduler reference, recreate optimizer over sharded params, force `gc.collect()` + `torch.cuda.empty_cache()` before `deepspeed.initialize()`.
 
 ### 4. NaN-Safe Masked Operations
-**Files:** `openrlhf/models/actor.py`, `openrlhf/models/utils.py`
+**File:** `openrlhf/models/actor.py`
 
-Changed `(tensor * mask).sum()` to `torch.where(mask.bool(), tensor, torch.zeros_like(tensor)).sum()` in `masked_mean()` and `action_log_probs`. Prevents NaN propagation through masked positions.
+Changed `(tensor * mask).sum()` to `torch.where(mask.bool(), tensor, torch.zeros_like(tensor)).sum()` in `action_log_probs`. Prevents NaN propagation through masked positions during action log prob calculation. (Note: `masked_mean` was reverted to `tensor * mask`).
 
 ### 5. Eval Improvements
 **Files:** `openrlhf/trainer/ppo_trainer.py`, `openrlhf/trainer/ppo_trainer_async.py`, `openrlhf/utils/logging_utils.py`
@@ -134,6 +133,7 @@ GRPO Training Loop
 - `--agent_max_steps`: Max turns per episode (default: 5)
 - `--vllm_stop_strings`: Stop generation tokens (e.g., `"</tool_call>"`)
 - `--chat_protocol`: Protocol name (`glm_flash`, `intern_s1`, `gpt_oss`, `qwen3`)
+- `--tool_version`: Tool schema version descriptor
 
 **TDC:**
 - `--tdc_tools`: Path to per-task tool schema JSON
@@ -147,12 +147,12 @@ GRPO Training Loop
 - `--delete_local_after_push`: Delete local checkpoint after upload
 - `--save_steps_ratio <float>`: Compute save_steps as fraction of total steps
 
-## Environment Variables
-
+**Environment Variables:**
 Set automatically by vllm_engine.py:
 - `OPENRLHF_MODEL_PATH`: Model path for tokenizer
 - `OPENRLHF_MAX_STEPS`: Max agent steps
 - `OPENRLHF_CHAT_PROTOCOL`: Chat protocol name
+- `OPENRLHF_TOOL_VERSION`: Tool version descriptor
 
 Debug flags:
 - `OPENRLHF_DEBUG_NAN_GUARD=1`: Enable NaN assertions in actor forward/backward

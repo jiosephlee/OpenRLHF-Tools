@@ -244,7 +244,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --delete_local_after_push \
     --use_dynamic_batch \
     --adam_offload \
-    --attn_implementation eager \
     --train_max_tokens_per_gpu 8192 \
 
 ### CLEANUP ###

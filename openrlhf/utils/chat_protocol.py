@@ -301,30 +301,31 @@ class GPTOSSProtocol(ChatProtocol):
 
     Harmony message format (tool call)::
 
-        <|start|>assistant\\nto=functions.tool_name<|channel|>commentary<|message|>{"arg": "val"}<|end|>
+        <|start|>assistant<|channel|>analysis<|message|>reasoning...<|end|>
+        <|start|>assistant<|channel|>commentary to=functions.tool_name <|constrain|>json<|message|>{"arg": "val"}<|call|>
 
     Tool feedback (function → assistant)::
 
-        <|start|>functions.tool_name\\nto=assistant<|channel|>commentary<|message|>result<|end|>
+        <|start|>functions.tool_name to=assistant<|channel|>commentary<|message|>result<|end|>
 
     Generation prompt::
 
         <|start|>assistant
 
-    **Stop-string semantics** (different from InternS1):
+    **Stop tokens:** ``<|return|>`` (200002) and ``<|call|>`` (200012).
 
-    InternS1 uses *two* stop tokens — ``<|action_end|>`` (tool call) vs
-    ``<|im_end|>`` (final answer) — so the stop token itself tells us what
-    happened.
+    ``<|end|>`` (200007) is a **message boundary**, not a stop token — the
+    model emits multiple ``<|end|>``-separated messages (e.g. analysis then
+    tool call).  Stopping at ``<|end|>`` truncates the output before the
+    tool call or final answer is produced.
 
-    Harmony uses a *single* ``<|end|>`` token for **both** tool calls and
-    final answers.  The distinction is made by parsing the message structure:
+    ``<|call|>`` signals the model wants to invoke a tool; ``<|return|>``
+    signals the model is done (final answer).
+
+    After parsing, the distinction is made by inspecting the message:
 
     - ``msg.recipient.startswith("functions.")`` → tool call → continue
-    - otherwise → final answer → done
-
-    This is exactly how vLLM's ``OpenAIToolParser.extract_tool_calls()``
-    works: it inspects ``msg.recipient``, not the stop token.
+    - ``msg.channel == "final"`` → final answer → done
     """
 
     def __init__(self, tokenizer):
@@ -422,25 +423,28 @@ class GPTOSSProtocol(ChatProtocol):
     def render_tool_feedback(self, tool_results: List[Dict[str, str]]) -> str:
         """Build bridge text: tool responses + generation prompt.
 
-        The Harmony wire format for function→assistant messages uses ``\\n``
+        The Harmony wire format for function→assistant messages uses a space
         between the source role and the ``to=`` directive::
 
-            <|start|>functions.tool_name\\nto=assistant<|channel|>commentary<|message|>content<|end|>
+            <|start|>functions.tool_name to=assistant<|channel|>commentary<|message|>content<|end|>
 
-        The model's output already includes ``<|end|>`` (via
+        The model's output already includes ``<|call|>`` (via
         ``include_stop_str_in_output=True``), so the feedback just appends
         the function response(s) and a new generation prompt.
 
-        ``tool_content`` is already a JSON string produced by
-        ``json.dumps(...)`` in the tool executor — embedded directly
-        (no second ``json.dumps``).
+        ``tool_content`` is embedded as raw JSON, matching the canonical
+        format from the harmony docs and the ``openai_harmony`` renderer.
+
+        Note: the HF chat template applies ``|tojson`` which double-encodes
+        string content. That is a template quirk — the model was trained
+        with the harmony renderer which embeds raw JSON.
         """
         feedback = ""
         for tr in tool_results:
             tool_name = tr["name"]
             tool_content = tr["content"]
             feedback += (
-                f"<|start|>functions.{tool_name}\nto=assistant"
+                f"<|start|>functions.{tool_name} to=assistant"
                 f"<|channel|>commentary<|message|>{tool_content}<|end|>"
             )
         # Generation prompt for the next assistant turn

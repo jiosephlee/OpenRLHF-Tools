@@ -22,11 +22,11 @@
 #SBATCH --error=logs/grpo-tdc-gptoss_%j.err
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
-#SBATCH --gpus=8
+#SBATCH --gpus=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem-per-gpu=128G
-#SBATCH --cpus-per-gpu=4
-#SBATCH --time=00-18:00:00
+#SBATCH --cpus-per-gpu=8
+#SBATCH --time=00-1:00:00
 
 ### SCHEDULER PARAMETERS ###
 export OMP_NUM_THREADS=16

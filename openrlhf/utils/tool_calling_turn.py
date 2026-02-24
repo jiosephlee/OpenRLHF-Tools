@@ -8,6 +8,7 @@ does real work (parse tool calls, execute, produce bridge text via
 ``protocol.render_tool_feedback``).
 """
 
+import asyncio
 import json
 import os
 import re
@@ -82,12 +83,12 @@ class ToolCallingTurn(AgentInstanceBase):
         tool_calls = action.get("tool_calls", [])
 
         if tool_calls:
-            # Execute tools and build result dicts
+            # Execute all tool calls in parallel, preserving order
+            results = await asyncio.gather(*[self._execute_tool(tc) for tc in tool_calls])
             tool_msgs = []
             extra_logs = {"tool_call_count": len(tool_calls)}
-            for tc in tool_calls:
+            for tc, result in zip(tool_calls, results):
                 tool_name = tc.get("name", "")
-                result = await self._execute_tool(tc)
                 tool_msgs.append({"name": tool_name, "content": result})
                 if tool_name:
                     key = f"tool_count__{tool_name}"

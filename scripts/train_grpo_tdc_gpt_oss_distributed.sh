@@ -19,7 +19,8 @@
 set -euo pipefail
 export RAY_TMPDIR=/tmp/jojolee/ray
 export MALLOC_TRIM_THRESHOLD_=0
-export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
+export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=0
+export DS_SKIP_CUDA_CHECK=1
 
 ### PRIMARY KNOBS — change these two ###
 ACTOR_GPUS=${1:?"Usage: $0 <actor_gpus> <vllm_engines> [model_path] [learning_rate]"}
@@ -243,7 +244,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --actor_num_gpus_per_node $ACTOR_GPUS \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size $VLLM_TENSOR_PARALLEL_SIZE \
-    --vllm_gpu_memory_utilization 0.975 \
+    --vllm_gpu_memory_utilization 0.985 \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \
@@ -301,7 +302,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --use_dynamic_batch \
     --train_max_tokens_per_gpu 16384 \
     --adam_offload \
-    --attn_implementation eager \
     $AUTOTP_FLAGS \
     2>&1 | tee "$RUN_LOG"
 

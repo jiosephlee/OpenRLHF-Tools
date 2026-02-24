@@ -1,9 +1,9 @@
 #!/bin/bash
 #
-# SLURM batch version of the GPT-OSS GRPO training script (1 actor + 7 vLLM GPUs).
+# SLURM batch version of the GPT-OSS GRPO training script.
 #
 # Distributed (non-colocated) mode — Actor and vLLM run on separate GPU sets.
-# Single actor GPU (no tensor parallelism needed).
+# When ACTOR_GPUS > 1, DeepSpeed AutoTP is enabled automatically (TP=ACTOR_GPUS).
 #
 # Uses GPT-OSS Harmony tool-calling format:
 #   <|start|>assistant to=functions.<name><|channel|>commentary json<|message|>...
@@ -12,13 +12,14 @@
 #   sbatch scripts/train_grpo_tdc_gpt_oss_distributed_1av7_slurm.sh
 #
 # Override defaults via environment:
-#   PRETRAIN_PATH=... LEARNING_RATE=5e-7 sbatch scripts/train_grpo_tdc_gpt_oss_distributed_1av7_slurm.sh
+#   ACTOR_GPUS=1 VLLM_NUM_ENGINES=7 sbatch scripts/train_grpo_tdc_gpt_oss_distributed_1av7_slurm.sh
+#   ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 PRETRAIN_PATH=... sbatch scripts/train_grpo_tdc_gpt_oss_distributed_1av7_slurm.sh
 #
 
 ### SLURM PARAMETERS ###
-#SBATCH --job-name=grpo-tdc-gptoss-1av7
-#SBATCH --output=logs/grpo-tdc-gptoss-1av7_%j.out
-#SBATCH --error=logs/grpo-tdc-gptoss-1av7_%j.err
+#SBATCH --job-name=grpo-tdc-gptoss
+#SBATCH --output=logs/grpo-tdc-gptoss_%j.out
+#SBATCH --error=logs/grpo-tdc-gptoss_%j.err
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
 #SBATCH --gpus=8
@@ -38,6 +39,11 @@ export NCCL_IB_HCA=mlx5_15,mlx5_10,mlx5_14,mlx5_13,mlx5_8,mlx5_7,mlx5_9,mlx5_4
 export NCCL_SOCKET_IFNAME=bond0
 export UCX_TLS=rc
 
+# Diagnosis/stability
+export NCCL_ASYNC_ERROR_HANDLING=1
+export NCCL_BLOCKING_WAIT=1
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+
 ### BEGIN BATCH SCRIPT ###
 module load MAMBA
 module load cuda/13.1.0
@@ -49,12 +55,41 @@ export ENV_NAME="openrlhf_tfv4"
 run_task() {
     set -euo pipefail
     export MALLOC_TRIM_THRESHOLD_=0
+    export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=0
+    export DS_SKIP_CUDA_CHECK=1
 
     ### ARGS (override via env before sbatch) ###
     PRETRAIN_PATH="${PRETRAIN_PATH:-openai/gpt-oss-20b}"
     LEARNING_RATE="${LEARNING_RATE:-1e-6}"
     DEBUG_TRACES="${DEBUG_TRACES:-0}"
     NUM_GPUS=$SLURM_GPUS_ON_NODE
+
+    ### PRIMARY KNOBS ###
+    ACTOR_GPUS="${ACTOR_GPUS:-1}"
+    VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-7}"
+
+    ### DERIVED GPU LAYOUT ###
+    VLLM_GPUS=$VLLM_NUM_ENGINES
+    VLLM_TENSOR_PARALLEL_SIZE=1
+    TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-16}"
+    ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-4}"
+    LAYOUT_TAG="${ACTOR_GPUS}a${VLLM_GPUS}v"
+
+    ### AUTOTP CONFIG (enabled when ACTOR_GPUS > 1) ###
+    RING_ATTN_SIZE=1
+    RING_HEAD_STRIDE=8
+    if [ "$ACTOR_GPUS" -gt 1 ]; then
+        DS_TP_SIZE=$ACTOR_GPUS
+    else
+        DS_TP_SIZE=1
+    fi
+
+    ### GPU CHECK ###
+    MIN_GPUS=$((ACTOR_GPUS + VLLM_GPUS))
+    if [ "$NUM_GPUS" -lt "$MIN_GPUS" ]; then
+        echo "Error: Need at least $MIN_GPUS GPUs ($ACTOR_GPUS actor + $VLLM_GPUS vLLM), got $NUM_GPUS" >&2
+        exit 1
+    fi
 
     ### MULTI-TASK ###
     TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
@@ -102,25 +137,11 @@ run_task() {
     RUN_ID="${RUN_NAME}"
     # HF repo name excludes GPU layout so the same model name works across configs
     HUB_NAME="grpo-tdc-gptoss-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
+    DATE_STAMP=$(date +%Y%m%d)
+    RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}/${DATE_STAMP}"
+    mkdir -p "$RUNS_DIR"
     SAVE_PATH="$PROJECT_ROOT/saves/tdc/$RUN_NAME"
     HUB_REPO_ID="jiosephlee/${HUB_NAME}"
-
-    ### PRIMARY KNOBS ###
-    ACTOR_GPUS="${ACTOR_GPUS:-1}"
-    VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-7}"
-
-    ### DERIVED GPU LAYOUT ###
-    VLLM_GPUS=$VLLM_NUM_ENGINES
-    VLLM_TENSOR_PARALLEL_SIZE=1
-    TRAIN_BATCH_SIZE=32
-    ROLLOUT_BATCH_SIZE=$TRAIN_BATCH_SIZE
-    LAYOUT_TAG="${ACTOR_GPUS}a${VLLM_GPUS}v"
-
-    MIN_GPUS=$((ACTOR_GPUS + VLLM_GPUS))
-    if [ "$NUM_GPUS" -lt "$MIN_GPUS" ]; then
-        echo "Error: Need at least $MIN_GPUS GPUs ($ACTOR_GPUS actor + $VLLM_GPUS vLLM), got $NUM_GPUS" >&2
-        exit 1
-    fi
 
     ### TOOL-CALLING CONFIG ###
     AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
@@ -132,6 +153,9 @@ run_task() {
     ADVANTAGE_ESTIMATOR="group_norm"
     DYNAMIC_FILTERING=true
     DYNAMIC_FILTERING_REWARD_RANGE="0 1"
+    WARMUP_STEPS=20
+    # Correction multiplier: rollout * n_samples / train_batch (shell integer arithmetic)
+    WARM_STEPS_MULTIPLIER=$(python -c "print($ROLLOUT_BATCH_SIZE * $N_SAMPLES_PER_PROMPT / $TRAIN_BATCH_SIZE)")
 
     WANDB_PROJECT="${WANDB_PROJECT:-openrlhf_tdc_grpo}"
     TEMPERATURE=0.7
@@ -213,13 +237,20 @@ run_task() {
     echo "----------------------------------------"
     echo "NUM_GPUS: $NUM_GPUS  ACTOR: $ACTOR_GPUS  VLLM: $VLLM_GPUS"
     echo "TRAIN_BATCH_SIZE: $TRAIN_BATCH_SIZE"
+    echo "ROLLOUT_BATCH_SIZE: $ROLLOUT_BATCH_SIZE"
     echo "VLLM_NUM_ENGINES: $VLLM_NUM_ENGINES"
+    if [ "$DS_TP_SIZE" -gt 1 ]; then
+        echo "DS Tensor Parallel Size: $DS_TP_SIZE"
+        echo "Device Mesh: (dp=$((ACTOR_GPUS / RING_ATTN_SIZE / DS_TP_SIZE)), sp=$RING_ATTN_SIZE, tp=$DS_TP_SIZE)"
+    fi
     echo "----------------------------------------"
     echo "Agent Max Steps: $AGENT_MAX_STEPS"
     echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
     echo "Temperature: $TEMPERATURE"
     echo "Top-p: $TOP_P"
+    echo "Warmup Steps: $WARMUP_STEPS (multiplier: $WARM_STEPS_MULTIPLIER)"
     echo "----------------------------------------"
+    echo "Runs Dir: $RUNS_DIR"
     echo "W&B: project=$WANDB_PROJECT group=TDC-GPTOss-dist-${LAYOUT_TAG}-$TASK_LABEL run=$RUN_ID"
     echo "========================================"
 
@@ -242,7 +273,15 @@ with open('$EVAL_DATA', 'w') as out:
 print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples from {len(tasks)} tasks')
 " "${TASK_NAMES[@]}"
 
+    ### BUILD AUTOTP FLAGS ###
+    AUTOTP_FLAGS=""
+    if [ "$DS_TP_SIZE" -gt 1 ]; then
+        AUTOTP_FLAGS="--ring_attn_size $RING_ATTN_SIZE --ring_head_stride $RING_HEAD_STRIDE --ds_tensor_parallel_size $DS_TP_SIZE"
+    fi
+
     ### TRAINING ###
+    RUN_LOG="$RUNS_DIR/run.log"
+    echo "Logging to: $RUN_LOG"
     python -m openrlhf.cli.train_ppo_ray \
         --pretrain "$PRETRAIN_PATH" \
         --ref_num_nodes 0 \
@@ -253,7 +292,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --actor_num_gpus_per_node $ACTOR_GPUS \
         --vllm_num_engines $VLLM_NUM_ENGINES \
         --vllm_tensor_parallel_size $VLLM_TENSOR_PARALLEL_SIZE \
-        --vllm_gpu_memory_utilization 0.975 \
+        --vllm_gpu_memory_utilization 0.985 \
         --advantage_estimator $ADVANTAGE_ESTIMATOR \
         --init_kl_coef 0 \
         --kl_estimator k1 \
@@ -266,7 +305,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --micro_train_batch_size 1 \
         --micro_rollout_batch_size 2 \
         --train_batch_size $TRAIN_BATCH_SIZE \
-        --rollout_batch_size $TRAIN_BATCH_SIZE \
+        --rollout_batch_size $ROLLOUT_BATCH_SIZE \
         --max_epochs $MAX_EPOCHS \
         --num_episodes $MAX_EPOCHS \
         --prompt_max_len 12288 \
@@ -278,7 +317,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --actor_learning_rate $LEARNING_RATE \
         --prompt_data "$TRAIN_DATA" \
         --eval_dataset "$EVAL_DATA" \
-        --eval_steps 20 \
+        --eval_steps 64 \
         --eval_temperature $TEMPERATURE \
         --eval_n_samples_per_prompt 1 \
         --input_key messages \
@@ -288,7 +327,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --tool_version "$TOOL_VERSION" \
         --gradient_checkpointing \
         --packing_samples \
-        --vllm_sync_backend nccl \
+        --vllm_sync_backend gloo \
         --mxfp4_dequantize \
         --async_train \
         --async_queue_size 1 \
@@ -297,7 +336,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --temperature $TEMPERATURE \
         --agent_func_path "$AGENT_FUNC_PATH" \
         --agent_max_steps $AGENT_MAX_STEPS \
-        --vllm_stop_strings "<|end|>" \
+        --vllm_stop_strings "<|return|>" "<|call|>" \
         --chat_protocol "$CHAT_PROTOCOL" \
         --use_wandb 1 \
         --wandb_project "$WANDB_PROJECT" \
@@ -306,9 +345,15 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --save_path "$SAVE_PATH" \
         --push_to_hub "$HUB_REPO_ID" \
         --delete_local_after_push \
-        --use_dynamic_batch \
+        --constant_lr_with_warm_up \
+        --warmup_steps $WARMUP_STEPS \
+        --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
         --skip_eval_step_zero \
-        --constant_lr_with_warm_up
+        --use_dynamic_batch \
+        --train_max_tokens_per_gpu 16384 \
+        --adam_offload \
+        $AUTOTP_FLAGS \
+        2>&1 | tee "$RUN_LOG"
 
     ### CLEANUP ###
     echo "Training complete! Stopping Ray..."

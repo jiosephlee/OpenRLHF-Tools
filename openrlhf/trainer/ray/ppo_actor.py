@@ -508,10 +508,11 @@ class PolicyModelActor(BaseModelActor):
         steps_per_ppo_train = max(1, args.rollout_batch_size * args.n_samples_per_prompt // args.train_batch_size)
         total_scheduler_steps = max_steps * steps_per_ppo_train
 
-        raw_warmup = getattr(args, "smart_replay_warmup_steps", None)
+        warmup_multiplier = getattr(args, "warm_steps_multiplier_for_correction", steps_per_ppo_train)
+        raw_warmup = getattr(args, "warmup_steps", None)
         if raw_warmup:
-            # raw_warmup is in global-step (outer) units; convert to scheduler steps
-            num_warmup_steps = raw_warmup * steps_per_ppo_train
+            # warmup_steps is in global-step (outer) units; multiply by correction factor for scheduler steps
+            num_warmup_steps = int(raw_warmup * warmup_multiplier)
         else:
             num_warmup_steps = math.ceil(total_scheduler_steps * args.lr_warmup_ratio)
 
@@ -519,6 +520,7 @@ class PolicyModelActor(BaseModelActor):
             f"[Scheduler] lr_scheduler={args.lr_scheduler}, "
             f"outer_max_steps={max_steps}, steps_per_ppo_train={steps_per_ppo_train}, "
             f"total_scheduler_steps={total_scheduler_steps}, "
+            f"warm_steps_multiplier={warmup_multiplier}, "
             f"num_warmup_steps={num_warmup_steps} ({raw_warmup or num_warmup_steps // steps_per_ppo_train} global steps)"
         )
         actor_scheduler = get_scheduler(

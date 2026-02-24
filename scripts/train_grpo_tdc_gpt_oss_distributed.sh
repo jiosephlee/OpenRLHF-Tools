@@ -135,6 +135,9 @@ N_SAMPLES_PER_PROMPT=8
 ADVANTAGE_ESTIMATOR="group_norm"
 DYNAMIC_FILTERING=true
 DYNAMIC_FILTERING_REWARD_RANGE="0 1"
+WARMUP_STEPS=20
+# Correction multiplier: rollout * n_samples / train_batch
+WARM_STEPS_MULTIPLIER=$(python -c "print($ROLLOUT_BATCH_SIZE * $N_SAMPLES_PER_PROMPT / $TRAIN_BATCH_SIZE)")
 
 WANDB_PROJECT="${WANDB_PROJECT:-openrlhf_tdc_grpo}"
 TEMPERATURE=0.7
@@ -288,7 +291,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --temperature $TEMPERATURE \
     --agent_func_path "$AGENT_FUNC_PATH" \
     --agent_max_steps $AGENT_MAX_STEPS \
-    --vllm_stop_strings "<|end|>" \
+    --vllm_stop_strings "<|return|>" "<|call|>" \
     --chat_protocol "$CHAT_PROTOCOL" \
     --use_wandb 1 \
     --wandb_project "$WANDB_PROJECT" \
@@ -298,6 +301,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
     --constant_lr_with_warm_up \
+    --warmup_steps $WARMUP_STEPS \
+    --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
     --skip_eval_step_zero \
     --use_dynamic_batch \
     --train_max_tokens_per_gpu 16384 \

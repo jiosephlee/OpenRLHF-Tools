@@ -199,7 +199,7 @@ class CriticModelActor(BaseModelActor):
         )
 
         # configure scheduler
-        num_warmup_steps = getattr(args, "smart_replay_warmup_steps", None) or math.ceil(max_steps * args.lr_warmup_ratio)
+        num_warmup_steps = getattr(args, "warmup_steps", None) or math.ceil(max_steps * args.lr_warmup_ratio)
         critic_scheduler = get_scheduler(
             args.lr_scheduler,
             critic_optim,

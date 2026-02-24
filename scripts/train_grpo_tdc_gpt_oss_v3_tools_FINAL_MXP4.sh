@@ -233,7 +233,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --temperature $TEMPERATURE \
     --agent_func_path "$AGENT_FUNC_PATH" \
     --agent_max_steps $AGENT_MAX_STEPS \
-    --vllm_stop_strings "<|end|>" \
+    --vllm_stop_strings "<|return|>" "<|call|>" \
     --chat_protocol "$CHAT_PROTOCOL" \
     --use_wandb 1 \
     --wandb_project "$WANDB_PROJECT" \

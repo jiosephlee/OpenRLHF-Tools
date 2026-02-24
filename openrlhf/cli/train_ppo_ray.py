@@ -561,7 +561,12 @@ if __name__ == "__main__":
     parser.add_argument("--smart_replay", action="store_true", default=False,
                         help="After each episode, replay filtered prompts the model can still learn from")
     parser.add_argument("--constant_lr_with_warm_up", action="store_true", default=False,
-                        help="Force a constant LR with 20 steps linear warmup")
+                        help="Force a constant LR with linear warmup (see --warmup_steps)")
+    parser.add_argument("--warmup_steps", type=int, default=20,
+                        help="Number of global warmup steps for constant_lr_with_warm_up (default: 20)")
+    parser.add_argument("--warm_steps_multiplier_for_correction", type=float, default=None,
+                        help="Multiplier applied to warmup steps for scheduler correction. "
+                             "Default: rollout_batch_size * n_samples_per_prompt / train_batch_size")
     parser.add_argument("--max_replay_rounds", type=int, default=2,
                         help="Max replay rounds per episode (default: 2)")
     parser.add_argument("--curriculum_balanced", action="store_true", default=False,
@@ -667,12 +672,21 @@ if __name__ == "__main__":
 
     if args.smart_replay:
         assert args.dynamic_filtering, "--smart_replay requires --dynamic_filtering"
+        assert args.constant_lr_with_warm_up, (
+            "--smart_replay requires --constant_lr_with_warm_up because smart replay has variable step counts "
+            "and needs a constant LR schedule (with warmup) to remain stable"
+        )
 
-    if args.smart_replay or args.constant_lr_with_warm_up:
-        print("[SmartReplay/ConstantLR] Overriding LR scheduler to constant_with_warmup (warmup=20 steps)")
+    if args.constant_lr_with_warm_up:
+        print(f"[SmartReplay/ConstantLR] Overriding LR scheduler to constant_with_warmup (warmup={args.warmup_steps} steps)")
         args.lr_scheduler = "constant_with_warmup"
         args.lr_warmup_ratio = 0.0
-        args.smart_replay_warmup_steps = 20
+
+    # Default warm_steps_multiplier_for_correction = rollout_batch_size * n_samples_per_prompt / train_batch_size
+    if args.warm_steps_multiplier_for_correction is None:
+        args.warm_steps_multiplier_for_correction = (
+            args.rollout_batch_size * args.n_samples_per_prompt / args.train_batch_size
+        )
 
     assert (
         args.n_samples_per_prompt * args.rollout_batch_size // args.micro_rollout_batch_size

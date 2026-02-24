@@ -15,7 +15,7 @@
 #   bash scripts/train_grpo_tdc_gpt_oss_v3_tools_FINAL.sh openai/gpt-oss-20b 1e-6
 #
 
-export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
+export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=0
 set -euo pipefail
 export RAY_TMPDIR=/tmp/jojolee/ray
 export MALLOC_TRIM_THRESHOLD_=0

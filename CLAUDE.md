@@ -5,17 +5,19 @@
 This fork extends OpenRLHF with multi-turn tool-calling support for GRPO training, along with several infrastructure improvements: transformers v5 compatibility, multi-stage GPU dispatch, DeepSpeed OOM fixes, eval improvements, and TDC (Therapeutics Data Commons) dataset integration.
 
 **Key Features:**
-- Multi-turn agent-based rollouts with tool execution
+- Multi-turn agent-based rollouts with tool execution (including parallel tool calls)
 - Token-level masking (only LLM actions contribute to loss, observations excluded)
 - Clean abstraction layer (ToolCallingTurn + ChatProtocol)
-- Multiple chat protocol support: GLM Flash XML, Intern-S1, Qwen3
+- Multiple chat protocol support: GLM Flash XML, Intern-S1, Qwen3, GPT-OSS
 - Transformers v4/v5 backward compatibility
 - 3-stage deferred GPU dispatch for better load balancing
-- AutoTP OOM fix (free pre-sharded weights before DeepSpeed init)
+- AutoTP OOM fix and DeepSpeed ZeRO-2 CPU offload fix
+- Memory optimization with Liger kernels
 - NaN-safe masked operations (`torch.where` instead of `tensor * mask`)
 - Eval at step 0, macro-F1 for TDC, `eval/global_step` W&B axis
 - Checkpoint uploading to HF Hub
 - Rollout trace logging to `runs/<run_name>/<date>/traces/`
+- Unified bash scripting system and 1a1v lightweight distributed training
 
 ## Major Changes from Upstream OpenRLHF
 
@@ -68,6 +70,18 @@ New CLI args: `--push_to_hub`, `--push_to_hub_private`, `--delete_local_after_pu
 **File:** `openrlhf/trainer/ppo_utils/experience_maker.py`
 
 Saves one decoded rollout trace per step to `runs/<run_name>/<date>/traces/`. Annotates each record with prompt/action/observation sections decoded from token IDs using action ranges.
+
+### 9. Memory Optimization & ZeRO-2 Fixes
+- **Liger Kernels**: Experimental support to reduce vRAM OOM issues.
+- **DeepSpeed ZeRO-2**: Updated config to use ZeRO stage 2 with `adam_offload` to fix `CPUAdam` assertion errors, since stage 0 doesn't support parameters offloaded to CPU.
+
+### 10. Unified Bash Scripts & 1a1v Setup
+- Refactored shell scripts into a simplified unified bash staging system.
+- Added `1a1v` distributed training setup (1 actor + 1 vLLM) for a 2-GPU footprint, improving rapid iteration and debugging compared to full 1a3v multi-node sweeps.
+
+### 11. Parallel Tool Calls & GPT-OSS
+- Added support for executing parallel tool calls natively.
+- Full support and bug fixes for OpenAI/GPT-OSS schema parsing and generation formatting.
 
 ## Architecture
 
@@ -170,5 +184,5 @@ Debug flags:
 
 ---
 
-**Last Updated:** 2026-02-16
+**Last Updated:** 2026-02-24
 **Base Version:** OpenRLHF (latest main branch)

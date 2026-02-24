@@ -22,11 +22,11 @@
 #SBATCH --error=logs/grpo-tdc-gptoss_%j.err
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
-#SBATCH --gpus=8
+#SBATCH --gpus=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem-per-gpu=128G
-#SBATCH --cpus-per-gpu=4
-#SBATCH --time=00-18:00:00
+#SBATCH --cpus-per-gpu=8
+#SBATCH --time=00-1:00:00
 
 ### SCHEDULER PARAMETERS ###
 export OMP_NUM_THREADS=16
@@ -47,7 +47,7 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 ### BEGIN BATCH SCRIPT ###
 module load MAMBA
 module load cuda/13.1.0
-export ENV_NAME="openrlhf_tfv4"
+export ENV_NAME="open_rlhf_intern"
 
 ############################
 #        TASK SCRIPT       #

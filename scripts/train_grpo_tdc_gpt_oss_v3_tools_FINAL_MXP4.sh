@@ -16,7 +16,6 @@
 #
 
 export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=0
-export DS_SKIP_CUDA_CHECK=1
 set -euo pipefail
 export RAY_TMPDIR=/tmp/jojolee/ray
 export MALLOC_TRIM_THRESHOLD_=0
@@ -75,19 +74,9 @@ done
 IFS=,; TRAIN_DATA="${TRAIN_PARTS[*]}"; unset IFS
 
 ### RUN CONFIG ###
-N_TASKS=${#TASK_NAMES[@]}
-MAX_EPOCHS=1
-TOOL_VERSION="${TOOL_VERSION:-v3}"
-DATE_TAG=$(date +%m%d)
-LAYOUT_TAG="colo-mxp4"
-RUN_NAME="grpo-tdc-gptoss-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${LAYOUT_TAG}-${DATE_TAG}"
-RUN_ID="${RUN_NAME}"
-HUB_NAME="grpo-tdc-gptoss-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
-DATE_STAMP=$(date +%Y%m%d)
-RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}/${DATE_STAMP}"
-mkdir -p "$RUNS_DIR"
-SAVE_PATH="$PROJECT_ROOT/saves/tdc/$RUN_NAME"
-HUB_REPO_ID="jiosephlee/${HUB_NAME}"
+RUN_ID="S-grpo-fixed-debug-${TASK_LABEL}_$(date +%Y-%m-%d_%H-%M-%S)_lr${LEARNING_RATE}"
+SAVE_PATH="$PROJECT_ROOT/saves/tdc/${TASK_LABEL}/$RUN_ID"
+HUB_REPO_ID="jiosephlee/grpo-tdc-gpt-oss-${TASK_LABEL}"
 
 ### GPU LAYOUT (colocated — shared GPUs) ###
 TRAIN_BATCH_SIZE=32
@@ -166,11 +155,11 @@ echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
 echo "Temperature: $TEMPERATURE"
 echo "Top-p: $TOP_P"
 echo "----------------------------------------"
-echo "Runs Dir: $RUNS_DIR"
-echo "W&B: project=$WANDB_PROJECT group=TDC-GPTOss-${LAYOUT_TAG}-$TASK_LABEL run=$RUN_ID"
+echo "W&B: project=$WANDB_PROJECT group=TDC-GPTOss-fixed-$TASK_LABEL run=$RUN_ID"
 echo "========================================"
 
 ### GENERATE PER-TASK TOOLS JSON (from Intern-S1-recipe source of truth) ###
+TOOL_VERSION="${TOOL_VERSION:-v3}"
 TDC_TOOLS_JSON="$PROJECT_ROOT/data/tdc/metadata/tools_per_task_${TOOL_VERSION}.json"
 python "$PROJECT_ROOT/scripts/generate_tools_json.py" --version "$TOOL_VERSION"
 
@@ -220,7 +209,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --generate_max_len 2048 \
     --max_samples 1000000 \
     --enable_prefix_caching \
-    --zero_stage 2 \
+    --zero_stage 3 \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \
     --prompt_data "$TRAIN_DATA" \
@@ -248,7 +237,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --chat_protocol "$CHAT_PROTOCOL" \
     --use_wandb 1 \
     --wandb_project "$WANDB_PROJECT" \
-    --wandb_group "TDC-GPTOss-${LAYOUT_TAG}-$TASK_LABEL" \
+    --wandb_group "TDC-GPTOss-fixed-$TASK_LABEL" \
     --wandb_run_name "$RUN_ID" \
     --save_path "$SAVE_PATH" \
     --push_to_hub "$HUB_REPO_ID" \

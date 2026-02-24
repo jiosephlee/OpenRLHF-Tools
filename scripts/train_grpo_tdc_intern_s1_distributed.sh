@@ -31,11 +31,11 @@ DEBUG_TRACES=${5:-"0"}
 ### DERIVED GPU LAYOUT ###
 VLLM_GPUS=$VLLM_NUM_ENGINES
 VLLM_TENSOR_PARALLEL_SIZE=1
-NUM_GPUS=$((ACTOR_GPUS + VLLM_GPUS))
+NUM_GPUS=$SLURM_GPUS_ON_NODE
 
 # Batch sizes: scale train_batch_size with actor GPUs, keep rollout manageable
-TRAIN_BATCH_SIZE=$((16 / ACTOR_GPUS))
-ROLLOUT_BATCH_SIZE=$((TRAIN_BATCH_SIZE < 4 ? TRAIN_BATCH_SIZE : 4))
+TRAIN_BATCH_SIZE=16
+ROLLOUT_BATCH_SIZE=4
 
 # Layout tag used in run names and W&B
 LAYOUT_TAG="${ACTOR_GPUS}a${VLLM_GPUS}v"
@@ -289,7 +289,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --skip_eval_step_zero \
     --use_liger_kernel \
     --use_dynamic_batch \
-    --train_max_tokens_per_gpu 16384 \
+    --train_max_tokens_per_gpu 32768 \
     2>&1 | tee "$RUN_LOG"
 
 ### CLEANUP ###

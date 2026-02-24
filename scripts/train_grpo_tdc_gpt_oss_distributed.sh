@@ -19,6 +19,7 @@
 set -euo pipefail
 export RAY_TMPDIR=/tmp/jojolee/ray
 export MALLOC_TRIM_THRESHOLD_=0
+export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
 
 ### PRIMARY KNOBS — change these two ###
 ACTOR_GPUS=${1:?"Usage: $0 <actor_gpus> <vllm_engines> [model_path] [learning_rate]"}
@@ -33,8 +34,8 @@ NUM_GPUS=$SLURM_GPUS_ON_NODE
 ### DERIVED GPU LAYOUT ###
 VLLM_GPUS=$VLLM_NUM_ENGINES
 VLLM_TENSOR_PARALLEL_SIZE=1
-TRAIN_BATCH_SIZE=32
-ROLLOUT_BATCH_SIZE=$TRAIN_BATCH_SIZE
+TRAIN_BATCH_SIZE=16
+ROLLOUT_BATCH_SIZE=4
 
 # Layout tag used in run names and W&B
 LAYOUT_TAG="${ACTOR_GPUS}a${VLLM_GPUS}v"
@@ -60,18 +61,15 @@ if [ "$NUM_GPUS" -lt "$MIN_GPUS" ]; then
 fi
 
 ### NCCL / IB / NETWORK CONFIG ###
-unset NCCL_NVLS_ENABLE
-unset NCCL_IB_ADAPTIVE_ROUTING
-unset NCCL_IB_SL
-unset NCCL_IB_QPS_PER_CONNECTION
-unset NCCL_IB_SPLIT_DATA_ON_QPS
-unset UCX_TLS
-# Keep
-export NCCL_P2P_DISABLE=1
-export NCCL_IB_DISABLE=1
-export NCCL_DEBUG=INFO
+export OMP_NUM_THREADS=16
+export NCCL_NVLS_ENABLE=1
+export NCCL_IB_ADAPTIVE_ROUTING=1
+export NCCL_IB_SL=1
+export NCCL_IB_QPS_PER_CONNECTION=2
+export NCCL_IB_SPLIT_DATA_ON_QPS=0
+export NCCL_IB_HCA=mlx5_15,mlx5_10,mlx5_14,mlx5_13,mlx5_8,mlx5_7,mlx5_9,mlx5_4
 export NCCL_SOCKET_IFNAME=bond0
-export NCCL_IB_HCA=mlx5_4,mlx5_7,mlx5_8,mlx5_9,mlx5_10,mlx5_14,mlx5_15
+export UCX_TLS=rc
 
 # Add for diagnosis/stability
 export NCCL_ASYNC_ERROR_HANDLING=1
@@ -270,7 +268,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --actor_learning_rate $LEARNING_RATE \
     --prompt_data "$TRAIN_DATA" \
     --eval_dataset "$EVAL_DATA" \
-    --eval_steps 20 \
+    --eval_steps 64 \
     --eval_temperature $TEMPERATURE \
     --eval_n_samples_per_prompt 1 \
     --input_key messages \
@@ -302,6 +300,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --skip_eval_step_zero \
     --use_dynamic_batch \
     --train_max_tokens_per_gpu 16384 \
+    --adam_offload \
+    --attn_implementation eager \
     $AUTOTP_FLAGS \
     2>&1 | tee "$RUN_LOG"
 

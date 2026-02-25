@@ -106,6 +106,17 @@ class LLMRayActor:
             print(f"creating LLM with bundle_indices={bundle_indices}")
 
     def _configure_vllm_env(self, version, vllm, full_determinism: bool):
+        # Latest vLLM's CuMemAllocator is incompatible with expandable_segments.
+        # Strip it from the allocator config so vLLM can init its memory pool.
+        for alloc_var in ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_ALLOC_CONF"):
+            val = os.environ.get(alloc_var, "")
+            if "expandable_segments" in val:
+                parts = [p.strip() for p in val.split(",") if "expandable_segments" not in p]
+                if parts:
+                    os.environ[alloc_var] = ",".join(parts)
+                else:
+                    os.environ.pop(alloc_var, None)
+
         if version.parse(vllm.__version__) <= version.parse("0.8.5"):
             logger.warning("vLLM version %s may be older than 0.8.5; proceeding anyway (custom build assumed)", vllm.__version__)
 

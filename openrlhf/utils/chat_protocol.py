@@ -372,29 +372,80 @@ class GPTOSSProtocol(ChatProtocol):
                     self._assistant_header_ids + list(token_ids)
                 )
             except Exception as fallback_err:
-                ids_list = list(token_ids)
-                header_ids = self._assistant_header_ids
-                decoded_head = self.tokenizer.decode(ids_list[:30], skip_special_tokens=False)
-                decoded_header = self.tokenizer.decode(header_ids, skip_special_tokens=False)
-                logger.error(
-                    "GPT-OSS Harmony parse failed on BOTH paths.\n"
-                    "  primary_err: %s\n"
-                    "  fallback_err: %s\n"
-                    "  action_token_ids (first 30): %s\n"
-                    "  decoded action head: %r\n"
-                    "  _assistant_header_ids: %s\n"
-                    "  decoded header: %r\n"
-                    "  raw text (first 300): %r",
+                # Last resort: regex-based fallback on decoded special tokens.
+                logger.warning(
+                    "GPT-OSS Harmony token-ID parser failed on both paths "
+                    "(primary: %s | fallback: %s). Using regex fallback.",
                     primary_err, fallback_err,
-                    ids_list[:30],
-                    decoded_head,
-                    header_ids,
-                    decoded_header,
-                    text[:300],
                 )
-                raise fallback_err
+                return self._regex_fallback_parse(token_ids, text)
 
         return self._extract_from_parser(parser, text)
+
+    # ------------------------------------------------------------------
+    # Regex fallback parser
+    # ------------------------------------------------------------------
+
+    # Patterns for harmony special tokens rendered as text
+    _RE_TOOL_CALL = re.compile(
+        r'to=functions\.(\S+?)'           # recipient: functions.TOOL_NAME
+        r'(?:<\|channel\|>\w+)?'           # optional channel (json, commentary, …)
+        r'(?:\s*<\|constrain\|>\w+)?'      # optional constrain tag
+        r'<\|message\|>(.*?)'             # message body (args)
+        r'(?:<\|call\|>|<\|end\|>|$)',     # terminator
+        re.DOTALL,
+    )
+    _RE_FINAL = re.compile(
+        r'<\|channel\|>final<\|message\|>(.*?)(?:<\|end\|>|<\|return\|>|$)',
+        re.DOTALL,
+    )
+    _RE_COMMENTARY = re.compile(
+        r'<\|channel\|>(?:commentary|analysis)<\|message\|>(.*?)(?:<\|end\|>|<\|call\|>|<\|return\|>|$)',
+        re.DOTALL,
+    )
+
+    def _regex_fallback_parse(self, token_ids: List[int], raw_text: str) -> Dict[str, Any]:
+        """Regex-based fallback when the Harmony token-ID parser fails.
+
+        Decodes the full token stream (with special tokens visible) and
+        extracts tool calls / content via pattern matching on harmony markers.
+        """
+        full_text = self.tokenizer.decode(list(token_ids), skip_special_tokens=False)
+
+        tool_calls: List[Dict[str, Any]] = []
+        for m in self._RE_TOOL_CALL.finditer(full_text):
+            name = m.group(1)
+            args_text = m.group(2).strip()
+            try:
+                args: Any = json.loads(args_text)
+            except json.JSONDecodeError:
+                args = args_text
+            # Unwrap double-encoded JSON strings
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except (json.JSONDecodeError, TypeError):
+                    args = {"raw": args}
+            if not isinstance(args, dict):
+                args = {"raw": args}
+            tool_calls.append({"name": name, "arguments": args})
+
+        final_content = None
+        fm = self._RE_FINAL.search(full_text)
+        if fm:
+            final_content = fm.group(1).strip()
+
+        commentary_content = None
+        for cm in self._RE_COMMENTARY.finditer(full_text):
+            # Skip matches that are part of a tool call (preceded by to=functions.)
+            preceding = full_text[max(0, cm.start() - 120):cm.start()]
+            if "to=functions." not in preceding:
+                commentary_content = cm.group(1).strip()
+
+        return {
+            "content": final_content or commentary_content or raw_text,
+            "tool_calls": tool_calls,
+        }
 
     def _extract_from_parser(self, parser, raw_text: str) -> Dict[str, Any]:
         """Extract tool calls / content from a parsed Harmony message.

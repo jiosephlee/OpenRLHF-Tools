@@ -61,9 +61,9 @@ export NCCL_BLOCKING_WAIT=1
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
 ### BEGIN BATCH SCRIPT ###
-module load cuda/13.1.0
 module load MAMBA
-export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/openrlhf_tfv4"
+module load cuda/12.8.1
+export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/openrlhf"
 
 ############################
 #        TASK SCRIPT       #

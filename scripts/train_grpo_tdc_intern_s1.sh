@@ -29,6 +29,7 @@
 
 set -euo pipefail
 export MALLOC_TRIM_THRESHOLD_=0
+module load cuda/12.8.1
 
 ### ARGS ###
 PRETRAIN_PATH=${1:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}

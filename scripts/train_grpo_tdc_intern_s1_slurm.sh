@@ -131,9 +131,9 @@ run_task() {
         LAYOUT_TAG="${ACTOR_GPUS}a${VLLM_GPUS}v"
     fi
 
-    ### AUTOTP (when ACTOR_GPUS > 1) ###
+    ### AUTOTP (when distributed and ACTOR_GPUS > 1) ###
     AUTOTP_FLAGS=""
-    if [ "$ACTOR_GPUS" -gt 1 ]; then
+    if [ "$MODE" = "distributed" ] && [ "$ACTOR_GPUS" -gt 1 ]; then
         AUTOTP_FLAGS="--ring_attn_size 1 --ring_head_stride 8 --ds_tensor_parallel_size $ACTOR_GPUS"
     fi
 
@@ -202,8 +202,7 @@ run_task() {
     fi
     RUN_ID="${RUN_NAME}"
     HUB_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
-    DATE_STAMP=$(date +%Y%m%d)
-    RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}/${DATE_STAMP}"
+    RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}"
     mkdir -p "$RUNS_DIR"
     SAVE_PATH="$PROJECT_ROOT/saves/tdc/$RUN_NAME"
     HUB_REPO_ID="jiosephlee/${HUB_NAME}"

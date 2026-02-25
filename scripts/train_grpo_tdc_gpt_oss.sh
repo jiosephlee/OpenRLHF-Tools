@@ -27,6 +27,7 @@
 #   EXTRA_ARGS="..."             # Additional CLI flags
 #
 module load cuda/13.1.0 # running into issues with gpt-oss with cuda 12.8.1
+eval "$(conda shell.bash hook)"
 conda activate /vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern # This conda env uses torch 2.9.1, and the corresponding flash-attn for cuda 13.1.0, but torch is compiled for cuda 12.8... torch doesn't have pip wheels for 13.1.0 yet; no problems with this for now except for Adam_offload.
 set -euo pipefail
 export MALLOC_TRIM_THRESHOLD_=0
@@ -44,7 +45,7 @@ MODE="${MODE:-colocated}"
 TOOL_VERSION="${TOOL_VERSION:-v3}"
 SMART_REPLAY="${SMART_REPLAY:-0}"
 CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
-MAX_EPOCHS="${MAX_EPOCHS:-2}"
+MAX_EPOCHS="${MAX_EPOCHS:-1}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 ### UNIFIED CONSTANTS ###
@@ -105,9 +106,9 @@ if [ "$MODE" = "distributed" ]; then
     LAYOUT_TAG="${ACTOR_GPUS}a${VLLM_GPUS}v"
 fi
 
-### AUTOTP (when ACTOR_GPUS > 1) ###
+### AUTOTP (when distributed and ACTOR_GPUS > 1) ###
 AUTOTP_FLAGS=""
-if [ "$ACTOR_GPUS" -gt 1 ]; then
+if [ "$MODE" = "distributed" ] && [ "$ACTOR_GPUS" -gt 1 ]; then
     AUTOTP_FLAGS="--ring_attn_size 1 --ring_head_stride 8 --ds_tensor_parallel_size $ACTOR_GPUS"
 fi
 
@@ -120,7 +121,7 @@ fi
 
 ### WARMUP LOGIC (gpt_oss always) ###
 WARMUP_STEPS=20
-WARM_STEPS_MULTIPLIER=$(python -c "print($ROLLOUT_BATCH_SIZE * $N_SAMPLES_PER_PROMPT / $TRAIN_BATCH_SIZE)"); # This is the multipler to account for mini-gradient steps; currently it should always amount to 8 regardless of mode.
+WARM_STEPS_MULTIPLIER=$(python -c "print($ROLLOUT_BATCH_SIZE * $N_SAMPLES_PER_PROMPT // $TRAIN_BATCH_SIZE)"); # This is the multipler to account for mini-gradient steps; currently it should always amount to 8 regardless of mode.
 if [ "$WARM_STEPS_MULTIPLIER" -ne 8 ]; then
     echo "Error: WARM_STEPS_MULTIPLIER should amount to 8 currently regardless of mode." >&2
     exit 1
@@ -190,8 +191,7 @@ else
 fi
 RUN_ID="${RUN_NAME}"
 HUB_NAME="grpo-tdc-gptoss-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
-DATE_STAMP=$(date +%Y%m%d)
-RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}/${DATE_STAMP}"
+RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}"
 mkdir -p "$RUNS_DIR"
 SAVE_PATH="$PROJECT_ROOT/saves/tdc/$RUN_NAME"
 HUB_REPO_ID="jiosephlee/${HUB_NAME}"
@@ -211,6 +211,9 @@ TOP_P=0.95
 ### ENVIRONMENT VARIABLES ###
 export RAY_TMPDIR="${RAY_TMPDIR:-/tmp/ray_${USER}}"
 mkdir -p "$RAY_TMPDIR"
+
+export TRITON_CACHE_DIR="/tmp/triton_${USER}"
+mkdir -p "$TRITON_CACHE_DIR"
 
 export VLLM_NO_USAGE_STATS=1
 export VLLM_DISABLE_TELEMETRY=1

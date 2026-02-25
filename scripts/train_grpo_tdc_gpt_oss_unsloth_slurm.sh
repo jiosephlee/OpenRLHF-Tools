@@ -1,27 +1,18 @@
 #!/bin/bash
 #
-# SLURM batch version of the Intern-S1 GRPO training script.
+# SLURM batch version of the GPT-OSS Unsloth BF16 GRPO training script.
 #
 # Supports both colocated and distributed modes via MODE env var.
 #
-# Uses the Intern-S1 JSON tool-calling format:
-#   <|action_start|><|plugin|>{"name": "...", "parameters": {...}}<|action_end|>
+# Uses GPT-OSS Harmony tool-calling format:
+#   <|start|>assistant to=functions.<name><|channel|>commentary json<|message|>...
 #
 # Usage:
 #   # Colocated (default):
-#   sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
-#   
+#   sbatch scripts/train_grpo_tdc_gpt_oss_unsloth_slurm.sh
+#
 #   # Distributed:
-#   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
-#
-# With smart replay:
-#   SMART_REPLAY=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
-#
-# With curriculum balanced:
-#   CURRICULUM_BALANCED=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
-#
-# With both:
-#   SMART_REPLAY=1 CURRICULUM_BALANCED=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
+#   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 sbatch scripts/train_grpo_tdc_gpt_oss_unsloth_slurm.sh
 #
 # Feature flags (set via env before sbatch):
 #   MODE=colocated|distributed   # Default: colocated
@@ -33,18 +24,17 @@
 #
 
 ### SLURM PARAMETERS ###
-#SBATCH --job-name=grpo-tdc-s1
-#SBATCH --output=logs/grpo-tdc-s1_%j.out
-#SBATCH --error=logs/grpo-tdc-s1_%j.err
+#SBATCH --job-name=grpo-tdc-gptoss-unsloth
+#SBATCH --output=logs/grpo-tdc-gptoss-unsloth_%j.out
+#SBATCH --error=logs/grpo-tdc-gptoss-unsloth_%j.err
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
 #SBATCH --qos=normal
-#SBATCH --gpus=8
+#SBATCH --gpus=4
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem-per-gpu=128G
-#SBATCH --cpus-per-gpu=8
-#SBATCH --time=01-12:00:00
-#SBATCH --account=myatskar-lab
+#SBATCH --mem-per-gpu=256G
+#SBATCH --cpus-per-gpu=16
+#SBATCH --time=00-06:00:00
 
 ### PARCC PARAMETERS ###
 export OMP_NUM_THREADS=16
@@ -62,7 +52,7 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
 ### BEGIN BATCH SCRIPT ###
 module load cuda/13.1.0
-export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/openrlhf_tfv4"
+export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern"
 
 ############################
 #        TASK SCRIPT       #
@@ -70,9 +60,10 @@ export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/openrl
 run_task() {
     set -euo pipefail
     export MALLOC_TRIM_THRESHOLD_=0
+    export DS_SKIP_CUDA_CHECK=1
 
     ### ARGS (override via env before sbatch) ###
-    PRETRAIN_PATH="${PRETRAIN_PATH:-jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05}"
+    PRETRAIN_PATH="${PRETRAIN_PATH:-unsloth/gpt-oss-20b-BF16}"
     LEARNING_RATE="${LEARNING_RATE:-1e-6}"
     DEBUG_TRACES="${DEBUG_TRACES:-0}"
     NUM_GPUS=$SLURM_GPUS_ON_NODE
@@ -90,8 +81,6 @@ run_task() {
     ZERO_STAGE=2
     PROMPT_MAX_LEN=12288 # Any responses longer than this will be truncated.
     N_SAMPLES_PER_PROMPT=8
-    TRAIN_MAX_TOKENS_PER_GPU=32768 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
-    ROLLOUT_MAX_TOKENS_PER_GPU=$((TRAIN_MAX_TOKENS_PER_GPU*3)) # Rollout max tokens per gpu is set to twice the train max tokens per gpu; safe estimate for memory usage during forwards pass.
 
     ### MODE-DEPENDENT DEFAULTS ###
     if [ "$MODE" = "colocated" ]; then
@@ -99,11 +88,14 @@ run_task() {
         VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
         ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-32}" # This decides how many prompts are used for each rollout.
         MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-8}" # This decides how many mini gradient updates are used per rollout; Rollout_batch_size * N_samples_per_prompt / Mini_gradient_steps = number of trajectories used for each gradient update.
-        MICRO_TRAIN_BATCH_SIZE=4 # The larger the micro_train_batch_size, the more memory and less gradient accumulation steps for backwards pass.
-        MICRO_ROLLOUT_BATCH_SIZE=8 # ^ but for forwards pass. These two parameters are overridden, however, by default since we use dynamic batching.
-        VLLM_GPU_MEM_UTIL=0.8515
+        MICRO_TRAIN_BATCH_SIZE=1 # The larger the micro_train_batch_size, the more memory and less gradient accumulation steps for backwards pass.
+        MICRO_ROLLOUT_BATCH_SIZE=2 # ^ but for forwards pass. These two parameters are overridden, however, by default since we use dynamic batching.
+        VLLM_GPU_MEM_UTIL=0.7
         VLLM_SYNC_BACKEND=nccl
         EVAL_STEPS="${EVAL_STEPS:-32}"
+        TRAIN_MAX_TOKENS_PER_GPU=4096 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
+        ROLLOUT_MAX_TOKENS_PER_GPU=$((TRAIN_MAX_TOKENS_PER_GPU*3)) # Rollout max tokens per gpu is set to twice the train max tokens per gpu; safe estimate for memory usage during forwards pass.
+
     elif [ "$MODE" = "distributed" ]; then
         ACTOR_GPUS="${ACTOR_GPUS:?"MODE=distributed requires ACTOR_GPUS"}"
         VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:?"MODE=distributed requires VLLM_NUM_ENGINES"}"
@@ -111,10 +103,12 @@ run_task() {
         MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-2}" # Decreasing rollout batch size 4x but we decrease # of mini-gradient steps by 4x -> same number of gradient steps in total as colocated.
         MICRO_TRAIN_BATCH_SIZE=1
         MICRO_ROLLOUT_BATCH_SIZE=2
-        VLLM_GPU_MEM_UTIL=0.975
+        VLLM_GPU_MEM_UTIL=0.96
         VLLM_SYNC_BACKEND=gloo
-        COLO_ROLLOUT=32; COLO_EVAL=32
+        COLO_ROLLOUT=32; COLO_EVAL=32 #
         EVAL_STEPS="${EVAL_STEPS:-$(( COLO_EVAL * COLO_ROLLOUT / ROLLOUT_BATCH_SIZE ))}" # To match the evaluation frequency of the colocated mode.
+        TRAIN_MAX_TOKENS_PER_GPU=12288
+        ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 4.5" | bc | awk '{print int($1)}')
     else
         echo "Error: MODE must be 'colocated' or 'distributed', got '$MODE'" >&2
         exit 1
@@ -148,12 +142,12 @@ run_task() {
 
     ### MODE FLAGS ###
     if [ "$MODE" = "colocated" ]; then
-        MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep"
+        MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep --adam_offload" #gpt-oss always needs adam_offload as it can't fit on 8 GPUs with colocated mode otherwise.
     else
         MODE_FLAGS="--async_train --async_queue_size 1 --adam_offload"
     fi
 
-    ### WARMUP LOGIC ###
+    ### WARMUP LOGIC (gpt_oss always) ###
     WARMUP_STEPS=20
     WARM_STEPS_MULTIPLIER=$(( MINI_GRADIENT_STEPS * COLO_ROLLOUT / ROLLOUT_BATCH_SIZE ))
     if [ "$WARM_STEPS_MULTIPLIER" -ne 8 ]; then
@@ -201,16 +195,16 @@ run_task() {
     ### RUN CONFIG ###
     N_TASKS=${#TASK_NAMES[@]}
     DATE_TAG=$(date +%m%d_%H%M)
-    CHAT_PROTOCOL="intern_s1"
+    CHAT_PROTOCOL="gpt_oss"
     if [ "$MODE" = "colocated" ]; then
-        RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
-        WANDB_GROUP="TDC-InternS1-colo-$TASK_LABEL"
+        RUN_NAME="grpo-tdc-gptoss-unsloth-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-colo-${DATE_TAG}"
+        WANDB_GROUP="TDC-GPTOss-Unsloth-colo-$TASK_LABEL"
     else
-        RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-dist-${LAYOUT_TAG}-${DATE_TAG}"
-        WANDB_GROUP="TDC-InternS1-dist-${LAYOUT_TAG}-$TASK_LABEL"
+        RUN_NAME="grpo-tdc-gptoss-unsloth-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-dist-${LAYOUT_TAG}-${DATE_TAG}"
+        WANDB_GROUP="TDC-GPTOss-Unsloth-dist-${LAYOUT_TAG}-$TASK_LABEL"
     fi
     RUN_ID="${RUN_NAME}"
-    HUB_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
+    HUB_NAME="grpo-tdc-gptoss-unsloth-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
     RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}"
     mkdir -p "$RUNS_DIR"
     SAVE_PATH="$PROJECT_ROOT/saves/tdc/$RUN_NAME"
@@ -293,7 +287,7 @@ run_task() {
 
     ### PRINT CONFIG ###
     echo "========================================"
-    echo "TDC GRPO Training — Intern-S1-mini (MODE=$MODE, SLURM BATCH)"
+    echo "TDC GRPO Training — GPT-OSS Unsloth BF16 (MODE=$MODE, SLURM BATCH)"
     echo "========================================"
     echo "SLURM Job ID: $SLURM_JOB_ID"
     echo "Tasks: ${TASK_NAMES[*]}"
@@ -415,7 +409,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --temperature $TEMPERATURE \
         --agent_func_path "$AGENT_FUNC_PATH" \
         --agent_max_steps $AGENT_MAX_STEPS \
-        --vllm_stop_strings "<|action_end|>" "<|im_end|>" \
+        --vllm_stop_strings "<|return|>" "<|call|>" \
         --chat_protocol "$CHAT_PROTOCOL" \
         --use_wandb 1 \
         --wandb_project "$WANDB_PROJECT" \
@@ -424,7 +418,6 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --save_path "$SAVE_PATH" \
         --push_to_hub "$HUB_REPO_ID" \
         --delete_local_after_push \
-        --use_liger_kernel \
         --use_dynamic_batch \
         --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
         --constant_lr_with_warm_up \

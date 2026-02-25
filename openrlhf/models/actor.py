@@ -117,6 +117,29 @@ class Actor(nn.Module):
                 device_map=device_map,
             )
 
+            # Verify dequantization worked — log param dtypes and requires_grad
+            if mxfp4_dequantize:
+                dtypes = {}
+                non_trainable = []
+                for name, p in self.model.named_parameters():
+                    dt = str(p.dtype)
+                    dtypes[dt] = dtypes.get(dt, 0) + 1
+                    if not p.requires_grad:
+                        non_trainable.append(name)
+                logger.info(f"[mxfp4_dequantize] Parameter dtype distribution: {dtypes}")
+                if non_trainable:
+                    logger.warning(
+                        f"[mxfp4_dequantize] {len(non_trainable)} params have requires_grad=False! "
+                        f"First 5: {non_trainable[:5]}"
+                    )
+                else:
+                    logger.info("[mxfp4_dequantize] All parameters are trainable (requires_grad=True)")
+                # Check if model still thinks it's quantized
+                if hasattr(self.model, "is_quantized"):
+                    logger.info(f"[mxfp4_dequantize] model.is_quantized = {self.model.is_quantized}")
+                if hasattr(self.model.config, "quantization_config"):
+                    logger.info(f"[mxfp4_dequantize] model.config.quantization_config = {self.model.config.quantization_config}")
+
             # LoRA
             if lora_rank > 0:
                 # https://github.com/huggingface/peft/issues/137

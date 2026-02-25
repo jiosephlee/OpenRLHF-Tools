@@ -224,6 +224,24 @@ class DeepspeedStrategy(ABC):
         is_actor = isinstance(model, Actor)
         ds_config = self.get_ds_train_config(is_actor)
 
+        # Log pre-DeepSpeed model state for dequantization debugging
+        raw_model = model.model if is_actor else model
+        dtypes_before = {}
+        grad_counts = {"trainable": 0, "frozen": 0}
+        for name, p in raw_model.named_parameters():
+            dt = str(p.dtype)
+            dtypes_before[dt] = dtypes_before.get(dt, 0) + 1
+            if p.requires_grad:
+                grad_counts["trainable"] += 1
+            else:
+                grad_counts["frozen"] += 1
+        self.print(f"[ds_init] Pre-DeepSpeed dtype distribution: {dtypes_before}")
+        self.print(f"[ds_init] Pre-DeepSpeed grad counts: {grad_counts}")
+        if hasattr(raw_model, "is_quantized"):
+            self.print(f"[ds_init] model.is_quantized = {raw_model.is_quantized}")
+        if hasattr(raw_model.config, "quantization_config"):
+            self.print(f"[ds_init] model.config.quantization_config = {raw_model.config.quantization_config}")
+
         if self.ds_tensor_parallel_size > 1:
             tp_model = deepspeed.tp_model_init(
                 model=model.model if is_actor else model, tp_size=self.ds_tensor_parallel_size, dtype=torch.bfloat16
@@ -260,6 +278,30 @@ class DeepspeedStrategy(ABC):
             args={"local_rank": int(os.environ.get("LOCAL_RANK", "-1"))},
             dist_init_required=True,
         )
+
+        # Log post-DeepSpeed engine state
+        dtypes_after = {}
+        grad_counts_after = {"trainable": 0, "frozen": 0}
+        for name, p in engine.named_parameters():
+            dt = str(p.dtype)
+            dtypes_after[dt] = dtypes_after.get(dt, 0) + 1
+            if p.requires_grad:
+                grad_counts_after["trainable"] += 1
+            else:
+                grad_counts_after["frozen"] += 1
+        self.print(f"[ds_init] Post-DeepSpeed dtype distribution: {dtypes_after}")
+        self.print(f"[ds_init] Post-DeepSpeed grad counts: {grad_counts_after}")
+        # Check if optimizer actually has param groups with the right dtypes
+        if optim is not None:
+            optim_dtypes = {}
+            total_optim_params = 0
+            for pg in optim.param_groups:
+                for p in pg["params"]:
+                    dt = str(p.dtype)
+                    optim_dtypes[dt] = optim_dtypes.get(dt, 0) + 1
+                    total_optim_params += 1
+            self.print(f"[ds_init] Optimizer param dtypes: {optim_dtypes} (total: {total_optim_params})")
+
         if self.deepcompile:
             engine.compile()
         if is_actor:

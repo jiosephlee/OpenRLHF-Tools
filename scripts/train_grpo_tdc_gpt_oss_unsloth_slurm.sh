@@ -59,6 +59,11 @@ set -euo pipefail
 export MALLOC_TRIM_THRESHOLD_=0
 export DS_SKIP_CUDA_CHECK=1
 
+# Clear potentially corrupted torch inductor cache
+export TORCHINDUCTOR_CACHE_DIR="/tmp/torchinductor_${USER}"
+rm -rf "$TORCHINDUCTOR_CACHE_DIR" 2>/dev/null || true
+mkdir -p "$TORCHINDUCTOR_CACHE_DIR"
+
 ### ARGS (override via env before sbatch) ###
 PRETRAIN_PATH="${PRETRAIN_PATH:-unsloth/gpt-oss-20b-BF16}"
 LEARNING_RATE="${LEARNING_RATE:-1e-6}"

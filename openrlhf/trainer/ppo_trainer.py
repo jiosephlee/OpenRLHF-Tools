@@ -741,6 +741,12 @@ class PPOTrainer(BasePPOTrainer):
                 }) + "\n")
 
         logger.info(f"[DataloaderLog] Wrote {n} sample summary to {log_path}")
+        
+        if n > 0:
+            sample_prompt_path = os.path.join(log_dir, "sample0_prompt.txt")
+            with open(sample_prompt_path, "w", encoding="utf-8") as f:
+                f.write(all_samples[0][1])
+            logger.info(f"[DataloaderLog] Wrote full system prompt of sample 0 to {sample_prompt_path}")
 
     def fit(self) -> None:
         checkpoint_states = self.init_checkpoint_states()

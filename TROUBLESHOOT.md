@@ -36,3 +36,19 @@
 
 **Note:** Environment variables like `VLLM_CUDAGRAPH_CAPTURE_SIZES` are **not recognized** by all vLLM builds. Use the `--reduce_cuda_graph` CLI flag instead, which passes a `CompilationConfig` directly through the Python API.
 
+## FlashInfer JIT Cache Errors (`libcudart.so` / `Sparsity` / Ninja Build Failed)
+**Symptoms:**
+- `RuntimeError: Failed to load dynamic shared library .../fp4_quantization_100.so libcudart.so.13: cannot open shared object file`
+- `namespace "batchedGemm::trtllm::gen" has no member "Sparsity"` (100 compilation errors)
+- Ninja build commands referencing the **wrong conda env** (e.g., `open_rlhf_intern` paths when you activated `openrlhf`)
+
+**Root Cause:**
+- FlashInfer JIT-compiles CUDA kernels on first use and caches them under `~/.cache/flashinfer/`. The cached `.so` files and `build.ninja` scripts bake in the CUDA version and conda env paths from the session that originally compiled them.
+- Switching CUDA versions (e.g., 12.8 → 13.1) or conda environments makes the cache stale — shared libraries link against the wrong `libcudart`, and build files reference non-existent include paths.
+- Cubin header mismatches (like missing `Sparsity`) indicate the downloaded cubins are incompatible with the installed FlashInfer version.
+
+**Solution:**
+```bash
+rm -rf ~/.cache/flashinfer/
+```
+Then re-run. FlashInfer will re-download cubins and JIT-recompile kernels against the currently loaded CUDA and active conda env.

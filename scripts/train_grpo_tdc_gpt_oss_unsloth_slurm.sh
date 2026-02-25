@@ -59,10 +59,11 @@ set -euo pipefail
 export MALLOC_TRIM_THRESHOLD_=0
 export DS_SKIP_CUDA_CHECK=1 # This disables the CUDA check that causes deepspeed exception
 
-# Prevent corrupted torch inductor cache from crashing vLLM compilation.
-# FX_GRAPH_CACHE=0 avoids loading stale/corrupt cached compiled artifacts.
-export TORCHINDUCTOR_FX_GRAPH_CACHE=0
-rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ 2>/dev/null || true
+# Disable all torch inductor caching. Works around a known vLLM + PyTorch bug
+# where standalone_compile.py asserts aot_autograd_artifacts has exactly 1 entry
+# but gets 0 for this model architecture (assertion fires during the save step).
+# Ref: https://docs.pytorch.org/tutorials/recipes/torch_compile_caching_configuration_tutorial.html
+export TORCHINDUCTOR_FORCE_DISABLE_CACHES=1
 
 ### ARGS (override via env before sbatch) ###
 PRETRAIN_PATH="${PRETRAIN_PATH:-unsloth/gpt-oss-20b-BF16}"

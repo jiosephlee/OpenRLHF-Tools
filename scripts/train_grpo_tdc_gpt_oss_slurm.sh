@@ -32,7 +32,7 @@
 #SBATCH --qos=normal
 #SBATCH --gpus=2
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=512G
+#SBATCH --mem=768G
 #SBATCH --cpus-per-gpu=8
 #SBATCH --time=00-1:00:00
 
@@ -88,7 +88,7 @@ if [ "$MODE" = "colocated" ]; then
     MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-8}" # This decides how many mini gradient updates are used per rollout; Rollout_batch_size * N_samples_per_prompt / Mini_gradient_steps = number of trajectories used for each gradient update.
     MICRO_TRAIN_BATCH_SIZE=1 # The larger the micro_train_batch_size, the more memory and less gradient accumulation steps for backwards pass.
     MICRO_ROLLOUT_BATCH_SIZE=2 # ^ but for forwards pass. These two parameters are overridden, however, by default since we use dynamic batching.
-    VLLM_GPU_MEM_UTIL=0.4
+    VLLM_GPU_MEM_UTIL=0.2
     VLLM_SYNC_BACKEND=nccl
     EVAL_STEPS="${EVAL_STEPS:-32}"
     TRAIN_MAX_TOKENS_PER_GPU=6144 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
@@ -253,7 +253,6 @@ export TRITON_CACHE_DIR="/tmp/triton_${USER}"
 mkdir -p "$TRITON_CACHE_DIR"
 
 export VLLM_NO_USAGE_STATS=1
-export VLLM_DISABLE_TELEMETRY=1
 
 export OPENRLHF_MODEL_PATH="$PRETRAIN_PATH"
 export OPENRLHF_CHAT_PROTOCOL="$CHAT_PROTOCOL"

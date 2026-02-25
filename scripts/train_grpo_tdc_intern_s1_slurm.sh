@@ -258,6 +258,9 @@ run_task() {
     trap copy_ray_logs EXIT
 
     ### ENVIRONMENT VARIABLES ###
+    export TRITON_CACHE_DIR="/tmp/triton_${USER}"
+    mkdir -p "$TRITON_CACHE_DIR"
+
     export VLLM_NO_USAGE_STATS=1
     export VLLM_DISABLE_TELEMETRY=1
 
@@ -320,6 +323,7 @@ run_task() {
     echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
     echo "Temperature: $TEMPERATURE"
     echo "Top-p: $TOP_P"
+    echo "Warmup Steps: $WARMUP_STEPS (multiplier: $WARM_STEPS_MULTIPLIER)"
     echo "----------------------------------------"
     echo "Smart Replay: $SMART_REPLAY"
     echo "Curriculum Balanced: $CURRICULUM_BALANCED"
@@ -427,6 +431,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --constant_lr_with_warm_up \
         --warmup_steps $WARMUP_STEPS \
         --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
+        --skip_eval_step_zero \
         $MODE_FLAGS \
         $AUTOTP_FLAGS \
         $OPTIONAL_FLAGS \

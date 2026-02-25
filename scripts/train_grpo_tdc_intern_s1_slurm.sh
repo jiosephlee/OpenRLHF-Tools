@@ -72,6 +72,10 @@ run_task() {
     set -euo pipefail
     export MALLOC_TRIM_THRESHOLD_=0
 
+    # Prevent corrupted torch inductor cache from crashing vLLM compilation.
+    # We nuke any leftover default-location cache from prior runs.
+    rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ 2>/dev/null || true
+
     ### ARGS (override via env before sbatch) ###
     PRETRAIN_PATH="${PRETRAIN_PATH:-jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05}"
     LEARNING_RATE="${LEARNING_RATE:-1e-6}"

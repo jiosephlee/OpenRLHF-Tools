@@ -52,3 +52,18 @@
 rm -rf ~/.cache/flashinfer/
 ```
 Then re-run. FlashInfer will re-download cubins and JIT-recompile kernels against the currently loaded CUDA and active conda env.
+
+## vLLM Compilation Errors (`Bytes object is corrupted` / `AssertionError` in `standalone_compile.py`)
+**Symptoms:**
+- `RuntimeError: Bytes object is corrupted, checksum does not match. Expected: b'h\xda/\x19', Got: b'\x07\x0e\xccL'`
+- `AssertionError: CacheInfo(artifacts=defaultdict(<class 'list'>, {'autotune': [...], 'aot_autograd': []}))` in `torch._inductor/standalone_compile.py` during engine startup.
+
+**Root Cause:**
+- PyTorch inductor cache corruption or stale compiled artifacts in the `.cache/torch/inductor` directory. 
+- Previous interrupted runs can leave corrupted or structurally incompatible artifacts (such as empty AOT autograd artifact sets for some models) that cause subsequent vLLM engine initializations to crash when loading or saving compiled graphs.
+
+**Solution:**
+Clear the `torch.inductor` caches before running (this has already been added to the SLURM training scripts):
+```bash
+rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/
+```

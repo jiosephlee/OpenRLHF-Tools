@@ -38,6 +38,7 @@ class TDCDatasetLoader:
         prompts_path: str = "data/tdc/metadata/prompts.json",
         cot_instruction_path: str = "data/tdc/metadata/cot_instruction.txt",
         cot_instruction: Optional[str] = None,
+        model_type: Optional[str] = None,
     ):
         """
         Initialize TDC dataset loader.
@@ -46,6 +47,7 @@ class TDCDatasetLoader:
             prompts_path: Path to tdc_prompts.json
             cot_instruction_path: Path to CoT instruction text file
             cot_instruction: CoT instruction to append (overrides file if provided)
+            model_type: Model type (e.g. 'gpt-oss') for dynamic prompt customization
         """
         self.prompts = self._load_prompts(prompts_path)
 
@@ -54,6 +56,13 @@ class TDCDatasetLoader:
             self.cot_instruction = cot_instruction
         else:
             self.cot_instruction = self._load_cot_instruction(cot_instruction_path)
+
+        # Apply model-specific string replacements to the CoT instruction
+        if model_type and ("gpt_oss" in model_type.lower() or "gpt-oss" in model_type.lower()):
+            self.cot_instruction = self.cot_instruction.replace(
+                "Please think step by step and use tools when necessary (**Don't use the same tool more than once**).",
+                "Please think step by step and use tools when helpful."
+            )
 
     def _load_prompts(self, prompts_path: str) -> Dict[str, str]:
         """Load TDC prompt templates."""

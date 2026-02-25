@@ -164,7 +164,7 @@ if [ ! -d "$PROJECT_ROOT/openrlhf" ]; then
 fi
 
 ### DATA ###
-DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format"
+DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_gpt_oss"
 mkdir -p "$PROJECT_ROOT/logs"
 
 TRAIN_PARTS=()
@@ -353,6 +353,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --prompt_max_len $PROMPT_MAX_LEN \
     --generate_max_len 2048 \
     --max_samples 1000000 \
+    --enable_prefix_caching \
     --zero_stage $ZERO_STAGE \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \

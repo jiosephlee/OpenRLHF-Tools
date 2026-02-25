@@ -165,7 +165,7 @@ if [ ! -d "$PROJECT_ROOT/openrlhf" ]; then
 fi
 
 ### DATA ###
-DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format"
+DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_gpt_oss"
 mkdir -p "$PROJECT_ROOT/logs"
 
 TRAIN_PARTS=()

@@ -30,11 +30,11 @@
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
 #SBATCH --qos=normal
-#SBATCH --gpus=2
+#SBATCH --gpus=6
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=512G
+#SBATCH --mem=1224G
 #SBATCH --cpus-per-gpu=8
-#SBATCH --time=00-1:00:00
+#SBATCH --time=00-18:00:00
 
 ### PARCC PARAMETERS ###
 export OMP_NUM_THREADS=16
@@ -59,11 +59,9 @@ set -euo pipefail
 export MALLOC_TRIM_THRESHOLD_=0
 export DS_SKIP_CUDA_CHECK=1 # This disables the CUDA check that causes deepspeed exception
 
-# Disable all torch inductor caching. Works around a known vLLM + PyTorch bug
-# where standalone_compile.py asserts aot_autograd_artifacts has exactly 1 entry
-# but gets 0 for this model architecture (assertion fires during the save step).
-# Ref: https://docs.pytorch.org/tutorials/recipes/torch_compile_caching_configuration_tutorial.html
-export TORCHINDUCTOR_FORCE_DISABLE_CACHES=1
+# Prevent corrupted torch inductor cache from crashing vLLM compilation.
+# We nuke any leftover default-location cache from prior runs.
+rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ 2>/dev/null || true
 
 ### ARGS (override via env before sbatch) ###
 PRETRAIN_PATH="${PRETRAIN_PATH:-unsloth/gpt-oss-20b-BF16}"
@@ -93,11 +91,11 @@ if [ "$MODE" = "colocated" ]; then
     MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-8}" # This decides how many mini gradient updates are used per rollout; Rollout_batch_size * N_samples_per_prompt / Mini_gradient_steps = number of trajectories used for each gradient update.
     MICRO_TRAIN_BATCH_SIZE=1 # The larger the micro_train_batch_size, the more memory and less gradient accumulation steps for backwards pass.
     MICRO_ROLLOUT_BATCH_SIZE=2 # ^ but for forwards pass. These two parameters are overridden, however, by default since we use dynamic batching.
-    VLLM_GPU_MEM_UTIL=0.55
+    VLLM_GPU_MEM_UTIL=0.625
     VLLM_SYNC_BACKEND=nccl
     EVAL_STEPS="${EVAL_STEPS:-32}"
-    TRAIN_MAX_TOKENS_PER_GPU=6144 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
-    ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.75" | bc | awk '{print int($1)}')
+    TRAIN_MAX_TOKENS_PER_GPU=8192 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
+    ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')
 
 elif [ "$MODE" = "distributed" ]; then
     ACTOR_GPUS="${ACTOR_GPUS:?"MODE=distributed requires ACTOR_GPUS"}"
@@ -179,7 +177,7 @@ if [ ! -d "$PROJECT_ROOT/openrlhf" ]; then
 fi
 
 ### DATA ###
-DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format"
+DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_gpt_oss"
 mkdir -p "$PROJECT_ROOT/logs"
 
 TRAIN_PARTS=()
@@ -359,7 +357,7 @@ fi
 if [ "$CURRICULUM_BALANCED" = "1" ]; then
     OPTIONAL_FLAGS+=" --curriculum_balanced"
 fi
-
+#--max_num_batched_tokens 8192 \
 ### TRAINING ###
 RUN_LOG="$RUNS_DIR/run.log"
 echo "Logging to: $RUN_LOG"
@@ -423,7 +421,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --delete_local_after_push \
     --reduce_cuda_graph \
     --kv_cache_dtype fp8 \
-    --max_num_batched_tokens 8192 \
     --use_dynamic_batch \
     --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
     --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \

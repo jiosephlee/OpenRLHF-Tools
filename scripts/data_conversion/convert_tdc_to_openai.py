@@ -39,6 +39,9 @@ def main():
     parser.add_argument("--cot_instruction", type=str,
                        default=None,
                        help="Custom CoT instruction (overrides file)")
+    parser.add_argument("--model_type", type=str,
+                       default=None,
+                       help="Model type (e.g. 'gpt-oss') to apply model-specific string replacements to the CoT instruction.")
     args = parser.parse_args()
 
     # Initialize loader
@@ -46,6 +49,7 @@ def main():
         prompts_path=args.prompts_path,
         cot_instruction_path=args.cot_instruction_path,
         cot_instruction=args.cot_instruction,
+        model_type=args.model_type,
     )
 
     # Convert tasks

@@ -584,11 +584,9 @@ class PPOTrainer(BasePPOTrainer):
         # get eval and save steps
         if strategy.args.eval_steps == -1:
             strategy.args.eval_steps = float("inf")  # do not evaluate
-        if getattr(strategy.args, "save_steps_ratio", None) is not None:
-            strategy.args.save_steps = max(1, int(self.max_steps * strategy.args.save_steps_ratio))
-            logger.info(f"save_steps_ratio={strategy.args.save_steps_ratio} → save_steps={strategy.args.save_steps} (max_steps={self.max_steps})")
         if strategy.args.save_steps == -1:
             strategy.args.save_steps = float("inf")  # do not save ckpt
+        logger.info(f"save_steps={strategy.args.save_steps} (max_steps={self.max_steps})")
         self.generate_kwargs = generate_kwargs
 
         # sample generation

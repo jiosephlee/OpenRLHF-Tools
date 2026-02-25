@@ -15,7 +15,7 @@
 #   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
 #
 # With smart replay:
-#   SMART_REPLAY=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
+#   SMART_REPLAY=1 sbatch train_grpo_tdc_intern_s1_slurm.sh
 #
 # With curriculum balanced:
 #   CURRICULUM_BALANCED=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
@@ -39,11 +39,11 @@
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
 #SBATCH --qos=normal
-#SBATCH --gpus=2
+#SBATCH --gpus=8
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=256G
+#SBATCH --mem=1024G
 #SBATCH --cpus-per-gpu=8
-#SBATCH --time=0-02:00:00
+#SBATCH --time=0-24:00:00
 #SBATCH --account=myatskar-lab
 
 ### PARCC PARAMETERS ###
@@ -71,8 +71,6 @@ export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/open_r
 run_task() {
     set -euo pipefail
     export MALLOC_TRIM_THRESHOLD_=0
-    export VLLM_ENABLE_V1_MULTIPROCESSING=0
-    export VLLM_CUDAGRAPH_CAPTURE_SIZES="1,2,4,8,16,32"
 
     ### ARGS (override via env before sbatch) ###
     PRETRAIN_PATH="${PRETRAIN_PATH:-jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05}"
@@ -385,7 +383,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --kl_estimator k1 \
         --eps_clip_low_high 0.2 0.272 \
         --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
-        --save_steps_ratio 0.5 \
+        --save_steps 100 \
         --save_hf_ckpt \
         --logging_steps 1 \
         --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \

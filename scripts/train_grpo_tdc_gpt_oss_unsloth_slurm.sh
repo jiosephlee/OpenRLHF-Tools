@@ -30,11 +30,11 @@
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
 #SBATCH --qos=normal
-#SBATCH --gpus=2
+#SBATCH --gpus=4
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=512G
-#SBATCH --cpus-per-gpu=32
-#SBATCH --time=00-01:00:00
+#SBATCH --mem=768G
+#SBATCH --cpus-per-gpu=8
+#SBATCH --time=00-12:00:00
 
 ### PARCC PARAMETERS ###
 export OMP_NUM_THREADS=16
@@ -61,9 +61,6 @@ export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/open_r
 run_task() {
     set -euo pipefail
     export MALLOC_TRIM_THRESHOLD_=0
-    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-    export VLLM_ENABLE_V1_MULTIPROCESSING=0
-    export VLLM_CUDAGRAPH_CAPTURE_SIZES="1,2,4,8,16,32"
     export DS_SKIP_CUDA_CHECK=1
 
     ### ARGS (override via env before sbatch) ###
@@ -94,7 +91,7 @@ run_task() {
         MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-8}" # This decides how many mini gradient updates are used per rollout; Rollout_batch_size * N_samples_per_prompt / Mini_gradient_steps = number of trajectories used for each gradient update.
         MICRO_TRAIN_BATCH_SIZE=1 # The larger the micro_train_batch_size, the more memory and less gradient accumulation steps for backwards pass.
         MICRO_ROLLOUT_BATCH_SIZE=2 # ^ but for forwards pass. These two parameters are overridden, however, by default since we use dynamic batching.
-        VLLM_GPU_MEM_UTIL=0.675
+        VLLM_GPU_MEM_UTIL=0.65
         VLLM_SYNC_BACKEND=nccl
         EVAL_STEPS="${EVAL_STEPS:-32}"
         TRAIN_MAX_TOKENS_PER_GPU=6144 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
@@ -380,7 +377,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --kl_estimator k1 \
         --eps_clip_low_high 0.2 0.272 \
         --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
-        --save_steps_ratio 0.5 \
+        --save_steps 100 \
         --save_hf_ckpt \
         --logging_steps 1 \
         --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \

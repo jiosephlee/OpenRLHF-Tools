@@ -334,7 +334,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --kl_estimator k1 \
     --eps_clip_low_high 0.2 0.272 \
     --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
-    --save_steps_ratio 0.5 \
+    --save_steps 100 \
     --save_hf_ckpt \
     --logging_steps 1 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \

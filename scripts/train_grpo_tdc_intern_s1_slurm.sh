@@ -43,7 +43,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem-per-gpu=128G
 #SBATCH --cpus-per-gpu=8
-#SBATCH --time=01-12:00:00
+#SBATCH --time=01-04:00:00
 #SBATCH --account=myatskar-lab
 
 ### PARCC PARAMETERS ###
@@ -102,7 +102,7 @@ run_task() {
         MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-8}" # This decides how many mini gradient updates are used per rollout; Rollout_batch_size * N_samples_per_prompt / Mini_gradient_steps = number of trajectories used for each gradient update.
         MICRO_TRAIN_BATCH_SIZE=4 # The larger the micro_train_batch_size, the more memory and less gradient accumulation steps for backwards pass.
         MICRO_ROLLOUT_BATCH_SIZE=8 # ^ but for forwards pass. These two parameters are overridden, however, by default since we use dynamic batching.
-        VLLM_GPU_MEM_UTIL=0.825
+        VLLM_GPU_MEM_UTIL=0.84
         VLLM_SYNC_BACKEND=nccl
         EVAL_STEPS="${EVAL_STEPS:-32}"
     elif [ "$MODE" = "distributed" ]; then
@@ -432,7 +432,6 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --constant_lr_with_warm_up \
         --warmup_steps $WARMUP_STEPS \
         --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
-        --skip_eval_step_zero \
         $MODE_FLAGS \
         $AUTOTP_FLAGS \
         $OPTIONAL_FLAGS \

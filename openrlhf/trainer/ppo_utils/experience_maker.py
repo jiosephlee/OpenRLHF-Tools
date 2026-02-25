@@ -268,12 +268,11 @@ class SamplesGenerator:
         self.eval_dataloader = eval_dataloader
         run_name = getattr(self.args, "wandb_run_name", "run")
         run_name = run_name.replace("/", "_")
-        date_stamp = time.strftime("%Y%m%d")
 
         project_root = os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         )
-        self.runs_dir = os.path.join(project_root, "runs", run_name, date_stamp)
+        self.runs_dir = os.path.join(project_root, "runs", run_name)
         self.rollout_trace_run_dir = os.path.join(self.runs_dir, "traces")
         os.makedirs(self.rollout_trace_run_dir, exist_ok=True)
         logger.info(f"Rollout traces enabled at: {self.rollout_trace_run_dir}")

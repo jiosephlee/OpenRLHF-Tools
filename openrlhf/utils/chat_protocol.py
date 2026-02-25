@@ -13,6 +13,10 @@ import importlib
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
+from openrlhf.utils.logging_utils import init_logger
+
+logger = init_logger(__name__)
+
 
 class ChatProtocol(ABC):
     """Abstract protocol for format-specific parsing and feedback."""
@@ -360,12 +364,35 @@ class GPTOSSProtocol(ChatProtocol):
         # Primary path: pass output tokens directly (matches vLLM serving).
         try:
             parser = harmony_utils.parse_output_into_messages(token_ids)
-        except Exception:
+        except Exception as primary_err:
             # Fallback: prepend <|start|>assistant header that was part of
             # the prompt/feedback and retry.
-            parser = harmony_utils.parse_output_into_messages(
-                self._assistant_header_ids + list(token_ids)
-            )
+            try:
+                parser = harmony_utils.parse_output_into_messages(
+                    self._assistant_header_ids + list(token_ids)
+                )
+            except Exception as fallback_err:
+                ids_list = list(token_ids)
+                header_ids = self._assistant_header_ids
+                decoded_head = self.tokenizer.decode(ids_list[:30], skip_special_tokens=False)
+                decoded_header = self.tokenizer.decode(header_ids, skip_special_tokens=False)
+                logger.error(
+                    "GPT-OSS Harmony parse failed on BOTH paths.\n"
+                    "  primary_err: %s\n"
+                    "  fallback_err: %s\n"
+                    "  action_token_ids (first 30): %s\n"
+                    "  decoded action head: %r\n"
+                    "  _assistant_header_ids: %s\n"
+                    "  decoded header: %r\n"
+                    "  raw text (first 300): %r",
+                    primary_err, fallback_err,
+                    ids_list[:30],
+                    decoded_head,
+                    header_ids,
+                    decoded_header,
+                    text[:300],
+                )
+                raise fallback_err
 
         return self._extract_from_parser(parser, text)
 

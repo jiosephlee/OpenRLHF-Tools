@@ -426,7 +426,6 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --constant_lr_with_warm_up \
         --warmup_steps $WARMUP_STEPS \
         --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
-        --skip_eval_step_zero \
         $MODE_FLAGS \
         $AUTOTP_FLAGS \
         $OPTIONAL_FLAGS \

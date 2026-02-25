@@ -373,10 +373,16 @@ class GPTOSSProtocol(ChatProtocol):
                 )
             except Exception as fallback_err:
                 # Last resort: regex-based fallback on decoded special tokens.
-                logger.warning(
-                    "GPT-OSS Harmony token-ID parser failed on both paths "
-                    "(primary: %s | fallback: %s). Using regex fallback.",
+                full_decoded = self.tokenizer.decode(list(token_ids), skip_special_tokens=False)
+                logger.error(
+                    "GPT-OSS Harmony parse failed on BOTH paths.\n"
+                    "  primary_err: %s\n"
+                    "  fallback_err: %s\n"
+                    "  token_ids (%d total): %s\n"
+                    "  full decoded output:\n%s",
                     primary_err, fallback_err,
+                    len(list(token_ids)), list(token_ids),
+                    full_decoded,
                 )
                 return self._regex_fallback_parse(token_ids, text)
 

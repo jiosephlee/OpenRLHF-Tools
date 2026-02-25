@@ -332,6 +332,9 @@ python -m openrlhf.cli.train_ppo_ray \
     --actor_num_gpus_per_node $ACTOR_GPUS \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size 1 \
+    --reduce_cuda_graph \
+    --kv_cache_dtype fp8 \
+    --max_num_batched_tokens 8192 \
     --vllm_gpu_memory_utilization $VLLM_GPU_MEM_UTIL \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
@@ -350,7 +353,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --prompt_max_len $PROMPT_MAX_LEN \
     --generate_max_len 2048 \
     --max_samples 1000000 \
-    --enable_prefix_caching \
     --zero_stage $ZERO_STAGE \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \

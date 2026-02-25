@@ -382,6 +382,9 @@ python -m openrlhf.cli.train_ppo_ray \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
     --use_dynamic_batch \
+    --reduce_cuda_graph \
+    --kv_cache_dtype fp8 \
+    --max_num_batched_tokens 8192 \
     --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
     --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \
     --constant_lr_with_warm_up \

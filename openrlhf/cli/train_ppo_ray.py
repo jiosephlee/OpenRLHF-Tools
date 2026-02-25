@@ -74,6 +74,8 @@ def train(args):
             chat_protocol=args.chat_protocol,
             tool_version=args.tool_version,
             reduce_cuda_graph=args.reduce_cuda_graph,
+            kv_cache_dtype=args.kv_cache_dtype,
+            max_num_batched_tokens=args.max_num_batched_tokens,
         )
 
     actor_model = RayActorGroup(
@@ -273,6 +275,18 @@ if __name__ == "__main__":
         type=float,
         default=0.95,
         help="vLLM gpu_memory_utilization",
+    )
+    parser.add_argument(
+        "--kv_cache_dtype",
+        type=str,
+        default="auto",
+        help="KV cache data type for vLLM (auto, fp8, etc.)",
+    )
+    parser.add_argument(
+        "--max_num_batched_tokens",
+        type=int,
+        default=None,
+        help="Maximum number of batched tokens per iteration in vLLM",
     )
     # Your Efficient RL Framework Secretly Brings You Off-Policy RL Training: https://fengyao.notion.site/off-policy-rl
     parser.add_argument("--enable_vllm_is_correction", action="store_true", default=False)

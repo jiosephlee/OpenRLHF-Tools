@@ -419,6 +419,9 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --save_path "$SAVE_PATH" \
         --push_to_hub "$HUB_REPO_ID" \
         --delete_local_after_push \
+        --reduce_cuda_graph \
+        --kv_cache_dtype fp8 \
+        --max_num_batched_tokens 8192 \
         --use_dynamic_batch \
         --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
         --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \

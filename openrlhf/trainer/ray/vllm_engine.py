@@ -285,6 +285,8 @@ def create_vllm_engines(
     chat_protocol: str = "glm_flash",
     tool_version: Optional[str] = None,
     reduce_cuda_graph: bool = False,
+    kv_cache_dtype: str = "auto",
+    max_num_batched_tokens: Optional[int] = None,
 ):
     """Spin up a set of vLLM Ray actors with consistent placement."""
     vllm_engines = []
@@ -328,7 +330,11 @@ def create_vllm_engines(
             "bundle_indices": bundle_indices,
             "num_gpus": 0.2 if use_hybrid_engine else 1,
             "enable_sleep_mode": vllm_enable_sleep,
+            "kv_cache_dtype": kv_cache_dtype,
         }
+
+        if max_num_batched_tokens is not None:
+            actor_kwargs["max_num_batched_tokens"] = max_num_batched_tokens
 
         if reduce_cuda_graph and not enforce_eager:
             from vllm.config import CompilationConfig, CompilationMode
@@ -336,7 +342,9 @@ def create_vllm_engines(
             actor_kwargs["compilation_config"] = CompilationConfig(
                 mode=CompilationMode.VLLM_COMPILE,
                 cudagraph_capture_sizes=[1, 2, 4, 8, 16],
+                pass_config={"fuse_allreduce_rms": True, "eliminate_noops": True, "fuse_attn_quant": True},
             )
+            actor_kwargs["async_scheduling"] = True
 
         actor_kwargs.update(
             {

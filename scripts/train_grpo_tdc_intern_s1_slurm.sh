@@ -61,9 +61,8 @@ export NCCL_BLOCKING_WAIT=1
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
 ### BEGIN BATCH SCRIPT ###
-module load MAMBA
 module load cuda/13.1.0
-export ENV_NAME="open_rlhf_intern"
+export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern"
 
 ############################
 #        TASK SCRIPT       #
@@ -445,4 +444,4 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
 export -f run_task
 
 mkdir -p logs
-srun micromamba run -n $ENV_NAME bash -c "run_task"
+srun bash -c 'eval "$(conda shell.bash hook)" && conda activate '"$CONDA_ENV_PATH"' && run_task'

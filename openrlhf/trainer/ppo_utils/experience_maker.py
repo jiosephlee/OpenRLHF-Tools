@@ -838,6 +838,7 @@ class RemoteExperienceMaker:
             sample.index = [i]
 
         samples_list = []
+        import math
         if self.args.use_dynamic_batch:
             total_lengths = [int(s.info["total_length"].item()) for s in rollout_samples]
             effective_actor_num = (
@@ -852,13 +853,33 @@ class RemoteExperienceMaker:
                 self.args.ring_attn_size,
                 self.args.ds_tensor_parallel_size,
             )
-            minimum_batch_num = minimum_batch_num // effective_actor_num * effective_actor_num
+            minimum_batch_num = math.ceil(minimum_batch_num / effective_actor_num) * effective_actor_num
             num_batch = max(minimum_batch_num, effective_actor_num)
             batch_indexes = get_seqlen_balanced_partitions(total_lengths, num_batch, False)
             for micro_index in batch_indexes:
                 micro_batch = [rollout_samples[idx] for idx in micro_index]
                 concat_samples = Experience.concat_experiences(micro_batch, self.tokenizer.pad_token_id)
                 samples_list.append(concat_samples)
+                
+            # Interleave samples_list so each contiguous chunk assigned to an actor has
+            # an identical distribution of heavy and light microbatches.
+            split_items = [samples_list[i : i + effective_actor_num] for i in range(0, len(samples_list), effective_actor_num)]
+            half = len(split_items) // 2
+            first_half = split_items[:half]
+            last_half = [item[::-1] for item in split_items[half:]]
+
+            interval_items = []
+            for i in range(half):
+                interval_items.append(first_half[i])
+                interval_items.append(last_half[-(i + 1)])
+            if len(last_half) > len(first_half):
+                interval_items.append(last_half[0])
+
+            interval_merged = list(zip(*interval_items))
+            flattened_samples_list = []
+            for actor_chunks in interval_merged:
+                flattened_samples_list.extend(actor_chunks)
+            samples_list = flattened_samples_list
         else:
             batch_size = self.args.micro_rollout_batch_size
             for i in range(0, len(rollout_samples), batch_size):

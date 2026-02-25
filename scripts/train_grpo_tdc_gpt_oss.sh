@@ -13,7 +13,7 @@
 #
 #   # Distributed (actor and vLLM on separate GPUs):
 #   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 bash scripts/train_grpo_tdc_gpt_oss.sh
-#
+#   ACTOR_GPUS=1 VLLM_NUM_ENGINES=1
 #   # Distributed with extra flags:
 #   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 SMART_REPLAY=1 \
 #     EXTRA_ARGS="--skip_eval_step_zero" bash scripts/train_grpo_tdc_gpt_oss.sh
@@ -60,9 +60,9 @@ if [ "$MODE" = "colocated" ]; then
     VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
     ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-32}" # This decides how many prompts are used for each rollout.
     MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-8}" # This decides how many mini gradient updates are used per rollout; Rollout_batch_size * N_samples_per_prompt / Mini_gradient_steps = number of trajectories used for each gradient update.
-    MICRO_TRAIN_BATCH_SIZE=4 # The larger the micro_train_batch_size, the more memory and less gradient accumulation steps for backwards pass.
-    MICRO_ROLLOUT_BATCH_SIZE=8 # ^ but for forwards pass. These two parameters are overridden, however, by default since we use dynamic batching.
-    VLLM_GPU_MEM_UTIL=0.5
+    MICRO_TRAIN_BATCH_SIZE=1 # The larger the micro_train_batch_size, the more memory and less gradient accumulation steps for backwards pass.
+    MICRO_ROLLOUT_BATCH_SIZE=2 # ^ but for forwards pass. These two parameters are overridden, however, by default since we use dynamic batching.
+    VLLM_GPU_MEM_UTIL=0.6
     VLLM_SYNC_BACKEND=nccl
     EVAL_STEPS="${EVAL_STEPS:-32}"
     TRAIN_MAX_TOKENS_PER_GPU=8192 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
@@ -384,6 +384,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --constant_lr_with_warm_up \
     --warmup_steps $WARMUP_STEPS \
     --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
+    --skip_eval_step_zero \
     $MODE_FLAGS \
     $AUTOTP_FLAGS \
     $OPTIONAL_FLAGS \

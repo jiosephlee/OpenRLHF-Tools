@@ -32,9 +32,9 @@
 #SBATCH --qos=normal
 #SBATCH --gpus=2
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=1024G
+#SBATCH --mem=512G
 #SBATCH --cpus-per-gpu=16
-#SBATCH --time=00-2:00:00
+#SBATCH --time=00-1:00:00
 
 ### PARCC PARAMETERS ###
 export OMP_NUM_THREADS=16
@@ -54,7 +54,7 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 module load cuda/13.1.0
 export VLLM_ENABLE_V1_MULTIPROCESSING=0
 export VLLM_CUDAGRAPH_CAPTURE_SIZES="1,2,4,8,16,32"
-export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern"
+export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/openrlhf"
 
 ############################
 #        TASK SCRIPT       #

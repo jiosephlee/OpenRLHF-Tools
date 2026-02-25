@@ -39,11 +39,11 @@
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
 #SBATCH --qos=normal
-#SBATCH --gpus=8
+#SBATCH --gpus=2
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem-per-gpu=128G
+#SBATCH --mem=256G
 #SBATCH --cpus-per-gpu=8
-#SBATCH --time=01-04:00:00
+#SBATCH --time=0-02:00:00
 #SBATCH --account=myatskar-lab
 
 ### PARCC PARAMETERS ###

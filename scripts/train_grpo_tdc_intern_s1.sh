@@ -29,7 +29,7 @@
 
 set -euo pipefail
 export MALLOC_TRIM_THRESHOLD_=0
-module load cuda/12.8.1
+module load cuda/13.1.0
 
 ### ARGS ###
 PRETRAIN_PATH=${1:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}
@@ -61,7 +61,7 @@ if [ "$MODE" = "colocated" ]; then
     MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-8}" # This decides how many mini gradient updates are used per rollout; Rollout_batch_size * N_samples_per_prompt / Mini_gradient_steps = number of trajectories used for each gradient update.
     MICRO_TRAIN_BATCH_SIZE=4 # The larger the micro_train_batch_size, the more memory and less gradient accumulation steps for backwards pass.
     MICRO_ROLLOUT_BATCH_SIZE=8 # ^ but for forwards pass. These two parameters are overridden, however, by default since we use dynamic batching.
-    VLLM_GPU_MEM_UTIL=0.8515
+    VLLM_GPU_MEM_UTIL=0.825
     VLLM_SYNC_BACKEND=nccl
     EVAL_STEPS="${EVAL_STEPS:-32}"
 elif [ "$MODE" = "distributed" ]; then

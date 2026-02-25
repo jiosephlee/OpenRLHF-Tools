@@ -26,9 +26,9 @@
 #   MAX_EPOCHS=2                 # Training epochs (default: 2)
 #   EXTRA_ARGS="..."             # Additional CLI flags
 #
-module load cuda/12.8.1 # running into issues with gpt-oss with cuda 12.8.1
+module load cuda/13.1.0 # running into issues with gpt-oss with cuda 12.8.1
 eval "$(conda shell.bash hook)"
-conda activate /vast/projects/myatskar/design-documents/conda_env/openrlhf # This conda env uses torch 2.9.1, and the corresponding flash-attn for cuda 13.1.0, but torch is compiled for cuda 12.8... torch doesn't have pip wheels for 13.1.0 yet; no problems with this for now except for Adam_offload.
+conda activate /vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern # This conda env uses torch 2.9.1, and the corresponding flash-attn for cuda 13.1.0, but torch is compiled for cuda 12.8... torch doesn't have pip wheels for 13.1.0 yet; no problems with this for now except for Adam_offload.
 set -euo pipefail
 export MALLOC_TRIM_THRESHOLD_=0
 export DS_SKIP_CUDA_CHECK=1 # Adam_offload checks CUDA version and which version of torch is compiled for it; this is a workaround to skip the CUDA check.
@@ -62,7 +62,7 @@ if [ "$MODE" = "colocated" ]; then
     MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-8}" # This decides how many mini gradient updates are used per rollout; Rollout_batch_size * N_samples_per_prompt / Mini_gradient_steps = number of trajectories used for each gradient update.
     MICRO_TRAIN_BATCH_SIZE=1 # The larger the micro_train_batch_size, the more memory and less gradient accumulation steps for backwards pass.
     MICRO_ROLLOUT_BATCH_SIZE=2 # ^ but for forwards pass. These two parameters are overridden, however, by default since we use dynamic batching.
-    VLLM_GPU_MEM_UTIL=0.7
+    VLLM_GPU_MEM_UTIL=0.65
     VLLM_SYNC_BACKEND=nccl
     EVAL_STEPS="${EVAL_STEPS:-32}"
     TRAIN_MAX_TOKENS_PER_GPU=4096 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.

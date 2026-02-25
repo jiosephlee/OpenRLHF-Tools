@@ -32,8 +32,8 @@
 #SBATCH --qos=normal
 #SBATCH --gpus=4
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem-per-gpu=256G
-#SBATCH --cpus-per-gpu=16
+#SBATCH --mem=1024G
+#SBATCH --cpus-per-gpu=32
 #SBATCH --time=00-06:00:00
 
 ### PARCC PARAMETERS ###
@@ -52,8 +52,8 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
 ### BEGIN BATCH SCRIPT ###
 module load MAMBA
-module load cuda/12.8.1
-export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/openrlhf"
+module load cuda/13.1.0
+export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern"
 
 ############################
 #        TASK SCRIPT       #
@@ -91,7 +91,7 @@ run_task() {
         MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-8}" # This decides how many mini gradient updates are used per rollout; Rollout_batch_size * N_samples_per_prompt / Mini_gradient_steps = number of trajectories used for each gradient update.
         MICRO_TRAIN_BATCH_SIZE=1 # The larger the micro_train_batch_size, the more memory and less gradient accumulation steps for backwards pass.
         MICRO_ROLLOUT_BATCH_SIZE=2 # ^ but for forwards pass. These two parameters are overridden, however, by default since we use dynamic batching.
-        VLLM_GPU_MEM_UTIL=0.7
+        VLLM_GPU_MEM_UTIL=0.65
         VLLM_SYNC_BACKEND=nccl
         EVAL_STEPS="${EVAL_STEPS:-32}"
         TRAIN_MAX_TOKENS_PER_GPU=4096 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.

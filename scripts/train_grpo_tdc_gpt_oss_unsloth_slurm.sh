@@ -57,10 +57,12 @@ conda activate /vast/projects/myatskar/design-documents/conda_env/open_rlhf_inte
 
 set -euo pipefail
 export MALLOC_TRIM_THRESHOLD_=0
-export DS_SKIP_CUDA_CHECK=1
+export DS_SKIP_CUDA_CHECK=1 # This disables the CUDA check that causes deepspeed exception
 
+# Prevent corrupted torch inductor cache from crashing vLLM compilation.
+# FX_GRAPH_CACHE=0 avoids loading stale/corrupt cached compiled artifacts.
 export TORCHINDUCTOR_FX_GRAPH_CACHE=0
-export TORCHINDUCTOR_AUTOTUNE_CACHE=0
+rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ 2>/dev/null || true
 
 ### ARGS (override via env before sbatch) ###
 PRETRAIN_PATH="${PRETRAIN_PATH:-unsloth/gpt-oss-20b-BF16}"

@@ -29,6 +29,43 @@ class WorkerWrap:
             f"rank={rank}, world_size={world_size}, group_name={group_name}",
         )
 
+    def _get_param_cache(self):
+        if getattr(self, "_param_cache", None) is None:
+            self._param_cache = dict(self.model_runner.model.named_parameters())
+        return self._param_cache
+
+    def _load_weight_into_model(self, name, weight):
+        """Load a single weight tensor into the vLLM model, with fallback for buggy weight loaders.
+
+        Works around a known vLLM bug where _load_weights_mxfp4() passes an unexpected
+        `weight_name=` kwarg to default_weight_loader() (see ms-swift#7270).
+        Falls back to direct param.data.copy_() with fuzzy name matching.
+        """
+        try:
+            self.model_runner.model.load_weights(weights=[(name, weight)])
+        except TypeError as e:
+            if "unexpected keyword argument" not in str(e):
+                raise
+            if not getattr(self, "_fallback_warned", False):
+                print(f"[WorkerWrap] load_weights TypeError workaround activated: {e}")
+                self._fallback_warned = True
+            state_dict = self._get_param_cache()
+            if name in state_dict:
+                state_dict[name].data.copy_(weight)
+            elif name + ".weight" in state_dict:
+                state_dict[name + ".weight"].data.copy_(weight)
+            else:
+                matched = False
+                for k, param in state_dict.items():
+                    if k.endswith(name) or name.endswith(k) or k.replace(".weight", "") == name:
+                        param.data.copy_(weight)
+                        # Cache the successful fuzzy match so future lookups are O(1)
+                        state_dict[name] = param
+                        matched = True
+                        break
+                if not matched:
+                    raise KeyError(f"Failed to find parameter {name} for fallback. Available: {list(state_dict)[:5]}...")
+
     def update_weight(self, name, dtype, shape, empty_cache=False):
         import torch
 
@@ -45,15 +82,7 @@ class WorkerWrap:
         else:
             self._model_update_group.broadcast(weight, src=0, stream=torch.cuda.current_stream())
 
-        try:
-            self.model_runner.model.load_weights(weights=[(name, weight)])
-        except TypeError:
-            # Fallback to direct parameter copy if weight_loader fails (e.g. unexpected kwarg 'weight_name')
-            state_dict = dict(self.model_runner.model.named_parameters())
-            if name in state_dict:
-                state_dict[name].data.copy_(weight)
-            else:
-                raise KeyError(f"Failed to find parameter {name} for direct parameter copy fallback.")
+        self._load_weight_into_model(name, weight)
 
         del weight
         # TODO: should we empty cache if all weights have updated?
@@ -77,6 +106,7 @@ class WorkerWrap:
         # in case two processes have different CUDA_VISIBLE_DEVICES
         list_args[6] = device_id
         weight = func(*list_args)
-        self._patch_gpt_oss_weight_loader()
-        self.model_runner.model.load_weights(weights=[(name, weight)])
+
+        self._load_weight_into_model(name, weight)
+
         torch.cuda.synchronize()

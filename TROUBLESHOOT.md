@@ -21,6 +21,7 @@
 **Symptoms:**
 - Raylet terminates unexpectedly shortly after vLLM engines begin loading (you'll see model weights loaded successfully, then `Dynamo bytecode transform time: ~15s`, then the Raylet dies).
 - The error says "Possible reasons include: (1) SIGKILL by the user or system OOM killer" with only Ray state-dump lines — no Python traceback.
+- You may also see `ray.exceptions.ActorUnavailableError: The actor is temporarily unavailable: RpcError: RPC Error message: Socket closed` — this means the actor's process was killed out from under Ray by the OS OOM killer.
 - Typically happens when **multiple vLLM engines initialize concurrently** in colocated mode.
 
 **Root Cause:**

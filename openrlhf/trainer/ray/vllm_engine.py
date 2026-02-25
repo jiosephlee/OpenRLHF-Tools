@@ -335,7 +335,7 @@ def create_vllm_engines(
 
             actor_kwargs["compilation_config"] = CompilationConfig(
                 mode=CompilationMode.VLLM_COMPILE,
-                cudagraph_capture_sizes=[1, 2, 4, 8, 16, 32],
+                cudagraph_capture_sizes=[1, 2, 4, 8, 16],
             )
 
         actor_kwargs.update(

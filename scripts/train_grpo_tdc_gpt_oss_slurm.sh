@@ -164,7 +164,7 @@ if [ -z "${WANDB_API_KEY:-}" ]; then
 fi
 
 ### PROJECT ROOT ###
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 while [ "$PROJECT_ROOT" != "/" ] && [ ! -d "$PROJECT_ROOT/openrlhf" ]; do
     PROJECT_ROOT="$(dirname "$PROJECT_ROOT")"
 done

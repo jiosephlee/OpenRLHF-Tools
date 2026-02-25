@@ -51,10 +51,9 @@ export NCCL_BLOCKING_WAIT=1
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
 ### ENVIRONMENT SETUP ###
-module load MAMBA
 module load cuda/13.1.0
-eval "$(micromamba shell hook -s bash)"
-micromamba activate /vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern
+eval "$(conda shell.bash hook)"
+conda activate /vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern
 
 set -euo pipefail
 export MALLOC_TRIM_THRESHOLD_=0
@@ -164,7 +163,7 @@ if [ -z "${WANDB_API_KEY:-}" ]; then
 fi
 
 ### PROJECT ROOT ###
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 while [ "$PROJECT_ROOT" != "/" ] && [ ! -d "$PROJECT_ROOT/openrlhf" ]; do
     PROJECT_ROOT="$(dirname "$PROJECT_ROOT")"
 done

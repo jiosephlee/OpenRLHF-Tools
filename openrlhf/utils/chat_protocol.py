@@ -60,6 +60,15 @@ class ChatProtocol(ABC):
         """
         pass
 
+    def render_tool_feedback_token_ids(self, tool_results: List[Dict[str, str]]) -> Optional[List[int]]:
+        """Return canonical token IDs for tool feedback, or None to fall back to text tokenization.
+
+        Subclasses that have access to a canonical encoder (e.g. harmony) should
+        override this to produce token IDs directly, avoiding the lossy
+        text → HF-tokenize round-trip for special tokens.
+        """
+        return None
+
 
 class GLMFlashProtocol(ChatProtocol):
     """GLM Flash XML format protocol.
@@ -361,10 +370,12 @@ class GPTOSSProtocol(ChatProtocol):
 
         harmony_utils = importlib.import_module("vllm.entrypoints.openai.parser.harmony_utils")
 
+        parse_method = "primary"
         # Primary path: pass output tokens directly (matches vLLM serving).
         try:
             parser = harmony_utils.parse_output_into_messages(token_ids)
         except Exception as primary_err:
+            parse_method = "fallback"
             # Fallback: prepend <|start|>assistant header that was part of
             # the prompt/feedback and retry.
             try:
@@ -372,6 +383,7 @@ class GPTOSSProtocol(ChatProtocol):
                     self._assistant_header_ids + list(token_ids)
                 )
             except Exception as fallback_err:
+                parse_method = "regex"
                 # Last resort: regex-based fallback on decoded special tokens.
                 full_decoded = self.tokenizer.decode(list(token_ids), skip_special_tokens=False)
                 logger.error(
@@ -384,9 +396,9 @@ class GPTOSSProtocol(ChatProtocol):
                     len(list(token_ids)), list(token_ids),
                     full_decoded,
                 )
-                return self._regex_fallback_parse(token_ids, text)
+                return self._regex_fallback_parse(token_ids, text, parse_method)
 
-        return self._extract_from_parser(parser, text)
+        return self._extract_from_parser(parser, text, parse_method)
 
     # ------------------------------------------------------------------
     # Regex fallback parser
@@ -395,26 +407,18 @@ class GPTOSSProtocol(ChatProtocol):
     # Patterns for harmony special tokens rendered as text
     _RE_TOOL_CALL = re.compile(
         r'to=functions\.(\S+?)'           # recipient: functions.TOOL_NAME
-        r'(?:<\|channel\|>\w+)?'           # optional channel (json, commentary, …)
-        r'(?:\s*<\|constrain\|>\w+)?'      # optional constrain tag
-        r'<\|message\|>(.*?)'             # message body (args)
-        r'(?:<\|call\|>|<\|end\|>|$)',     # terminator
-        re.DOTALL,
-    )
-    _RE_FINAL = re.compile(
-        r'<\|channel\|>final<\|message\|>(.*?)(?:<\|end\|>|<\|return\|>|$)',
-        re.DOTALL,
-    )
-    _RE_COMMENTARY = re.compile(
-        r'<\|channel\|>(?:commentary|analysis)<\|message\|>(.*?)(?:<\|end\|>|<\|call\|>|<\|return\|>|$)',
+        r'(?:\s*<\|channel\|>\w+)?'       # optional channel after to= (role-section format)
+        r'(?:\s*<\|constrain\|>[^<]*)*'   # zero or more constrain tags (id=1, json, etc.)
+        r'\s*<\|message\|>(.*?)'          # message body (args)
+        r'(?:<\|call\|>|<\|end\|>|$)',    # terminator
         re.DOTALL,
     )
 
-    def _regex_fallback_parse(self, token_ids: List[int], raw_text: str) -> Dict[str, Any]:
+    def _regex_fallback_parse(self, token_ids: List[int], raw_text: str, parse_method: str = "regex") -> Dict[str, Any]:
         """Regex-based fallback when the Harmony token-ID parser fails.
 
         Decodes the full token stream (with special tokens visible) and
-        extracts tool calls / content via pattern matching on harmony markers.
+        extracts tool calls via pattern matching on harmony markers.
         """
         full_text = self.tokenizer.decode(list(token_ids), skip_special_tokens=False)
 
@@ -436,32 +440,23 @@ class GPTOSSProtocol(ChatProtocol):
                 args = {"raw": args}
             tool_calls.append({"name": name, "arguments": args})
 
-        final_content = None
-        fm = self._RE_FINAL.search(full_text)
-        if fm:
-            final_content = fm.group(1).strip()
-
-        commentary_content = None
-        for cm in self._RE_COMMENTARY.finditer(full_text):
-            # Skip matches that are part of a tool call (preceded by to=functions.)
-            preceding = full_text[max(0, cm.start() - 120):cm.start()]
-            if "to=functions." not in preceding:
-                commentary_content = cm.group(1).strip()
+        attempted_call = "<|call|>" in raw_text or "to=functions." in raw_text
+        parse_failed = attempted_call and len(tool_calls) == 0
 
         return {
-            "content": final_content or commentary_content or raw_text,
+            "content": raw_text,
             "tool_calls": tool_calls,
+            "parse_method": parse_method,
+            "parse_failed": parse_failed,
         }
 
-    def _extract_from_parser(self, parser, raw_text: str) -> Dict[str, Any]:
+    def _extract_from_parser(self, parser, raw_text: str, parse_method: str = "primary") -> Dict[str, Any]:
         """Extract tool calls / content from a parsed Harmony message.
 
         Closely mirrors the extraction logic in vLLM's
         ``OpenAIToolParser.extract_tool_calls()``.
         """
         tool_calls: List[Dict[str, Any]] = []
-        final_content = None
-        commentary_content = None
 
         for msg in parser.messages:
             if not msg.content:
@@ -487,21 +482,15 @@ class GPTOSSProtocol(ChatProtocol):
                 if not isinstance(args, dict):
                     args = {"raw": args}
                 tool_calls.append({"name": name, "arguments": args})
-            elif msg.channel == "final":
-                final_content = msg_text
-            elif msg.channel == "commentary" and not msg.recipient:
-                commentary_content = msg_text
 
-        # Handle truncated output (model hit max_tokens before <|end|>).
-        if parser.current_content:
-            if parser.current_channel == "final":
-                final_content = parser.current_content
-            elif parser.current_channel == "commentary" and not parser.current_recipient:
-                commentary_content = parser.current_content
+        attempted_call = "<|call|>" in raw_text or "to=functions." in raw_text
+        parse_failed = attempted_call and len(tool_calls) == 0
 
         return {
-            "content": final_content or commentary_content or raw_text,
+            "content": raw_text,
             "tool_calls": tool_calls,
+            "parse_method": parse_method,
+            "parse_failed": parse_failed,
         }
 
     def render_tool_feedback(self, tool_results: List[Dict[str, str]]) -> str:
@@ -534,6 +523,31 @@ class GPTOSSProtocol(ChatProtocol):
         # Generation prompt for the next assistant turn
         feedback += "<|start|>assistant"
         return feedback
+
+    def render_tool_feedback_token_ids(self, tool_results: List[Dict[str, str]]) -> Optional[List[int]]:
+        """Canonical token IDs for tool feedback via harmony encoder.
+
+        Uses ``openai_harmony``'s ``encoding.render(msg)`` to produce the exact
+        token IDs the model was trained with, avoiding the lossy text → HF
+        tokenize round-trip for special tokens like ``<|start|>``, ``<|end|>``.
+        """
+        from openai_harmony import (
+            load_harmony_encoding, HarmonyEncodingName,
+            Role, Author, Message,
+        )
+        encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+
+        token_ids: List[int] = []
+        for tr in tool_results:
+            msg = Message.from_author_and_content(
+                Author.new(Role.TOOL, f"functions.{tr['name']}"),
+                tr["content"],
+            ).with_channel("commentary").with_recipient("assistant")
+            token_ids.extend(encoding.render(msg))
+
+        # Append <|start|>assistant generation prompt
+        token_ids.extend(self._assistant_header_ids)
+        return token_ids
 
 # Export public API
 __all__ = ["ChatProtocol", "GLMFlashProtocol", "InternS1Protocol", "GPTOSSProtocol"]

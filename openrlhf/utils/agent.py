@@ -137,13 +137,18 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
 
             # Concatenate observation, action, and environment_feedback, then tokenize
             observation_text = observation_text + action_text + environment_feedback_text
-            current_obs_tokens = (
-                current_obs_tokens
-                + action_tokens
-                + hf_tokenizer(environment_feedback_text, add_special_tokens=False, return_tensors="pt")["input_ids"][
-                    0
-                ].tolist()
-            )
+
+            # Use canonical token IDs when available (avoids lossy text→tokenize
+            # round-trip for special tokens like harmony <|start|>, <|end|>).
+            feedback_token_ids = step_result.get("environment_feedback_token_ids")
+            if feedback_token_ids is not None:
+                feedback_tokens = feedback_token_ids
+            else:
+                feedback_tokens = hf_tokenizer(
+                    environment_feedback_text, add_special_tokens=False, return_tensors="pt"
+                )["input_ids"][0].tolist()
+
+            current_obs_tokens = current_obs_tokens + action_tokens + feedback_tokens
 
             # Calculate rollout log probs
             if sampling_params.logprobs is not None:

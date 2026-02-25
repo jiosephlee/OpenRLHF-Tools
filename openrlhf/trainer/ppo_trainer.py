@@ -138,6 +138,7 @@ class BasePPOTrainer(ABC):
         per_dataset_counts = defaultdict(lambda: defaultdict(int))
         per_dataset_prompts_used = defaultdict(lambda: defaultdict(int))  # prompts that used tool at least once
         per_dataset_total_prompts = defaultdict(int)
+        per_dataset_parse_stats = defaultdict(lambda: defaultdict(int))
         prompt_idx = 0
         for sample in samples_list:
             batch_size = len(sample.sequences)
@@ -147,13 +148,15 @@ class BasePPOTrainer(ABC):
                 datasource = prompt_to_datasource[all_prompts[prompt_idx]]
                 per_dataset_total_prompts[datasource] += 1
                 for key, value in sample.info.items():
-                    if not key.startswith("tool_count__"):
-                        continue
-                    tool_name = key[len("tool_count__"):]
-                    tool_count = int(value.flatten()[i].item())
-                    per_dataset_counts[datasource][tool_name] += tool_count
-                    if tool_count >= 1:
-                        per_dataset_prompts_used[datasource][tool_name] += 1
+                    if key.startswith("tool_count__"):
+                        tool_name = key[len("tool_count__"):]
+                        tool_count = int(value.flatten()[i].item())
+                        per_dataset_counts[datasource][tool_name] += tool_count
+                        if tool_count >= 1:
+                            per_dataset_prompts_used[datasource][tool_name] += 1
+                    elif key.startswith("parse_method__") or key in ["parse_failed", "tool_call_attempted", "tool_call_count"]:
+                        count = int(value.flatten()[i].item())
+                        per_dataset_parse_stats[datasource][key] += count
                 prompt_idx += 1
 
         per_dataset_counts = {
@@ -181,10 +184,13 @@ class BasePPOTrainer(ABC):
             if not per_dataset_usage_pct[ds]:
                 del per_dataset_usage_pct[ds]
 
-        return per_dataset_counts, per_dataset_normalized, totals, per_dataset_usage_pct
+        # Convert parse stats from defaultdict to dict
+        per_dataset_parse_stats = {k: dict(v) for k, v in per_dataset_parse_stats.items()}
 
-    def _write_eval_tool_usage(self, global_step, per_dataset_counts, per_dataset_normalized, totals, per_dataset_usage_pct):
-        if not per_dataset_counts:
+        return per_dataset_counts, per_dataset_normalized, totals, per_dataset_usage_pct, per_dataset_parse_stats
+
+    def _write_eval_tool_usage(self, global_step, per_dataset_counts, per_dataset_normalized, totals, per_dataset_usage_pct, per_dataset_parse_stats):
+        if not per_dataset_counts and not per_dataset_parse_stats:
             return
         run_dir = self.samples_generator.runs_dir
         output_dir = os.path.join(run_dir, "tool_usage_eval")
@@ -195,6 +201,7 @@ class BasePPOTrainer(ABC):
             "per_dataset_normalized": per_dataset_normalized,
             "totals": totals,
             "per_dataset_usage_pct": per_dataset_usage_pct,
+            "per_dataset_parse_stats": per_dataset_parse_stats,
         }
         with open(os.path.join(output_dir, f"eval_step_{global_step}.json"), "w") as f:
             json.dump(payload, f, ensure_ascii=True)
@@ -360,10 +367,10 @@ class BasePPOTrainer(ABC):
             if macro_f1_values:
                 logs["eval_avg_macro_f1"] = sum(macro_f1_values) / len(macro_f1_values)
 
-        per_dataset_counts, per_dataset_normalized, totals, per_dataset_usage_pct = self._collect_eval_tool_usage(
+        per_dataset_counts, per_dataset_normalized, totals, per_dataset_usage_pct, per_dataset_parse_stats = self._collect_eval_tool_usage(
             all_prompts, samples_list, prompt_to_datasource
         )
-        self._write_eval_tool_usage(global_step, per_dataset_counts, per_dataset_normalized, totals, per_dataset_usage_pct)
+        self._write_eval_tool_usage(global_step, per_dataset_counts, per_dataset_normalized, totals, per_dataset_usage_pct, per_dataset_parse_stats)
         self._write_eval_metrics(global_step, global_metrics, logs, n_samples_per_prompt)
 
         # Log to wandb/tensorboard

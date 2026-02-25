@@ -81,12 +81,21 @@ class ToolCallingTurn(AgentInstanceBase):
         label = state_dict.get("label", "")
         action = self.protocol.parse_assistant_text(action_text, token_ids=action_token_ids)
         tool_calls = action.get("tool_calls", [])
+        base_logs = {
+            "tool_call_count": len(tool_calls),
+        }
+        if "parse_method" in action:
+            parse_method = action["parse_method"]
+            parse_failed = action.get("parse_failed", False)
+            base_logs[f"parse_method__{parse_method}"] = 1
+            base_logs["parse_failed"] = 1 if parse_failed else 0
+            base_logs["tool_call_attempted"] = 1 if (len(tool_calls) > 0 or parse_failed) else 0
 
         if tool_calls:
             # Execute all tool calls in parallel, preserving order
             results = await asyncio.gather(*[self._execute_tool(tc) for tc in tool_calls])
             tool_msgs = []
-            extra_logs = {"tool_call_count": len(tool_calls)}
+            extra_logs = base_logs.copy()
             for tc, result in zip(tool_calls, results):
                 tool_name = tc.get("name", "")
                 tool_msgs.append({"name": tool_name, "content": result})
@@ -96,8 +105,10 @@ class ToolCallingTurn(AgentInstanceBase):
 
             # Bridge text: close assistant turn + tool responses + open next turn
             feedback = self.protocol.render_tool_feedback(tool_msgs)
+            feedback_token_ids = self.protocol.render_tool_feedback_token_ids(tool_msgs)
             return {
                 "environment_feedback": feedback,
+                "environment_feedback_token_ids": feedback_token_ids,
                 "rewards": torch.tensor(0.0),
                 "done": False,
                 "scores": 0.0,
@@ -111,7 +122,7 @@ class ToolCallingTurn(AgentInstanceBase):
             "rewards": torch.tensor(reward),
             "done": True,
             "scores": reward,
-            "extra_logs": {"tool_call_count": 0},
+            "extra_logs": base_logs,
         }
 
     # ------------------------------------------------------------------

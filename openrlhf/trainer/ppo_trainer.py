@@ -202,6 +202,34 @@ class BasePPOTrainer(ABC):
             self._eval_tool_usage_history = []
         self._eval_tool_usage_history.append(payload)
 
+    def _write_eval_metrics(self, global_step, global_metrics, logs, n_samples_per_prompt):
+        """Write per-task accuracy and macro-F1 to a local JSON in the run folder."""
+        run_dir = self.samples_generator.runs_dir
+        output_dir = os.path.join(run_dir, "eval_metrics")
+        os.makedirs(output_dir, exist_ok=True)
+
+        per_task = {}
+        for datasource, metrics in global_metrics.items():
+            count = metrics["count"]
+            accuracy = metrics["pass1"] / count if count > 0 else 0.0
+            per_task[datasource] = {
+                "accuracy": accuracy,
+                "macro_f1": logs.get(f"eval_{datasource}_macro_f1"),
+                "count": count,
+            }
+
+        payload = {
+            "global_step": global_step,
+            "n_samples_per_prompt": n_samples_per_prompt,
+            "per_task": per_task,
+            "avg_accuracy": logs.get("eval_avg_pass1"),
+            "avg_macro_f1": logs.get("eval_avg_macro_f1"),
+        }
+        out_path = os.path.join(output_dir, f"eval_step_{global_step}.json")
+        with open(out_path, "w") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=True)
+        logger.info(f"[eval_metrics] Wrote per-task metrics to {out_path}")
+
     def _write_final_tool_usage_plot(self):
         history = getattr(self, "_eval_tool_usage_history", [])
         if not history:
@@ -336,6 +364,7 @@ class BasePPOTrainer(ABC):
             all_prompts, samples_list, prompt_to_datasource
         )
         self._write_eval_tool_usage(global_step, per_dataset_counts, per_dataset_normalized, totals, per_dataset_usage_pct)
+        self._write_eval_metrics(global_step, global_metrics, logs, n_samples_per_prompt)
 
         # Log to wandb/tensorboard
         if self.wandb_logger:

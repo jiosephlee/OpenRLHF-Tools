@@ -10,9 +10,18 @@
 # Usage:
 #   # Colocated (default):
 #   sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
-#
+#   
 #   # Distributed:
 #   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
+#
+# With smart replay:
+#   SMART_REPLAY=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
+#
+# With curriculum balanced:
+#   CURRICULUM_BALANCED=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
+#
+# With both:
+#   SMART_REPLAY=1 CURRICULUM_BALANCED=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
 #
 # Feature flags (set via env before sbatch):
 #   MODE=colocated|distributed   # Default: colocated
@@ -34,7 +43,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem-per-gpu=128G
 #SBATCH --cpus-per-gpu=8
-#SBATCH --time=00-24:00:00
+#SBATCH --time=01-12:00:00
+#SBATCH --account=myatskar-lab
 
 ### PARCC PARAMETERS ###
 export OMP_NUM_THREADS=16
@@ -73,7 +83,7 @@ run_task() {
     TOOL_VERSION="${TOOL_VERSION:-v3}"
     SMART_REPLAY="${SMART_REPLAY:-0}"
     CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
-    MAX_EPOCHS="${MAX_EPOCHS:-2}"
+    MAX_EPOCHS="${MAX_EPOCHS:-1}"
     EXTRA_ARGS="${EXTRA_ARGS:-}"
 
     ### UNIFIED CONSTANTS ###
@@ -82,7 +92,7 @@ run_task() {
     PROMPT_MAX_LEN=12288 # Any responses longer than this will be truncated.
     N_SAMPLES_PER_PROMPT=8
     TRAIN_MAX_TOKENS_PER_GPU=32768 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
-    ROLLOUT_MAX_TOKENS_PER_GPU=$((TRAIN_MAX_TOKENS_PER_GPU*2)) # Rollout max tokens per gpu is set to twice the train max tokens per gpu; safe estimate for memory usage during forwards pass.
+    ROLLOUT_MAX_TOKENS_PER_GPU=$((TRAIN_MAX_TOKENS_PER_GPU*3)) # Rollout max tokens per gpu is set to twice the train max tokens per gpu; safe estimate for memory usage during forwards pass.
 
     ### MODE-DEPENDENT DEFAULTS ###
     if [ "$MODE" = "colocated" ]; then

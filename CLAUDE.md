@@ -82,6 +82,16 @@ Saves one decoded rollout trace per step to `runs/<run_name>/<date>/traces/`. An
 - Added support for executing parallel tool calls natively.
 - Full support and bug fixes for OpenAI/GPT-OSS schema parsing and generation formatting.
 
+### 12. Colocate Mode CUDA Cache Clearing
+**Files:** `openrlhf/trainer/ray/vllm_engine.py`
+
+In colocate mode, vLLM's `sleep()` releases weights but doesn't return the memory to the CUDA driver. The Actor process then OOMs during backward passes because `torch.cuda.memory.caching_allocator` still holds the pages. Fix: call `torch.cuda.empty_cache()` in both `sleep()` and `gc_collect()` so freed GPU memory is actually returned to the driver and available to the Actor.
+
+### 13. Ceiling Fix for Dynamic Batch Splitting
+**File:** `openrlhf/trainer/ppo_utils/experience_maker.py`
+
+`minimum_batch_num` was rounded down with floor division (`//`), which could produce 0 microbatches when `minimum_batch_num < effective_actor_num`, causing packed sequences to accidentally exceed `rollout_max_tokens_per_gpu`. Fix: use `math.ceil()` to round up, ensuring at least one microbatch per actor and respecting the token budget.
+
 ## Architecture
 
 ### Tool-Calling Components

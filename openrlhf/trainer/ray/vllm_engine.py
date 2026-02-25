@@ -284,6 +284,7 @@ def create_vllm_engines(
     vllm_stop_strings: Optional[list] = None,
     chat_protocol: str = "glm_flash",
     tool_version: Optional[str] = None,
+    reduce_cuda_graph: bool = False,
 ):
     """Spin up a set of vLLM Ray actors with consistent placement."""
     vllm_engines = []
@@ -328,6 +329,14 @@ def create_vllm_engines(
             "num_gpus": 0.2 if use_hybrid_engine else 1,
             "enable_sleep_mode": vllm_enable_sleep,
         }
+
+        if reduce_cuda_graph and not enforce_eager:
+            from vllm.config import CompilationConfig, CompilationMode
+
+            actor_kwargs["compilation_config"] = CompilationConfig(
+                mode=CompilationMode.VLLM_COMPILE,
+                cudagraph_capture_sizes=[1, 2, 4, 8, 16, 32],
+            )
 
         actor_kwargs.update(
             {

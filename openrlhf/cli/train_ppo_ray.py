@@ -73,6 +73,7 @@ def train(args):
             vllm_stop_strings=args.vllm_stop_strings,
             chat_protocol=args.chat_protocol,
             tool_version=args.tool_version,
+            reduce_cuda_graph=args.reduce_cuda_graph,
         )
 
     actor_model = RayActorGroup(
@@ -255,6 +256,12 @@ if __name__ == "__main__":
     parser.add_argument("--vllm_sync_with_ray", action="store_true", default=False)
     parser.add_argument("--enable_prefix_caching", action="store_true", default=False)
     parser.add_argument("--enforce_eager", action="store_true", default=False, help="Disable CUDA graph in vLLM")
+    parser.add_argument(
+        "--reduce_cuda_graph",
+        action="store_true",
+        default=False,
+        help="Reduce CUDAGraph capture sizes to [1,2,4,8,16,32] to lower GPU memory during vLLM init",
+    )
     parser.add_argument(
         "--vllm_enable_sleep",
         action="store_true",

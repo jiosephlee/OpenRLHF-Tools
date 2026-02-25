@@ -105,7 +105,7 @@ run_task() {
         MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-2}" # Decreasing rollout batch size 4x but we decrease # of mini-gradient steps by 4x -> same number of gradient steps in total as colocated.
         MICRO_TRAIN_BATCH_SIZE=1
         MICRO_ROLLOUT_BATCH_SIZE=2
-        VLLM_GPU_MEM_UTIL=0.985
+        VLLM_GPU_MEM_UTIL=0.96
         VLLM_SYNC_BACKEND=gloo
         COLO_ROLLOUT=32; COLO_EVAL=32 #  
         EVAL_STEPS="${EVAL_STEPS:-$(( COLO_EVAL * COLO_ROLLOUT / ROLLOUT_BATCH_SIZE ))}" # To match the evaluation frequency of the colocated mode.

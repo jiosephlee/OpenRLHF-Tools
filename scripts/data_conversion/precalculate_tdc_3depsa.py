@@ -17,9 +17,11 @@ from tqdm import tqdm
 import concurrent.futures
 import multiprocessing
 
-# Add project root to path
+# Add project root and Intern-S1-recipe to path
 current_dir = Path(__file__).parent.resolve()
-sys.path.append(str(current_dir.parent.parent))
+project_root = current_dir.parent.parent
+sys.path.append(str(project_root))
+sys.path.append(str(project_root / "Intern-S1-recipe"))
 
 # Mock pyPgSQL to prevent RDKit from crashing when trying to import it
 try:

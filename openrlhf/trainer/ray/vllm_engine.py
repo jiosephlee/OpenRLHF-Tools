@@ -158,6 +158,8 @@ class LLMRayActor:
     async def sleep(self, level=1):
         logger.info(f"vLLM sleep requested (level={level})")
         await self.llm.sleep(level=level)
+        import torch
+        torch.cuda.empty_cache()
 
     async def wake_up(self, tags=["weights", "kv_cache"]):
         """Wake up the engine from sleep mode.
@@ -203,8 +205,10 @@ class LLMRayActor:
         """
         import ctypes
         import gc
+        import torch
 
         gc.collect()
+        torch.cuda.empty_cache()
         try:
             ctypes.CDLL("libc.so.6").malloc_trim(0)
         except Exception:

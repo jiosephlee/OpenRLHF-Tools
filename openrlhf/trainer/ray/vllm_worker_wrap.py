@@ -45,7 +45,15 @@ class WorkerWrap:
         else:
             self._model_update_group.broadcast(weight, src=0, stream=torch.cuda.current_stream())
 
-        self.model_runner.model.load_weights(weights=[(name, weight)])
+        try:
+            self.model_runner.model.load_weights(weights=[(name, weight)])
+        except TypeError:
+            # Fallback to direct parameter copy if weight_loader fails (e.g. unexpected kwarg 'weight_name')
+            state_dict = dict(self.model_runner.model.named_parameters())
+            if name in state_dict:
+                state_dict[name].data.copy_(weight)
+            else:
+                raise KeyError(f"Failed to find parameter {name} for direct parameter copy fallback.")
 
         del weight
         # TODO: should we empty cache if all weights have updated?
@@ -69,5 +77,6 @@ class WorkerWrap:
         # in case two processes have different CUDA_VISIBLE_DEVICES
         list_args[6] = device_id
         weight = func(*list_args)
+        self._patch_gpt_oss_weight_loader()
         self.model_runner.model.load_weights(weights=[(name, weight)])
         torch.cuda.synchronize()

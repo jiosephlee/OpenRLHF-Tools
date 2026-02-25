@@ -265,11 +265,11 @@ export OPENRLHF_DEBUG_NAN_GUARD=0
 export RAY_NODE_IP_ADDRESS=$(hostname -I | awk '{print $1}')
 ulimit -n 65535 2>/dev/null || true
 
-ray stop --force 2>/dev/null || true
+python -m ray.scripts.scripts stop --force 2>/dev/null || true
 rm -rf "$RAY_TMPDIR"/ray/session_* 2>/dev/null || true
 
 echo "Starting Ray head node at $RAY_NODE_IP_ADDRESS"
-ray start --head \
+python -m ray.scripts.scripts start --head \
     --node-ip-address "$RAY_NODE_IP_ADDRESS" \
     --num-gpus "$NUM_GPUS" \
     --temp-dir "$RAY_TMPDIR" &
@@ -432,4 +432,4 @@ python -m openrlhf.cli.train_ppo_ray \
 
 ### CLEANUP ###
 echo "Training complete! Stopping Ray..."
-ray stop --force || true
+python -m ray.scripts.scripts stop --force || true

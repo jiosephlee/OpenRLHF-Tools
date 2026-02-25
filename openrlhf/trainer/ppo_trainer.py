@@ -655,7 +655,7 @@ class PPOTrainer(BasePPOTrainer):
                 desc=f"Episode [{episode + 1}] Replay round {replay_round + 1}",
             )
             while True:
-                log_step_trace = global_step >= 5 and (global_step - 5) % 10 == 0
+                log_step_trace = global_step % 2 == 0
                 rollout_samples, filter_pass_rate, prompts_consumed, is_exhausted = (
                     self.samples_generator.generate_samples(
                         global_step=global_step, log_step_trace=log_step_trace, **self.generate_kwargs
@@ -708,9 +708,8 @@ class PPOTrainer(BasePPOTrainer):
         import json as _json
 
         run_name = getattr(self.args, "wandb_run_name", "run").replace("/", "_")
-        date_stamp = time.strftime("%Y%m%d")
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        log_dir = os.path.join(project_root, "runs", run_name, date_stamp, "dataloader_logs")
+        log_dir = os.path.join(project_root, "runs", run_name, "dataloader_logs")
         os.makedirs(log_dir, exist_ok=True)
 
         # Collect all samples (iterate the full dataloader once)
@@ -777,7 +776,7 @@ class PPOTrainer(BasePPOTrainer):
             )
             while True:
                 # Draw one mini-batch of prompts; stop when loader is exhausted.
-                log_step_trace = global_step >= 5 and (global_step - 5) % 10 == 0
+                log_step_trace = global_step % 2 == 0
                 rollout_samples, filter_pass_rate, prompts_consumed, is_exhausted = (
                     self.samples_generator.generate_samples(
                         global_step=global_step, log_step_trace=log_step_trace, **self.generate_kwargs

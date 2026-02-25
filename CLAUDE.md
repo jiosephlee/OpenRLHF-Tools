@@ -15,7 +15,7 @@ This fork extends OpenRLHF with multi-turn tool-calling support for GRPO trainin
 - NaN-safe masked operations (`torch.where` instead of `tensor * mask` in action log probs)
 - Eval at step 0, macro-F1 for TDC, `eval/global_step` W&B axis
 - Checkpoint uploading to HF Hub
-- Rollout trace logging to `runs/<run_name>/<date>/traces/`
+- Rollout trace logging to `runs/<run_name>/traces/`
 - Unified bash scripting system and 1a1v lightweight distributed training
 
 ## Major Changes from Upstream OpenRLHF
@@ -68,7 +68,7 @@ New CLI args: `--push_to_hub`, `--push_to_hub_private`, `--delete_local_after_pu
 ### 8. Rollout Trace Logging
 **File:** `openrlhf/trainer/ppo_utils/experience_maker.py`
 
-Saves one decoded rollout trace per step to `runs/<run_name>/<date>/traces/`. Annotates each record with prompt/action/observation sections decoded from token IDs using action ranges.
+Saves one decoded rollout trace per step to `runs/<run_name>/traces/`. Annotates each record with prompt/action/observation sections decoded from token IDs using action ranges.
 
 ### 9. Memory Optimization & ZeRO-2 Fixes
 - **Liger Kernels**: Experimental support to reduce vRAM OOM issues.

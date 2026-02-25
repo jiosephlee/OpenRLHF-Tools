@@ -16,7 +16,7 @@
 #
 # Feature flags (set via env before sbatch):
 #   MODE=colocated|distributed   # Default: colocated
-#   TOOL_VERSION=v3              # Tool schema version (default: v3)
+#   TOOL_VERSION=v4              # Tool schema version (default: v4)
 #   SMART_REPLAY=1               # Enable smart replay with max_replay_rounds=2
 #   CURRICULUM_BALANCED=1        # Enable curriculum-balanced sampling
 #   MAX_EPOCHS=2                 # Training epochs (default: 2)
@@ -71,7 +71,7 @@ run_task() {
 
     ### FEATURE FLAGS ###
     MODE="${MODE:-colocated}"
-    TOOL_VERSION="${TOOL_VERSION:-v3}"
+    TOOL_VERSION="${TOOL_VERSION:-v4}"
     SMART_REPLAY="${SMART_REPLAY:-0}"
     CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
     MAX_EPOCHS="${MAX_EPOCHS:-1}"
@@ -80,7 +80,7 @@ run_task() {
     ### UNIFIED CONSTANTS ###
     AGENT_MAX_STEPS=30
     ZERO_STAGE=2
-    PROMPT_MAX_LEN=12288 # Any responses longer than this will be truncated.
+    PROMPT_MAX_LEN=8192 # Any responses longer than this will be truncated.
     N_SAMPLES_PER_PROMPT=8
 
     ### MODE-DEPENDENT DEFAULTS ###
@@ -91,10 +91,10 @@ run_task() {
         MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-8}" # This decides how many mini gradient updates are used per rollout; Rollout_batch_size * N_samples_per_prompt / Mini_gradient_steps = number of trajectories used for each gradient update.
         MICRO_TRAIN_BATCH_SIZE=1 # The larger the micro_train_batch_size, the more memory and less gradient accumulation steps for backwards pass.
         MICRO_ROLLOUT_BATCH_SIZE=2 # ^ but for forwards pass. These two parameters are overridden, however, by default since we use dynamic batching.
-        VLLM_GPU_MEM_UTIL=0.65
+        VLLM_GPU_MEM_UTIL=0.6875
         VLLM_SYNC_BACKEND=nccl
         EVAL_STEPS="${EVAL_STEPS:-32}"
-        TRAIN_MAX_TOKENS_PER_GPU=4096 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
+        TRAIN_MAX_TOKENS_PER_GPU=6144 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
         ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.75" | bc | awk '{print int($1)}')
 
     elif [ "$MODE" = "distributed" ]; then

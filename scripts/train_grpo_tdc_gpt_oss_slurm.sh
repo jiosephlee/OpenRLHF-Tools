@@ -16,7 +16,7 @@
 #
 # Feature flags (set via env before sbatch):
 #   MODE=colocated|distributed   # Default: colocated
-#   TOOL_VERSION=v3              # Tool schema version (default: v3)
+#   TOOL_VERSION=v4              # Tool schema version (default: v4)
 #   SMART_REPLAY=1               # Enable smart replay with max_replay_rounds=2
 #   CURRICULUM_BALANCED=1        # Enable curriculum-balanced sampling
 #   MAX_EPOCHS=2                 # Training epochs (default: 2)
@@ -71,7 +71,7 @@ run_task() {
 
     ### FEATURE FLAGS ###
     MODE="${MODE:-colocated}"
-    TOOL_VERSION="${TOOL_VERSION:-v3}"
+    TOOL_VERSION="${TOOL_VERSION:-v4}"
     SMART_REPLAY="${SMART_REPLAY:-0}"
     CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
     MAX_EPOCHS="${MAX_EPOCHS:-1}"

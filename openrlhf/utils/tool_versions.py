@@ -4,7 +4,7 @@ Versions (incremental):
   - v1: RDKit basic + AccFG
   - v2: v1 + remove_salts (standardize_tools)
   - v3: v2 + predict_pka + estimate_logd + get_3d_exposed_polar_surface
-  - v4: v3 + score_structural_alerts (Haydn; no Murcko scaffold)
+  - v4: v2 + predict_pka + estimate_logd + score_structural_alerts (no 3DEPSA)
 
 Usage::
 
@@ -182,8 +182,14 @@ except ImportError:
     HAYDN_OPENAI_TOOLS = []
     HAYDN_CALLABLES = {}
 
+# v4: v2 + pKa + logD + Haydn structural alerts (no 3DEPSA)
 _V4_HAYDN_NAMES = {"score_structural_alerts"}
-_V4_SCHEMAS: List[Dict[str, Any]] = _V3_SCHEMAS + [
+_V4_EXTRA_SCHEMAS: List[Dict[str, Any]] = []
+if PKA_TOOL is not None:
+    _V4_EXTRA_SCHEMAS.append(PKA_TOOL)
+if LOGD_TOOL is not None:
+    _V4_EXTRA_SCHEMAS.append(LOGD_TOOL)
+_V4_SCHEMAS: List[Dict[str, Any]] = _V2_SCHEMAS + _V4_EXTRA_SCHEMAS + [
     t for t in HAYDN_OPENAI_TOOLS if t["function"]["name"] in _V4_HAYDN_NAMES
 ]
 
@@ -202,10 +208,12 @@ if estimate_logd is not None:
 if get_3d_exposed_polar_surface is not None:
     _V3_CALLABLES["get_3d_exposed_polar_surface"] = get_3d_exposed_polar_surface
 
-_V4_CALLABLES: Dict[str, Callable] = {
-    **_V3_CALLABLES,
-    **{k: v for k, v in HAYDN_CALLABLES.items() if k in _V4_HAYDN_NAMES},
-}
+_V4_CALLABLES: Dict[str, Callable] = dict(_V2_CALLABLES)
+if predict_pka is not None:
+    _V4_CALLABLES["predict_pka"] = predict_pka
+if estimate_logd is not None:
+    _V4_CALLABLES["estimate_logd"] = estimate_logd
+_V4_CALLABLES.update({k: v for k, v in HAYDN_CALLABLES.items() if k in _V4_HAYDN_NAMES})
 
 # ---------------------------------------------------------------------------
 # Public registry

@@ -513,7 +513,8 @@ class RemoteExperienceMaker:
                 self.args.ring_attn_size,
                 self.args.ds_tensor_parallel_size,
             )
-            minimum_batch_num = minimum_batch_num // effective_actor_num * effective_actor_num
+            import math
+            minimum_batch_num = math.ceil(minimum_batch_num / effective_actor_num) * effective_actor_num
             num_batch = max(minimum_batch_num, effective_actor_num)
             batch_indexes = get_seqlen_balanced_partitions(total_lengths, num_batch, False)
             for micro_index in batch_indexes:

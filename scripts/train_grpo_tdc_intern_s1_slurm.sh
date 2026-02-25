@@ -62,6 +62,7 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
 ### BEGIN BATCH SCRIPT ###
 module load cuda/13.1.0
+module load MAMBA
 export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/openrlhf_tfv4"
 
 ############################
@@ -91,7 +92,7 @@ run_task() {
     PROMPT_MAX_LEN=12288 # Any responses longer than this will be truncated.
     N_SAMPLES_PER_PROMPT=8
     TRAIN_MAX_TOKENS_PER_GPU=32768 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
-    ROLLOUT_MAX_TOKENS_PER_GPU=$((TRAIN_MAX_TOKENS_PER_GPU*3)) # Rollout max tokens per gpu is set to twice the train max tokens per gpu; safe estimate for memory usage during forwards pass.
+    ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.75" | bc | awk '{print int($1)}')
 
     ### MODE-DEPENDENT DEFAULTS ###
     if [ "$MODE" = "colocated" ]; then
@@ -427,6 +428,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --use_liger_kernel \
         --use_dynamic_batch \
         --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
+        --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \
         --constant_lr_with_warm_up \
         --warmup_steps $WARMUP_STEPS \
         --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
@@ -444,4 +446,4 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
 export -f run_task
 
 mkdir -p logs
-srun bash -c 'eval "$(conda shell.bash hook)" && conda activate '"$CONDA_ENV_PATH"' && run_task'
+srun micromamba run -p $CONDA_ENV_PATH bash -c "run_task"

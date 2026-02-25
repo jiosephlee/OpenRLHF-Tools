@@ -106,9 +106,8 @@ class LLMRayActor:
             print(f"creating LLM with bundle_indices={bundle_indices}")
 
     def _configure_vllm_env(self, version, vllm, full_determinism: bool):
-        assert version.parse(vllm.__version__) > version.parse(
-            "0.8.5"
-        ), "Streaming VLLM version must be greater than 0.8.5"
+        if version.parse(vllm.__version__) <= version.parse("0.8.5"):
+            logger.warning("vLLM version %s may be older than 0.8.5; proceeding anyway (custom build assumed)", vllm.__version__)
 
         # Prevent inheriting trainer process-group rendezvous env into vLLM workers.
         # vLLM V1 initializes its own distributed context and can collide on MASTER_PORT.

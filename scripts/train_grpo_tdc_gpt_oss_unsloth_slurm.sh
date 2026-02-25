@@ -52,7 +52,8 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
 ### BEGIN BATCH SCRIPT ###
 module load cuda/13.1.0
-export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern"
+module load MAMBA
+export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/openrlhf_tfv4"
 
 ############################
 #        TASK SCRIPT       #
@@ -94,7 +95,7 @@ run_task() {
         VLLM_SYNC_BACKEND=nccl
         EVAL_STEPS="${EVAL_STEPS:-32}"
         TRAIN_MAX_TOKENS_PER_GPU=4096 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
-        ROLLOUT_MAX_TOKENS_PER_GPU=$((TRAIN_MAX_TOKENS_PER_GPU*3)) # Rollout max tokens per gpu is set to twice the train max tokens per gpu; safe estimate for memory usage during forwards pass.
+        ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.75" | bc | awk '{print int($1)}')
 
     elif [ "$MODE" = "distributed" ]; then
         ACTOR_GPUS="${ACTOR_GPUS:?"MODE=distributed requires ACTOR_GPUS"}"
@@ -108,7 +109,7 @@ run_task() {
         COLO_ROLLOUT=32; COLO_EVAL=32 #
         EVAL_STEPS="${EVAL_STEPS:-$(( COLO_EVAL * COLO_ROLLOUT / ROLLOUT_BATCH_SIZE ))}" # To match the evaluation frequency of the colocated mode.
         TRAIN_MAX_TOKENS_PER_GPU=12288
-        ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 4.5" | bc | awk '{print int($1)}')
+        ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.75" | bc | awk '{print int($1)}')
     else
         echo "Error: MODE must be 'colocated' or 'distributed', got '$MODE'" >&2
         exit 1
@@ -420,6 +421,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --delete_local_after_push \
         --use_dynamic_batch \
         --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
+        --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \
         --constant_lr_with_warm_up \
         --warmup_steps $WARMUP_STEPS \
         --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
@@ -437,4 +439,4 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
 export -f run_task
 
 mkdir -p logs
-srun bash -c 'eval "$(conda shell.bash hook)" && conda activate '"$CONDA_ENV_PATH"' && run_task'
+srun micromamba run -p $CONDA_ENV_PATH bash -c "run_task"

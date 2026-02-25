@@ -82,7 +82,7 @@ run_task() {
     ### UNIFIED CONSTANTS ###
     AGENT_MAX_STEPS=30
     ZERO_STAGE=2
-    PROMPT_MAX_LEN=12288 # Any responses longer than this will be truncated.
+    PROMPT_MAX_LEN=8192 # Any responses longer than this will be truncated.
     N_SAMPLES_PER_PROMPT=8
 
     ### MODE-DEPENDENT DEFAULTS ###
@@ -96,7 +96,7 @@ run_task() {
         VLLM_GPU_MEM_UTIL=0.7
         VLLM_SYNC_BACKEND=nccl
         EVAL_STEPS="${EVAL_STEPS:-32}"
-        TRAIN_MAX_TOKENS_PER_GPU=4096 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
+        TRAIN_MAX_TOKENS_PER_GPU=6144 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
         ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.75" | bc | awk '{print int($1)}')
 
     elif [ "$MODE" = "distributed" ]; then

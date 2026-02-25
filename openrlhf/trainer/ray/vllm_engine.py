@@ -126,6 +126,8 @@ class LLMRayActor:
 
     async def sleep(self, level=1):
         await self.llm.sleep(level=level)
+        import torch
+        torch.cuda.empty_cache()
 
     async def wake_up(self, tags=["weights", "kv_cache"]):
         """Wake up the engine from sleep mode.
@@ -156,6 +158,25 @@ class LLMRayActor:
     def get_num_unfinished_requests(self) -> int:
         """Number of unfinished requests in vLLM engine."""
         return self.llm.output_processor.get_num_unfinished_requests()
+
+    async def gc_collect(self):
+        """Force garbage collection and return freed pages to the OS.
+
+        Multi-turn agent execution creates many intermediate objects per request
+        (RequestOutputs, token lists, deepcopied SamplingParams).  Python's GC
+        frees them, but glibc's malloc doesn't return pages to the OS — causing
+        RSS to grow indefinitely.  malloc_trim(0) forces that release.
+        """
+        import ctypes
+        import gc
+        import torch
+
+        gc.collect()
+        torch.cuda.empty_cache()
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception:
+            pass  # non-Linux or musl libc
 
     async def generate_responses(
         self,

@@ -29,6 +29,10 @@
 
 set -euo pipefail
 export MALLOC_TRIM_THRESHOLD_=0
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export VLLM_ENABLE_V1_MULTIPROCESSING=0
+export VLLM_CUDAGRAPH_CAPTURE_SIZES="1,2,4,8,16,32"
+
 module load cuda/13.1.0
 
 ### ARGS ###

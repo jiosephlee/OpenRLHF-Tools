@@ -33,6 +33,8 @@ set -euo pipefail
 export MALLOC_TRIM_THRESHOLD_=0
 export DS_SKIP_CUDA_CHECK=1 # Adam_offload checks CUDA version and which version of torch is compiled for it; this is a workaround to skip the CUDA check.
 export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
+export VLLM_ENABLE_V1_MULTIPROCESSING=0
+export VLLM_CUDAGRAPH_CAPTURE_SIZES="1,2,4,8,16,32"
 
 ### ARGS ###
 PRETRAIN_PATH=${1:-"openai/gpt-oss-20b"}

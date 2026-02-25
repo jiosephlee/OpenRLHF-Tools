@@ -52,6 +52,8 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
 ### BEGIN BATCH SCRIPT ###
 module load cuda/13.1.0
+export VLLM_ENABLE_V1_MULTIPROCESSING=0
+export VLLM_CUDAGRAPH_CAPTURE_SIZES="1,2,4,8,16,32"
 export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern"
 
 ############################

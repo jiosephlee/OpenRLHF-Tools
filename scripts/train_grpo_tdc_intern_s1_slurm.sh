@@ -146,7 +146,7 @@ run_task() {
 
     ### WARMUP LOGIC ###
     WARMUP_STEPS=20
-    WARM_STEPS_MULTIPLIER=$(python -c "print($ROLLOUT_BATCH_SIZE * $N_SAMPLES_PER_PROMPT / $TRAIN_BATCH_SIZE)"); # This is the multipler to account for mini-gradient steps; currently it should always amount to 8 regardless of mode.
+    WARM_STEPS_MULTIPLIER=$(( MINI_GRADIENT_STEPS * COLO_ROLLOUT / ROLLOUT_BATCH_SIZE ))
     if [ "$WARM_STEPS_MULTIPLIER" -ne 8 ]; then
         echo "Error: WARM_STEPS_MULTIPLIER should amount to 8 currently regardless of mode." >&2
         exit 1
@@ -191,7 +191,7 @@ run_task() {
 
     ### RUN CONFIG ###
     N_TASKS=${#TASK_NAMES[@]}
-    DATE_TAG=$(date +%m%d)
+    DATE_TAG=$(date +%m%d_%H%M)
     CHAT_PROTOCOL="intern_s1"
     if [ "$MODE" = "colocated" ]; then
         RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"

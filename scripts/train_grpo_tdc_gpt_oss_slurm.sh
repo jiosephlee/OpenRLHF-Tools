@@ -13,7 +13,7 @@
 #
 #   # Distributed:
 #   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 sbatch scripts/train_grpo_tdc_gpt_oss_slurm.sh
-#
+#      MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1
 # Feature flags (set via env before sbatch):
 #   MODE=colocated|distributed   # Default: colocated
 #   TOOL_VERSION=v4              # Tool schema version (default: v4)

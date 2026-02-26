@@ -167,7 +167,7 @@ run_task() {
     fi
 
     ### MULTI-TASK ###
-    TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
+    TASK_NAMES=(BBB_Martins)
     TASK_LABEL="Base"
 
     ### W&B ###

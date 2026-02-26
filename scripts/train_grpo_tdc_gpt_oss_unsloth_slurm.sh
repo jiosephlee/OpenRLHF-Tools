@@ -30,11 +30,11 @@
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
 #SBATCH --qos=normal
-#SBATCH --gpus=2
+#SBATCH --gpus=4
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=768G
+#SBATCH --mem=1228G
 #SBATCH --cpus-per-gpu=8
-#SBATCH --time=00-1:00:00
+#SBATCH --time=00-12:00:00
 
 ### PARCC PARAMETERS ###
 export OMP_NUM_THREADS=16
@@ -104,12 +104,12 @@ elif [ "$MODE" = "distributed" ]; then
     MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-2}" # Decreasing rollout batch size 4x but we decrease # of mini-gradient steps by 4x -> same number of gradient steps in total as colocated.
     MICRO_TRAIN_BATCH_SIZE=1
     MICRO_ROLLOUT_BATCH_SIZE=2
-    VLLM_GPU_MEM_UTIL=0.95
+    VLLM_GPU_MEM_UTIL=0.965
     VLLM_SYNC_BACKEND=gloo
     COLO_ROLLOUT=32; COLO_EVAL=32 #
     EVAL_STEPS="${EVAL_STEPS:-$(( COLO_EVAL * COLO_ROLLOUT / ROLLOUT_BATCH_SIZE ))}" # To match the evaluation frequency of the colocated mode.
-    TRAIN_MAX_TOKENS_PER_GPU=12288
-    ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.75" | bc | awk '{print int($1)}')
+    TRAIN_MAX_TOKENS_PER_GPU=18432
+    ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2.25" | bc | awk '{print int($1)}')
 else
     echo "Error: MODE must be 'colocated' or 'distributed', got '$MODE'" >&2
     exit 1
@@ -377,8 +377,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --kl_estimator k1 \
     --eps_clip_low_high 0.2 0.272 \
     --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
-    --save_steps 100 \
     --save_hf_ckpt \
+    --disable_ds_ckpt \
     --logging_steps 1 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
     --micro_train_batch_size $MICRO_TRAIN_BATCH_SIZE \

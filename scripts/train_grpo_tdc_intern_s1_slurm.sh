@@ -15,7 +15,7 @@
 #   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
 #
 # With smart replay:
-#   SMART_REPLAY=1 sbatch train_grpo_tdc_intern_s1_slurm.sh
+#   SMART_REPLAY=1 EVAL_STEPS=16 sbatch train_grpo_tdc_intern_s1_slurm.sh
 #
 # With curriculum balanced:
 #   CURRICULUM_BALANCED=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
@@ -26,7 +26,7 @@
 # Feature flags (set via env before sbatch):
 #   MODE=colocated|distributed   # Default: colocated
 #   TOOL_VERSION=v4              # Tool schema version (default: v4)
-#   SMART_REPLAY=1               # Enable smart replay with max_replay_rounds=2
+#   SMART_REPLAY=1               # Enable smart replay with max_replay_rounds=5
 #   CURRICULUM_BALANCED=1        # Enable curriculum-balanced sampling
 #   MAX_EPOCHS=2                 # Training epochs (default: 2)
 #   EXTRA_ARGS="..."             # Additional CLI flags
@@ -39,11 +39,11 @@
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
 #SBATCH --qos=normal
-#SBATCH --gpus=8
+#SBATCH --gpus=2
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=1024G
+#SBATCH --mem=256G
 #SBATCH --cpus-per-gpu=8
-#SBATCH --time=0-24:00:00
+#SBATCH --time=0-12:00:00
 #SBATCH --account=myatskar-lab
 
 ### PARCC PARAMETERS ###
@@ -362,7 +362,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         OPTIONAL_FLAGS+=" --dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE"
     fi
     if [ "$SMART_REPLAY" = "1" ]; then
-        OPTIONAL_FLAGS+=" --smart_replay --max_replay_rounds 2"
+        OPTIONAL_FLAGS+=" --smart_replay --max_replay_rounds 5"
     fi
     if [ "$CURRICULUM_BALANCED" = "1" ]; then
         OPTIONAL_FLAGS+=" --curriculum_balanced"
@@ -387,8 +387,8 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --kl_estimator k1 \
         --eps_clip_low_high 0.2 0.272 \
         --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
-        --save_steps 100 \
         --save_hf_ckpt \
+        --disable_ds_ckpt \
         --logging_steps 1 \
         --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
         --micro_train_batch_size $MICRO_TRAIN_BATCH_SIZE \

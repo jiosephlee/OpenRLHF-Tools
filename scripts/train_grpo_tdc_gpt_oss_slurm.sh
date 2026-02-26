@@ -381,8 +381,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --kl_estimator k1 \
     --eps_clip_low_high 0.2 0.272 \
     --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
-    --save_steps 100 \
     --save_hf_ckpt \
+    --disable_ds_ckpt \
     --logging_steps 1 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
     --micro_train_batch_size $MICRO_TRAIN_BATCH_SIZE \
@@ -427,6 +427,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \
     --mxfp4_dequantize \
     --constant_lr_with_warm_up \
+    --skip_eval_step_zero \
     --warmup_steps $WARMUP_STEPS \
     --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
     $MODE_FLAGS \

@@ -441,6 +441,14 @@ class ActorPPOTrainer(ABC):
 
         if cache_reset_refs:
             ray.get(cache_reset_refs)
+
+        # After all weights are synced, trigger MXFP4 post-load swizzling
+        # on any MoE layers that received new quantized weights.
+        # Only relevant for GPT-OSS models with --mxfp4_dequantize.
+        if getattr(self.strategy.args, "mxfp4_dequantize", False) and torch.distributed.get_rank() == 0:
+            reprocess_refs = [engine.reprocess_mxfp4_weights.remote() for engine in self.vllm_engines]
+            ray.get(reprocess_refs)
+
         torch.cuda.empty_cache()
         torch_dist_barrier_and_cuda_sync()
 

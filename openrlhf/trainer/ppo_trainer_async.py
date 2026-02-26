@@ -1,4 +1,5 @@
 import asyncio
+import gc
 
 import ray
 from ray.util.queue import Queue
@@ -67,6 +68,61 @@ class GenerateSamplesActor:
     def load_state_dict(self, state_dict):
         self.prompts_dataloader.load_state_dict(state_dict)
 
+    def log_dataloader_order(self):
+        """Log first/last 100 samples from the dataloader for validation.
+
+        Mirrors PPOTrainer._log_dataloader_order() but runs on the generator actor
+        which owns the prompts_dataloader.
+        """
+        import json as _json
+        import os
+
+        run_name = getattr(self.args, "wandb_run_name", "run").replace("/", "_")
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        log_dir = os.path.join(project_root, "runs", run_name, "dataloader_logs")
+        os.makedirs(log_dir, exist_ok=True)
+
+        all_samples = []
+        for _indices, datasources, prompts, _labels in self.prompts_dataloader:
+            for ds, prompt in zip(datasources, prompts):
+                all_samples.append((ds, prompt))
+
+        n = len(all_samples)
+        head = 100
+        tail = 100
+
+        log_path = os.path.join(log_dir, "dataset_order.jsonl")
+        with open(log_path, "w") as f:
+            f.write(_json.dumps({"total_samples": n, "head": head, "tail": tail}) + "\n")
+            for i in range(min(head, n)):
+                ds, prompt = all_samples[i]
+                f.write(_json.dumps({
+                    "index": i,
+                    "datasource": ds,
+                    "prompt_tail": prompt[-100:] if len(prompt) > 100 else prompt,
+                }) + "\n")
+            if n > head + tail:
+                f.write(_json.dumps({"gap": f"...skipped indices {head} to {n - tail - 1}..."}) + "\n")
+            for i in range(max(head, n - tail), n):
+                ds, prompt = all_samples[i]
+                f.write(_json.dumps({
+                    "index": i,
+                    "datasource": ds,
+                    "prompt_tail": prompt[-100:] if len(prompt) > 100 else prompt,
+                }) + "\n")
+
+        logger.info(f"[DataloaderLog] Wrote {n} sample summary to {log_path}")
+
+        if n > 0:
+            sample_prompt_path = os.path.join(log_dir, "sample0_prompt.txt")
+            with open(sample_prompt_path, "w", encoding="utf-8") as f:
+                f.write(all_samples[0][1])
+            logger.info(f"[DataloaderLog] Wrote full system prompt of sample 0 to {sample_prompt_path}")
+
+    def get_episode_filter_stats(self):
+        """Return episode filter stats for W&B logging (called by PPOTrainerAsync after each episode)."""
+        return self.samples_generator.episode_filter_stats
+
     def fit(self, episode: int, total_consumed_prompts: int):
         for episode in range(episode, self.args.num_episodes):
             dataset_length = len(self.prompts_dataloader)
@@ -86,6 +142,9 @@ class GenerateSamplesActor:
                         self.samples_generator.generate_samples(global_step=total_consumed_prompts, **self.generate_kwargs)
                     )
                     total_consumed_prompts += prompts_consumed
+                    # Capture per-step filtering stats before they're reset by the next generate_samples call.
+                    step_too_easy_pct = self.samples_generator.step_too_easy_pct
+                    step_too_hard_pct = self.samples_generator.step_too_hard_pct
                 finally:
                     ray.get(self.vllm_lock.release.remote())
 
@@ -96,7 +155,7 @@ class GenerateSamplesActor:
                         "total_consumed_prompts": total_consumed_prompts,
                         "data_loader_state_dict": self.prompts_dataloader.state_dict(),
                     }
-                    self.rollout_queue.put((rollout_samples, client_states, filter_pass_rate), block=True)
+                    self.rollout_queue.put((rollout_samples, client_states, filter_pass_rate, step_too_easy_pct, step_too_hard_pct), block=True)
                     if prompts_consumed:
                         pbar.update(prompts_consumed)
                 else:
@@ -157,13 +216,24 @@ class TrainingActor(BasePPOTrainer):
         self.rollout_queue = rollout_queue
         self.rollout_slots = rollout_slots
 
+    def _evaluate_with_lock(self, global_step):
+        """Run evaluation while holding the vLLM lock to prevent generation overlap."""
+        eval_generate_kwargs = self.generate_kwargs.copy()
+        eval_generate_kwargs["temperature"] = self.args.eval_temperature
+        eval_generate_kwargs["n_samples_per_prompt"] = self.args.eval_n_samples_per_prompt
+        ray.get(self.vllm_lock.acquire.remote())
+        try:
+            self.evaluate(global_step, **eval_generate_kwargs)
+        finally:
+            ray.get(self.vllm_lock.release.remote())
+
     def fit(self, global_step: int):
         while True:
             payload = self.rollout_queue.get(block=True)
             if payload == "done":
                 break
 
-            rollout_samples, client_states, filter_pass_rate = payload
+            rollout_samples, client_states, filter_pass_rate, step_too_easy_pct, step_too_hard_pct = payload
 
             # Batch consumed => free one token to allow generator to produce next batch.
             self.rollout_slots.put(None, block=True)
@@ -172,6 +242,8 @@ class TrainingActor(BasePPOTrainer):
 
             if self.args.dynamic_filtering:
                 status["dynamic_filtering_pass_rate"] = filter_pass_rate
+                status["too_easy_pct"] = step_too_easy_pct
+                status["too_hard_pct"] = step_too_hard_pct
 
             log_status = {k: v for k, v in status.items() if k not in ["generated_samples"]}
             logger.info(f"✨ Global step {global_step}: {log_status}")
@@ -179,6 +251,20 @@ class TrainingActor(BasePPOTrainer):
             client_states.update({"global_step": global_step})
             self.save_logs_and_checkpoints(global_step, status, client_states)
 
+            # Periodic evaluation (mirrors sync trainer).
+            if global_step % self.args.eval_steps == 0 and self.eval_dataloader:
+                self._evaluate_with_lock(global_step)
+
+            # Free accumulated Ray object store refs and Python garbage.
+            del rollout_samples, status
+            gc.collect()
+
+        # Final eval at end of training (skip if last step already ran eval).
+        if self.eval_dataloader and (global_step % self.args.eval_steps != 0):
+            logger.info(f"Running final evaluation at global_step {global_step}")
+            self._evaluate_with_lock(global_step)
+
+        self._write_final_tool_usage_plot()
         if self.wandb_logger:
             self.wandb_logger.close()
         if self.tensorboard_logger:
@@ -214,6 +300,16 @@ class PPOTrainerAsync:
         vllm_engines,
         **generate_kwargs,
     ) -> None:
+        self.args = strategy.args
+
+        # Warn if smart replay is enabled — not supported in async mode.
+        if getattr(self.args, "smart_replay", False):
+            logger.warning(
+                "[AsyncTrainer] --smart_replay is not supported with --async_train. "
+                "Replay episodes require interleaved generation and training which cannot be "
+                "coordinated across separate async actors. Smart replay will be skipped."
+            )
+
         # get eval and save steps
         if strategy.args.eval_steps == -1:
             strategy.args.eval_steps = float("inf")  # do not evaluate
@@ -274,6 +370,9 @@ class PPOTrainerAsync:
                     self.trainer_actor.broadcast_to_vllm.remote(),
                 ]
             )
+
+        # Log dataloader ordering for validation before training begins.
+        ray.get(self.generator_actor.log_dataloader_order.remote())
 
         # Evaluate at step 0 (before any training) unless resuming from a checkpoint.
         if global_step == 0:

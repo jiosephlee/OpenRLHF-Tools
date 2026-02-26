@@ -12,7 +12,7 @@
 #   sbatch scripts/train_grpo_tdc_gpt_oss_unsloth_slurm.sh
 #
 #   # Distributed:
-#   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 sbatch scripts/train_grpo_tdc_gpt_oss_unsloth_slurm.sh
+#   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 sbatch train_grpo_tdc_gpt_oss_unsloth_slurm.sh
 #
 # Feature flags (set via env before sbatch):
 #   MODE=colocated|distributed   # Default: colocated
@@ -30,11 +30,11 @@
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
 #SBATCH --qos=normal
-#SBATCH --gpus=6
+#SBATCH --gpus=2
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=1224G
+#SBATCH --mem=768G
 #SBATCH --cpus-per-gpu=8
-#SBATCH --time=00-18:00:00
+#SBATCH --time=00-1:00:00
 
 ### PARCC PARAMETERS ###
 export OMP_NUM_THREADS=16
@@ -80,7 +80,7 @@ EXTRA_ARGS="${EXTRA_ARGS:-}"
 ### UNIFIED CONSTANTS ###
 AGENT_MAX_STEPS=30
 ZERO_STAGE=2
-PROMPT_MAX_LEN=8192 # Any responses longer than this will be truncated.
+PROMPT_MAX_LEN=6144 # Any responses longer than this will be truncated.
 N_SAMPLES_PER_PROMPT=8
 
 ### MODE-DEPENDENT DEFAULTS ###
@@ -104,7 +104,7 @@ elif [ "$MODE" = "distributed" ]; then
     MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-2}" # Decreasing rollout batch size 4x but we decrease # of mini-gradient steps by 4x -> same number of gradient steps in total as colocated.
     MICRO_TRAIN_BATCH_SIZE=1
     MICRO_ROLLOUT_BATCH_SIZE=2
-    VLLM_GPU_MEM_UTIL=0.96
+    VLLM_GPU_MEM_UTIL=0.95
     VLLM_SYNC_BACKEND=gloo
     COLO_ROLLOUT=32; COLO_EVAL=32 #
     EVAL_STEPS="${EVAL_STEPS:-$(( COLO_EVAL * COLO_ROLLOUT / ROLLOUT_BATCH_SIZE ))}" # To match the evaluation frequency of the colocated mode.

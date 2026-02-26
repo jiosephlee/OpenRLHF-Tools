@@ -341,7 +341,7 @@ def create_vllm_engines(
 
             actor_kwargs["compilation_config"] = CompilationConfig(
                 mode=CompilationMode.VLLM_COMPILE,
-                cudagraph_capture_sizes=[1, 2, 4, 8, 16],
+                cudagraph_capture_sizes=[1, 2, 4, 8, 16, 32, 64],
                 pass_config={"fuse_allreduce_rms": True, "eliminate_noops": True, "fuse_attn_quant": True},
             )
             actor_kwargs["async_scheduling"] = True

@@ -50,21 +50,53 @@ class WorkerWrap:
                 print(f"[WorkerWrap] load_weights TypeError workaround activated: {e}")
                 self._fallback_warned = True
             state_dict = self._get_param_cache()
-            if name in state_dict:
-                state_dict[name].data.copy_(weight)
-            elif name + ".weight" in state_dict:
-                state_dict[name + ".weight"].data.copy_(weight)
+            
+            # Use vLLM's own mapper to find the correct parameter name if possible
+            mapped_name = name
+            if hasattr(self.model_runner.model, "hf_to_vllm_mapper"):
+                mapper = self.model_runner.model.hf_to_vllm_mapper
+                if hasattr(mapper, "_mappings"):
+                    # Basic lookup in the mappings dictionary if available
+                    import re
+                    for hf_pattern, vllm_pattern in mapper._mappings.items():
+                        if isinstance(hf_pattern, re.Pattern):
+                            match = hf_pattern.match(name)
+                            if match:
+                                # Apply replacement
+                                if callable(vllm_pattern):
+                                    res = vllm_pattern(match)
+                                    if res:
+                                        mapped_name = res
+                                else:
+                                    mapped_name = hf_pattern.sub(vllm_pattern, name)
+                                break
+                        elif hf_pattern == name:
+                            mapped_name = vllm_pattern
+                            break
+            # Hardcoded fallbacks for MoE weights
+            if mapped_name == name:
+                if "gate_up_proj" in name:
+                    mapped_name = name.replace("gate_up_proj", "w13_weight")
+                elif "down_proj" in name:
+                    mapped_name = name.replace("down_proj", "w2_weight")
+
+            mapped_name = str(mapped_name)
+
+            if mapped_name in state_dict:
+                state_dict[mapped_name].data.copy_(weight)
+            elif mapped_name + ".weight" in state_dict:
+                state_dict[mapped_name + ".weight"].data.copy_(weight)
             else:
                 matched = False
                 for k, param in state_dict.items():
-                    if k.endswith(name) or name.endswith(k) or k.replace(".weight", "") == name:
+                    if k.endswith(mapped_name) or mapped_name.endswith(k) or k.replace(".weight", "") == mapped_name:
                         param.data.copy_(weight)
                         # Cache the successful fuzzy match so future lookups are O(1)
-                        state_dict[name] = param
+                        state_dict[mapped_name] = param
                         matched = True
                         break
                 if not matched:
-                    raise KeyError(f"Failed to find parameter {name} for fallback. Available: {list(state_dict)[:5]}...")
+                    raise KeyError(f"Failed to find parameter {mapped_name} (original: {name}) for fallback. Available: {list(state_dict)[:5]}...")
 
     def update_weight(self, name, dtype, shape, empty_cache=False):
         import torch

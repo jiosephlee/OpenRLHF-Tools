@@ -115,6 +115,25 @@ class WorkerWrap:
         # Transpose to match the checkpoint layout before quantizing.
         weight_t = weight.transpose(-1, -2).contiguous()
 
+        target_shape = target_param.data.shape
+        scale_shape = scale_param.data.shape
+
+        # vLLM pads MoE weight dimensions for kernel alignment (e.g. to multiples of 512).
+        # Derive the required padded dimensions from the target param shape and zero-pad
+        # the transposed weight before quantizing so the output matches vLLM's layout.
+        # target_shape = [E, out_padded, in_packed_padded] where in_packed = in_features // 2
+        out_padded = target_shape[1]
+        in_padded = target_shape[2] * 2  # unpack: 2 FP4 values per uint8 byte
+        out_actual, in_actual = weight_t.shape[1], weight_t.shape[2]
+
+        if out_padded != out_actual or in_padded != in_actual:
+            padded = torch.zeros(
+                weight_t.shape[0], out_padded, in_padded,
+                dtype=weight_t.dtype, device=weight_t.device,
+            )
+            padded[:, :out_actual, :in_actual] = weight_t
+            weight_t = padded
+
         # Quantize each expert independently
         num_experts = weight_t.shape[0]
         packed_list = []
@@ -127,17 +146,15 @@ class WorkerWrap:
         packed_weight = torch.stack(packed_list)
         packed_scales = torch.stack(scale_list)
 
-        # Reshape to match vLLM's expected shapes
-        # vLLM stores packed weight with the last dim halved (2 values per byte)
-        target_shape = target_param.data.shape
-        scale_shape = scale_param.data.shape
-
         if not getattr(self, "_mxfp4_quantize_warned", False):
+            pad_info = ""
+            if out_padded != out_actual or in_padded != in_actual:
+                pad_info = f" (zero-padded [{out_actual},{in_actual}]→[{out_padded},{in_padded}])"
             print(
                 f"[MXFP4 Quantize] {mapped_name}: "
                 f"bf16 {list(weight.shape)} → uint8 packed {list(packed_weight.shape)} "
                 f"(target: {list(target_shape)}), "
-                f"scales {list(packed_scales.shape)} (target: {list(scale_shape)})"
+                f"scales {list(packed_scales.shape)} (target: {list(scale_shape)}){pad_info}"
             )
             self._mxfp4_quantize_warned = True
 

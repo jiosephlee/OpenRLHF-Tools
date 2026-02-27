@@ -607,9 +607,9 @@ if __name__ == "__main__":
     parser.add_argument("--curriculum_balanced", action="store_true", default=False,
                         help="Evenly interleave samples from each dataset across training")
     parser.add_argument("--multi_stage_dispatch", action="store_true", default=False,
-                        help="Enable continuous-refill dispatch for vLLM generation. "
-                             "Dispatches 75%% upfront, keeps 25%% as reserve, drip-feeds to "
-                             "engines that drop below a low-watermark. Best for 2-GPU setups.")
+                        help="Enable single-stage deferred dispatch for vLLM generation. "
+                             "Dispatches 75%% upfront, holds 25%% as reserve, dispatches "
+                             "reserve in one batch when any engine drops to ≤4 pending.")
 
     # TensorBoard parameters
     parser.add_argument("--use_tensorboard", type=str, default=None, help="TensorBoard logging path")

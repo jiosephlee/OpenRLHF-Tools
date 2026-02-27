@@ -46,7 +46,7 @@
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
 #SBATCH --qos=normal
-#SBATCH --gpus=4
+#SBATCH --gpus=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=256G
 #SBATCH --cpus-per-gpu=8
@@ -81,7 +81,7 @@ run_task() {
 
     # Prevent corrupted torch inductor cache from crashing vLLM compilation.
     # We nuke any leftover default-location cache from prior runs.
-    rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ 2>/dev/null || true
+    # rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ 2>/dev/null || true
 
     ### ARGS (override via env before sbatch) ###
     PRETRAIN_PATH="${PRETRAIN_PATH:-jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05}"

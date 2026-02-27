@@ -226,15 +226,6 @@ class WorkerWrap:
                 self._quantize_and_load_mxfp4(mapped_name, weight)
                 return
 
-        # Pad standard weights if vLLM's target param is larger (e.g. GPT-OSS MoE padding)
-        if target_param is not None and weight.shape != target_param.data.shape:
-            # Create a zero tensor of the target shape and copy weight in
-            padded_weight = torch.zeros_like(target_param.data, dtype=weight.dtype, device=weight.device)
-            # Assuming padding is at the end of dimensions
-            slices = tuple(slice(0, s) for s in weight.shape)
-            padded_weight[slices] = weight
-            weight = padded_weight
-
         # Standard path: try vLLM's load_weights first, fallback to direct copy
         try:
             self.model_runner.model.load_weights(weights=[(name, weight)])

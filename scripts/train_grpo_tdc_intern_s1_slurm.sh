@@ -14,8 +14,8 @@
 #   # Distributed:
 #   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
 #
-# With smart replay:
-#   SMART_REPLAY=1 EVAL_STEPS=16 ROLLOUT_BATCH_SIZE=16 sbatch train_grpo_tdc_intern_s1_slurm.sh
+# With smart replay (halved effective rollout batch size):
+#   SMART_REPLAY=1 COLO_EVAL_STEPS=16 EFFECTIVE_ROLLOUT_BATCH_SIZE=4 sbatch train_grpo_tdc_intern_s1_slurm.sh
 #
 # With curriculum balanced:
 #   CURRICULUM_BALANCED=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
@@ -24,8 +24,15 @@
 #   SMART_REPLAY=1 CURRICULUM_BALANCED=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
 #
 # Feature flags (set via env before sbatch):
-#   MODE=colocated|distributed   # Default: colocated
-#   TOOL_VERSION=v4              # Tool schema version (default: v4)
+#   MODE=colocated|distributed           # Default: colocated
+#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8       # Rollout batch size in distributed/async mode.
+#   EFFECTIVE_MINI_GRADIENT_STEPS=2     # Mini gradient steps in distributed/async mode.
+#   ASYNC_ADVANTAGE=4                   # Scale factor: colocated uses ASYNC_ADVANTAGE × EFFECTIVE_* for both
+#                                        # ROLLOUT and MINI, keeping ROLLOUT/MINI ratio constant across modes.
+#                                        # Reflects that colocated is synchronous and can afford more rollouts
+#                                        # before each update without the 1-step off-policy lag of async.
+#   COLO_EVAL_STEPS=32                  # Eval frequency (global steps) for colocated; distributed scales by ASYNC_ADVANTAGE.
+#   TOOL_VERSION=v4                      # Tool schema version (default: v4)
 #   SMART_REPLAY=1               # Enable smart replay with max_replay_rounds=5
 #   CURRICULUM_BALANCED=1        # Enable curriculum-balanced sampling
 #   MAX_EPOCHS=2                 # Training epochs (default: 2)
@@ -84,6 +91,9 @@ run_task() {
 
     ### FEATURE FLAGS ###
     MODE="${MODE:-colocated}"
+    EFFECTIVE_ROLLOUT_BATCH_SIZE="${EFFECTIVE_ROLLOUT_BATCH_SIZE:-8}"
+    EFFECTIVE_MINI_GRADIENT_STEPS="${EFFECTIVE_MINI_GRADIENT_STEPS:-2}"
+    ASYNC_ADVANTAGE="${ASYNC_ADVANTAGE:-4}"
     TOOL_VERSION="${TOOL_VERSION:-v4}"
     SMART_REPLAY="${SMART_REPLAY:-0}"
     CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
@@ -98,28 +108,29 @@ run_task() {
     TRAIN_MAX_TOKENS_PER_GPU=32768 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
     ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.75" | bc | awk '{print int($1)}')
 
+    COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-32}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
+
     ### MODE-DEPENDENT DEFAULTS ###
     if [ "$MODE" = "colocated" ]; then
         ACTOR_GPUS="${ACTOR_GPUS:-$NUM_GPUS}"
         VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
-        ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-32}" # This decides how many prompts are used for each rollout.
-        MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-8}" # This decides how many mini gradient updates are used per rollout; Rollout_batch_size * N_samples_per_prompt / Mini_gradient_steps = number of trajectories used for each gradient update.
+        ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-$(( EFFECTIVE_ROLLOUT_BATCH_SIZE * ASYNC_ADVANTAGE ))}" # This decides how many prompts are used for each rollout.
+        MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))}" # This decides how many mini gradient updates are used per rollout; Rollout_batch_size * N_samples_per_prompt / Mini_gradient_steps = number of trajectories used for each gradient update.
         MICRO_TRAIN_BATCH_SIZE=4 # The larger the micro_train_batch_size, the more memory and less gradient accumulation steps for backwards pass.
         MICRO_ROLLOUT_BATCH_SIZE=8 # ^ but for forwards pass. These two parameters are overridden, however, by default since we use dynamic batching.
         VLLM_GPU_MEM_UTIL=0.825
         VLLM_SYNC_BACKEND=nccl
-        EVAL_STEPS="${EVAL_STEPS:-32}"
+        EVAL_STEPS="${EVAL_STEPS:-$COLO_EVAL_STEPS}"
     elif [ "$MODE" = "distributed" ]; then
         ACTOR_GPUS="${ACTOR_GPUS:?"MODE=distributed requires ACTOR_GPUS"}"
         VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:?"MODE=distributed requires VLLM_NUM_ENGINES"}"
-        ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-8}" # Decrease rollout batch size so that we can actually be more on-policy when we do async by doing less mini-gradient steps and more "on-policy" gradient updates that are off by only 1 step.
-        MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-2}" # Decreasing rollout batch size 4x but we decrease # of mini-gradient steps by 4x -> same number of gradient steps in total as colocated.
+        ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-$EFFECTIVE_ROLLOUT_BATCH_SIZE}" # Distributed uses the effective value directly; smaller than colocated to be more on-policy (only 1-step async lag).
+        MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-$EFFECTIVE_MINI_GRADIENT_STEPS}" # Fewer mini gradient steps to match; ROLLOUT/MINI ratio is identical to colocated, same total gradient steps.
         MICRO_TRAIN_BATCH_SIZE=1
         MICRO_ROLLOUT_BATCH_SIZE=2
         VLLM_GPU_MEM_UTIL=0.975
         VLLM_SYNC_BACKEND=gloo
-        COLO_ROLLOUT=32; COLO_EVAL=32
-        EVAL_STEPS="${EVAL_STEPS:-$(( COLO_EVAL * COLO_ROLLOUT / ROLLOUT_BATCH_SIZE ))}" # To match the evaluation frequency of the colocated mode.
+        EVAL_STEPS="${EVAL_STEPS:-$(( COLO_EVAL_STEPS * ASYNC_ADVANTAGE ))}" # Distributed takes ASYNC_ADVANTAGE more global steps per colocated step, so scale eval frequency accordingly.
     else
         echo "Error: MODE must be 'colocated' or 'distributed', got '$MODE'" >&2
         exit 1
@@ -127,12 +138,6 @@ run_task() {
 
     ### BATCH SIZE DERIVATION ###
     TRAIN_BATCH_SIZE=$(( ROLLOUT_BATCH_SIZE * N_SAMPLES_PER_PROMPT / MINI_GRADIENT_STEPS ))
-
-    # Assert ratio invariant
-    COLO_ROLLOUT=32; COLO_MINI=8; DIST_ROLLOUT=8; DIST_MINI=2
-    if [ $(( COLO_ROLLOUT * DIST_MINI )) -ne $(( DIST_ROLLOUT * COLO_MINI )) ]; then
-        echo "Error: rollout/mini_gradient_steps ratio mismatch" >&2; exit 1
-    fi
 
     ### GPU CHECK (distributed only) ###
     if [ "$MODE" = "distributed" ]; then
@@ -160,11 +165,9 @@ run_task() {
 
     ### WARMUP LOGIC ###
     WARMUP_STEPS=20
-    WARM_STEPS_MULTIPLIER=$(( MINI_GRADIENT_STEPS * COLO_ROLLOUT / ROLLOUT_BATCH_SIZE ))
-    if [ "$WARM_STEPS_MULTIPLIER" -ne 8 ]; then
-        echo "Error: WARM_STEPS_MULTIPLIER should amount to 8 currently regardless of mode." >&2
-        exit 1
-    fi
+    # Given the ratio invariant, WARM_STEPS_MULTIPLIER = MINI * (EFFECTIVE_ROLLOUT * ASYNC_ADVANTAGE) / ROLLOUT
+    # = EFFECTIVE_MINI * ASYNC_ADVANTAGE in both modes.
+    WARM_STEPS_MULTIPLIER=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
 
     ### MULTI-TASK ###
     TASK_NAMES=(BBB_Martins)

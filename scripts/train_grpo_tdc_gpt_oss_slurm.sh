@@ -13,7 +13,7 @@
 #
 #   # Distributed:
 #   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 sbatch scripts/train_grpo_tdc_gpt_oss_slurm.sh
-#      MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1
+#      MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 sbatch train_grpo_tdc_gpt_oss_slurm.sh
 # Feature flags (set via env before sbatch):
 #   MODE=colocated|distributed   # Default: colocated
 #   TOOL_VERSION=v4              # Tool schema version (default: v4)
@@ -421,6 +421,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
         --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \
         --mxfp4_dequantize \
+        --vllm_sync_mxfp4 \
         --constant_lr_with_warm_up \
         --skip_eval_step_zero \
         --warmup_steps $WARMUP_STEPS \

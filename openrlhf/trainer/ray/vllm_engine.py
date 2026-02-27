@@ -162,13 +162,13 @@ class LLMRayActor:
             args=(name, dtype, shape, ipc_handles, empty_cache, mxfp4_quantize_on_the_fly),
         )
 
-    async def reprocess_mxfp4_weights(self):
-        """Trigger process_weights_after_loading() on MoE layers after weight sync.
+    async def post_weight_sync(self):
+        """Run process_weights_after_loading() after all weights are synced.
 
-        Must be called after all expert weights have been broadcast to finalize
-        the MXFP4 swizzling/interleaving required by FlashInfer.
+        Handles MXFP4 swizzling/interleaving and any other post-load processing.
+        Must be called once after all weights have been broadcast.
         """
-        return await self.llm.collective_rpc("reprocess_mxfp4_weights")
+        return await self.llm.collective_rpc("post_weight_sync")
 
     async def reset_prefix_cache(self):
         await self.llm.reset_prefix_cache()

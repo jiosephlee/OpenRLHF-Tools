@@ -79,7 +79,7 @@ class WorkerWrap:
     def _is_mxfp4_expert_weight(self, mapped_name):
         """Check if this parameter is an MXFP4-quantized MoE expert weight (not scale or bias)."""
         return (
-            ("w13_weight" in mapped_name or "w2_weight" in mapped_name)
+            ("w13_weight" in mapped_name or "w2_weight" in mapped_name or "gate_up_proj" in mapped_name or "down_proj" in mapped_name)
             and "_scale" not in mapped_name
             and "_bias" not in mapped_name
             and "bias" not in mapped_name
@@ -119,13 +119,11 @@ class WorkerWrap:
         scale_shape = scale_param.data.shape
 
         # vLLM pads MoE weight dimensions for kernel alignment (e.g. to multiples of 512).
-        # Derive the required padded dimensions from the target param shape and zero-pad
-        # the transposed weight before quantizing so the output matches vLLM's layout.
         # target_shape = [E, out_padded, in_packed_padded] where in_packed = in_features // 2
         out_padded = target_shape[1]
         in_padded = target_shape[2] * 2  # unpack: 2 FP4 values per uint8 byte
         out_actual, in_actual = weight_t.shape[1], weight_t.shape[2]
-
+        
         if out_padded != out_actual or in_padded != in_actual:
             padded = torch.zeros(
                 weight_t.shape[0], out_padded, in_padded,

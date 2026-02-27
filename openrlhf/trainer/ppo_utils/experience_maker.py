@@ -612,7 +612,7 @@ class SamplesGenerator:
                         self._episode_easy_count += 1
                         if ds_idx is not None:
                             self._discarded_easy_indices.add(ds_idx)
-                        if filtered_count <= 3 or filtered_count % 25 == 0:
+                        if filtered_count % 10 == 0:
                             logger.info(
                                 "Dynamic filtering rejected group (too easy) "
                                 f"(rejected={filtered_count}, accepted={len(accepted_experiences)}/{num_prompts}, "
@@ -628,7 +628,7 @@ class SamplesGenerator:
                             self._discarded_hard_indices.add(ds_idx)
                         if smart_replay and ds_idx is not None:
                             self._replay_hard_indices.add(ds_idx)
-                        if filtered_count <= 3 or filtered_count % 25 == 0:
+                        if filtered_count % 10 == 0:
                             logger.info(
                                 "Dynamic filtering rejected group (too hard) "
                                 f"(rejected={filtered_count}, accepted={len(accepted_experiences)}/{num_prompts}, "

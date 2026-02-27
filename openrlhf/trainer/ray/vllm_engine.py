@@ -377,6 +377,7 @@ def create_vllm_engines(
                 num_cpus=num_gpus,
                 num_gpus=num_gpus,
                 scheduling_strategy=scheduling_strategy,
+                max_concurrency=1000,
             ).remote(**actor_kwargs)
         )
 

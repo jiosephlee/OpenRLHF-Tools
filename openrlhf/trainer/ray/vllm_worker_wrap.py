@@ -56,8 +56,13 @@ class WorkerWrap:
                         mapped_name = vllm_pattern
                         break
         # Hardcoded fallbacks for MoE weights
+        # Bias mappings must come first to avoid gate_up_proj matching gate_up_proj_bias
         if mapped_name == name:
-            if "gate_up_proj" in name:
+            if "gate_up_proj_bias" in name:
+                mapped_name = name.replace("gate_up_proj_bias", "w13_bias")
+            elif "down_proj_bias" in name:
+                mapped_name = name.replace("down_proj_bias", "w2_bias")
+            elif "gate_up_proj" in name:
                 mapped_name = name.replace("gate_up_proj", "w13_weight")
             elif "down_proj" in name and "bias" not in name:
                 mapped_name = name.replace("down_proj", "w2_weight")
@@ -223,6 +228,29 @@ class WorkerWrap:
             if target_param is not None and target_param.dtype == torch.uint8:
                 self._quantize_and_load_mxfp4(mapped_name, weight)
                 return
+
+        # Pad bias or other auxiliary weights if vLLM padded the target parameter for alignment
+        if mxfp4_quantize_on_the_fly and target_param is not None:
+            if weight.shape != target_param.shape and len(weight.shape) == len(target_param.shape):
+                pad_needed = [max(0, t - w) for t, w in zip(target_param.shape, weight.shape)]
+                if any(p > 0 for p in pad_needed):
+                    import torch.nn.functional as F
+                    # pad takes a flat list of (pad_left, pad_right, pad_top, pad_bottom ...) starting from last dim
+                    pad_tuple = []
+                    for i in reversed(range(len(pad_needed))):
+                        pad_tuple.extend([0, pad_needed[i]])
+                    
+                    padded = F.pad(weight, pad_tuple)
+                    if not getattr(self, "_mxfp4_pad_warned_" + mapped_name, False):
+                        print(f"[WorkerWrap] Padded {mapped_name} from {list(weight.shape)} to {list(padded.shape)} to match vLLM's kernel alignment.")
+                        setattr(self, "_mxfp4_pad_warned_" + mapped_name, True)
+                    weight = padded
+
+        # If we padded the weight to match the target, copy directly to avoid
+        # load_weights re-slicing/remapping the already-padded tensor
+        if mxfp4_quantize_on_the_fly and target_param is not None and weight.shape == target_param.shape:
+            target_param.data.copy_(weight)
+            return
 
         # Standard path: try vLLM's load_weights first, fallback to direct copy
         try:

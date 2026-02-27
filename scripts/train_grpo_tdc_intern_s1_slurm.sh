@@ -15,8 +15,8 @@
 #   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
 #
 # With smart replay (halved effective rollout batch size):
-#   SMART_REPLAY=1 COLO_EVAL_STEPS=8 EFFECTIVE_ROLLOUT_BATCH_SIZE=8 sbatch train_grpo_tdc_intern_s1_slurm.sh
-#
+#   SMART_REPLAY=1 COLO_EVAL_STEPS=8 EFFECTIVE_ROLLOUT_BATCH_SIZE=4 sbatch train_grpo_tdc_intern_s1_slurm.sh
+#   SMART_REPLAY=1 COLO_EVAL_STEPS=16 sbatch train_grpo_tdc_intern_s1_slurm.sh
 # With curriculum balanced:
 #   CURRICULUM_BALANCED=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
 #
@@ -46,11 +46,11 @@
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
 #SBATCH --qos=normal
-#SBATCH --gpus=2
+#SBATCH --gpus=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=256G
 #SBATCH --cpus-per-gpu=8
-#SBATCH --time=0-8:00:00
+#SBATCH --time=0-12:00:00
 #SBATCH --account=myatskar-lab
 
 ### PARCC PARAMETERS ###

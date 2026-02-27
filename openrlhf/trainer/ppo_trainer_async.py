@@ -5,6 +5,8 @@ import ray
 from ray.util.queue import Queue
 from tqdm import tqdm
 
+from torch.utils.data import DataLoader, Subset
+
 from openrlhf.trainer.ppo_trainer import BasePPOTrainer, prepare_datasets
 from openrlhf.trainer.ppo_utils.experience_maker import SamplesGenerator
 from openrlhf.trainer.ray.launcher import RayActorGroup
@@ -169,7 +171,79 @@ class GenerateSamplesActor:
             pbar.close()
             self.samples_generator.save_discarded_indices(episode)
 
+            if getattr(self.args, "smart_replay", False):
+                total_consumed_prompts = self._run_replay_episodes(episode, total_consumed_prompts)
+
         self.rollout_queue.put("done", block=True)
+
+    def _run_replay_episodes(self, episode, total_consumed_prompts):
+        """After primary episode, replay filtered prompts for up to max_replay_rounds."""
+        hard_indices, kept_indices = self.samples_generator.get_replay_indices()
+        replay_indices = list(hard_indices | kept_indices)
+        max_replay_rounds = getattr(self.args, "max_replay_rounds", 2)
+        original_dataloader = self.samples_generator.prompts_dataloader
+
+        for replay_round in range(max_replay_rounds):
+            if len(replay_indices) < self.args.rollout_batch_size:
+                logger.info(
+                    f"[AsyncSmartReplay] Round {replay_round + 1}: only {len(replay_indices)} prompts "
+                    f"(< rollout_batch_size={self.args.rollout_batch_size}), skipping."
+                )
+                break
+
+            logger.info(
+                f"[AsyncSmartReplay] Episode {episode + 1}, round {replay_round + 1}/{max_replay_rounds}: "
+                f"replaying {len(replay_indices)} prompts (hard={len(hard_indices)}, kept={len(kept_indices)})"
+            )
+
+            subset = Subset(original_dataloader.dataset, replay_indices)
+            replay_dataloader = DataLoader(
+                subset, batch_size=1, shuffle=True,
+                collate_fn=original_dataloader.dataset.collate_fn,
+            )
+            self.samples_generator.prompts_dataloader = replay_dataloader
+
+            while True:
+                self.rollout_slots.get(block=True)
+                ray.get(self.vllm_lock.acquire.remote())
+                try:
+                    rollout_samples, filter_pass_rate, prompts_consumed, is_exhausted = (
+                        self.samples_generator.generate_samples(
+                            global_step=total_consumed_prompts, **self.generate_kwargs
+                        )
+                    )
+                    total_consumed_prompts += prompts_consumed
+                    step_too_easy_pct = self.samples_generator.step_too_easy_pct
+                    step_too_hard_pct = self.samples_generator.step_too_hard_pct
+                finally:
+                    ray.get(self.vllm_lock.release.remote())
+
+                if rollout_samples:
+                    client_states = {
+                        "episode": episode,
+                        "total_consumed_prompts": total_consumed_prompts,
+                        "data_loader_state_dict": {},  # ephemeral, not resumable
+                    }
+                    self.rollout_queue.put(
+                        (rollout_samples, client_states, filter_pass_rate,
+                         step_too_easy_pct, step_too_hard_pct),
+                        block=True,
+                    )
+                else:
+                    self.rollout_slots.put(None, block=True)
+
+                if is_exhausted:
+                    break
+
+            hard_indices, kept_indices = self.samples_generator.get_replay_indices()
+            replay_indices = list(hard_indices | kept_indices)
+            logger.info(
+                f"[AsyncSmartReplay] Round {replay_round + 1} done. "
+                f"{len(replay_indices)} non-easy prompts remain (hard={len(hard_indices)}, kept={len(kept_indices)})."
+            )
+
+        self.samples_generator.prompts_dataloader = original_dataloader
+        return total_consumed_prompts
 
 
 @ray.remote
@@ -301,14 +375,6 @@ class PPOTrainerAsync:
         **generate_kwargs,
     ) -> None:
         self.args = strategy.args
-
-        # Warn if smart replay is enabled — not supported in async mode.
-        if getattr(self.args, "smart_replay", False):
-            logger.warning(
-                "[AsyncTrainer] --smart_replay is not supported with --async_train. "
-                "Replay episodes require interleaved generation and training which cannot be "
-                "coordinated across separate async actors. Smart replay will be skipped."
-            )
 
         # get eval and save steps
         if strategy.args.eval_steps == -1:

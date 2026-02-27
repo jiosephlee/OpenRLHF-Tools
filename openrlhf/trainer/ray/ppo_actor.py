@@ -30,6 +30,88 @@ from .launcher import BaseModelActor
 from .utils import get_physical_gpu_id
 
 
+def _build_vllm_sync_params(model, zero_stage: int):
+    """Build (hf_name, tensor) list for vLLM weight sync.
+
+    For PEFT LoRA models:
+      - Merges lora_B @ lora_A * scaling into base weight, broadcasts under
+        canonical HF name (strips "base_model.model." prefix and ".base_layer.").
+      - Skips lora_A / lora_B tensors (absorbed into merged weight above).
+    For plain models: returns list(model.named_parameters()) unchanged.
+
+    ZeRO-3 + LoRA: raises NotImplementedError. All three tensors (base,
+    lora_A, lora_B) must be gathered simultaneously before merging — not
+    yet supported. Use ZeRO-2.
+    """
+    try:
+        from peft import PeftModel
+        from peft.tuners.lora import LoraLayer
+        is_peft = isinstance(model, PeftModel)
+    except ImportError:
+        is_peft = False
+
+    if not is_peft:
+        return list(model.named_parameters())
+
+    if zero_stage == 3:
+        raise NotImplementedError(
+            "LoRA weight sync to vLLM with ZeRO-3 is not yet supported. "
+            "Use ZeRO-2 when training with lora_rank > 0."
+        )
+
+    # Build peft_module_path -> LoraLayer
+    lora_module_map = {
+        name: mod
+        for name, mod in model.named_modules()
+        if isinstance(mod, LoraLayer)
+    }
+
+    skip_names = set()
+    result = []
+
+    # Pass 1: merged LoRA weights
+    for peft_name, lora_mod in lora_module_map.items():
+        adapter = getattr(lora_mod, "active_adapter", None)
+        if adapter is None:
+            adapters = getattr(lora_mod, "active_adapters", None) or list(lora_mod.lora_A.keys())
+            adapter = adapters[0]
+
+        prefix = peft_name + "."
+        skip_names.add(f"{prefix}base_layer.weight")
+        skip_names.add(f"{prefix}lora_A.{adapter}.weight")
+        skip_names.add(f"{prefix}lora_B.{adapter}.weight")
+
+        base_w = lora_mod.base_layer.weight.data
+        lora_A = lora_mod.lora_A[adapter].weight.data
+        lora_B = lora_mod.lora_B[adapter].weight.data
+        merged = (base_w + (lora_B @ lora_A) * lora_mod.scaling[adapter]).to(base_w.dtype)
+
+        # Canonical HF name: strip PEFT prefix and .base_layer path segment
+        hf_name = peft_name
+        if hf_name.startswith("base_model.model."):
+            hf_name = hf_name[len("base_model.model."):]
+        result.append((hf_name + ".weight", merged))
+
+        # Bias (if present in base layer, rare)
+        if lora_mod.base_layer.bias is not None:
+            skip_names.add(f"{prefix}base_layer.bias")
+            result.append((hf_name + ".bias", lora_mod.base_layer.bias))
+
+    # Pass 2: all remaining non-LoRA params
+    for name, param in model.named_parameters():
+        if name in skip_names:
+            continue
+        if ".lora_A." in name or ".lora_B." in name or ".lora_embedding" in name:
+            continue
+        hf_name = name
+        if hf_name.startswith("base_model.model."):
+            hf_name = hf_name[len("base_model.model."):]
+        hf_name = hf_name.replace(".base_layer.", ".")  # safety strip
+        result.append((hf_name, param))
+
+    return result
+
+
 class ActorPPOTrainer(ABC):
     def __init__(
         self,
@@ -369,13 +451,15 @@ class ActorPPOTrainer(ABC):
 
         torch.cuda.empty_cache()
         model = self.actor.model.module
-        count, num_params = 0, len(list(model.named_parameters()))
+        broadcast_params = _build_vllm_sync_params(model, self.strategy.args.zero_stage)
+        count, num_params = 0, len(broadcast_params)
 
         def _broadcast_param(param, count, num_params):
             use_ray = getattr(self.strategy.args, "vllm_sync_with_ray", False)
             # Fire all vllm engines for broadcast
             if torch.distributed.get_rank() == 0:
-                shape = param.shape if self.strategy.args.zero_stage != 3 else param.ds_shape
+                shape = (param.ds_shape if (self.strategy.args.zero_stage == 3 and hasattr(param, "ds_shape"))
+                         else param.shape)
                 mxfp4_flag = getattr(self.strategy.args, "vllm_sync_mxfp4", False)
                 refs = [
                     engine.update_weight.remote(name, dtype=param.dtype, shape=shape, empty_cache=count == num_params, mxfp4_quantize_on_the_fly=mxfp4_flag)
@@ -405,7 +489,8 @@ class ActorPPOTrainer(ABC):
                 for d in ipc_handle_list:
                     ipc_handles.update(d)
 
-                shape = param.shape if self.strategy.args.zero_stage != 3 else param.ds_shape
+                shape = (param.ds_shape if (self.strategy.args.zero_stage == 3 and hasattr(param, "ds_shape"))
+                         else param.shape)
                 mxfp4_flag = getattr(self.strategy.args, "vllm_sync_mxfp4", False)
                 refs = [
                     engine.update_weight_cuda_ipc.remote(
@@ -421,25 +506,27 @@ class ActorPPOTrainer(ABC):
                 ray.get(refs)
             torch_dist_barrier_and_cuda_sync()
 
-        for name, param in model.named_parameters():
+        for name, param in broadcast_params:
             count += 1  # empty_cache at last param
+            # Merged LoRA tensors are plain torch.Tensor (no ds_shape) — skip ZeRO gather
+            is_ds_param = hasattr(param, "ds_shape")
 
             # broadcast
             if not self.use_cuda_ipc:
                 # For ZeRO-3, allgather sharded parameter and broadcast to all vllm engines by rank 0
-                if self.strategy.args.ds_tensor_parallel_size > 1:
+                if self.strategy.args.ds_tensor_parallel_size > 1 and is_ds_param:
                     with deepspeed.module_inject.layers.GatherReplacedLayerParams([param], model, enabled=True):
                         _broadcast_param(param, count, num_params)
                 else:
-                    with deepspeed.zero.GatheredParameters([param], enabled=self.strategy.args.zero_stage == 3):
+                    with deepspeed.zero.GatheredParameters([param], enabled=self.strategy.args.zero_stage == 3 and is_ds_param):
                         _broadcast_param(param, count, num_params)
             # CUDA IPC
             else:
-                if self.strategy.args.ds_tensor_parallel_size > 1:
+                if self.strategy.args.ds_tensor_parallel_size > 1 and is_ds_param:
                     with deepspeed.module_inject.layers.GatherReplacedLayerParams([param], model, enabled=True):
                         _handle_cuda_ipc(param, count, num_params)
                 else:
-                    with deepspeed.zero.GatheredParameters([param], enabled=self.strategy.args.zero_stage == 3):
+                    with deepspeed.zero.GatheredParameters([param], enabled=self.strategy.args.zero_stage == 3 and is_ds_param):
                         _handle_cuda_ipc(param, count, num_params)
 
         if cache_reset_refs:

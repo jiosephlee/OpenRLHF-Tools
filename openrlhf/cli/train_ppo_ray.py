@@ -377,6 +377,12 @@ if __name__ == "__main__":
         default=False,
         help="Use Mxfp4Config(dequantize=True) for GPT-OSS models. Forces eager attention.",
     )
+    parser.add_argument(
+        "--vllm_sync_mxfp4",
+        action="store_true",
+        default=False,
+        help="Quantize bf16 actor weights to MXFP4 on the fly during vLLM weight synchronization.",
+    )
     parser.add_argument("--lora_rank", type=int, default=0)
     parser.add_argument("--lora_alpha", type=int, default=16)
     parser.add_argument("--target_modules", type=str, nargs="*", default="all-linear")

@@ -376,8 +376,9 @@ class ActorPPOTrainer(ABC):
             # Fire all vllm engines for broadcast
             if torch.distributed.get_rank() == 0:
                 shape = param.shape if self.strategy.args.zero_stage != 3 else param.ds_shape
+                mxfp4_flag = getattr(self.strategy.args, "vllm_sync_mxfp4", False)
                 refs = [
-                    engine.update_weight.remote(name, dtype=param.dtype, shape=shape, empty_cache=count == num_params)
+                    engine.update_weight.remote(name, dtype=param.dtype, shape=shape, empty_cache=count == num_params, mxfp4_quantize_on_the_fly=mxfp4_flag)
                     for engine in self.vllm_engines
                 ]
 
@@ -405,6 +406,7 @@ class ActorPPOTrainer(ABC):
                     ipc_handles.update(d)
 
                 shape = param.shape if self.strategy.args.zero_stage != 3 else param.ds_shape
+                mxfp4_flag = getattr(self.strategy.args, "vllm_sync_mxfp4", False)
                 refs = [
                     engine.update_weight_cuda_ipc.remote(
                         name,
@@ -412,6 +414,7 @@ class ActorPPOTrainer(ABC):
                         shape=shape,
                         ipc_handles=ipc_handles,
                         empty_cache=count == num_params,
+                        mxfp4_quantize_on_the_fly=mxfp4_flag,
                     )
                     for engine in self.vllm_engines
                 ]
@@ -445,7 +448,7 @@ class ActorPPOTrainer(ABC):
         # After all weights are synced, trigger MXFP4 post-load swizzling
         # on any MoE layers that received new quantized weights.
         # Only relevant for GPT-OSS models with --mxfp4_dequantize.
-        if getattr(self.strategy.args, "mxfp4_dequantize", False) and torch.distributed.get_rank() == 0:
+        if getattr(self.strategy.args, "vllm_sync_mxfp4", False) and torch.distributed.get_rank() == 0:
             reprocess_refs = [engine.reprocess_mxfp4_weights.remote() for engine in self.vllm_engines]
             ray.get(reprocess_refs)
 

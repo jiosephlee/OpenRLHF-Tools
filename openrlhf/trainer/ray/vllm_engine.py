@@ -150,16 +150,16 @@ class LLMRayActor:
             args=(master_address, master_port, rank_offset, world_size, group_name, backend, use_ray),
         )
 
-    async def update_weight(self, name, dtype, shape, empty_cache=False):
+    async def update_weight(self, name, dtype, shape, empty_cache=False, mxfp4_quantize_on_the_fly=False):
         return await self.llm.collective_rpc(
             "update_weight",
-            args=(name, dtype, shape, empty_cache),
+            args=(name, dtype, shape, empty_cache, mxfp4_quantize_on_the_fly),
         )
 
-    async def update_weight_cuda_ipc(self, name, dtype, shape, ipc_handles, empty_cache=False):
+    async def update_weight_cuda_ipc(self, name, dtype, shape, ipc_handles, empty_cache=False, mxfp4_quantize_on_the_fly=False):
         return await self.llm.collective_rpc(
             "update_weight_cuda_ipc",
-            args=(name, dtype, shape, ipc_handles, empty_cache),
+            args=(name, dtype, shape, ipc_handles, empty_cache, mxfp4_quantize_on_the_fly),
         )
 
     async def reprocess_mxfp4_weights(self):

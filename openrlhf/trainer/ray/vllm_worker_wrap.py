@@ -208,7 +208,7 @@ class WorkerWrap:
             print(f"[MXFP4] Re-processed {reprocessed} MoE layers after weight sync")
         self._mxfp4_layers_dirty = set()
 
-    def _load_weight_into_model(self, name, weight):
+    def _load_weight_into_model(self, name, weight, mxfp4_quantize_on_the_fly=False):
         """Load a single weight tensor into the vLLM model.
 
         For MXFP4 expert weights: quantizes bf16→uint8 on the fly (Actor bf16 is unchanged).
@@ -217,13 +217,23 @@ class WorkerWrap:
         import torch
 
         mapped_name = self._map_hf_name_to_vllm(name)
+        target_param = self._find_param(mapped_name)
 
         # Check if this is an MXFP4 expert weight that needs on-the-fly quantization
-        if self._is_mxfp4_expert_weight(mapped_name) and weight.dtype in (torch.bfloat16, torch.float16):
-            target_param = self._find_param(mapped_name)
+        # Only do this if the workflow explicitly enabled it via the CLI flag
+        if mxfp4_quantize_on_the_fly and self._is_mxfp4_expert_weight(mapped_name) and weight.dtype in (torch.bfloat16, torch.float16):
             if target_param is not None and target_param.dtype == torch.uint8:
                 self._quantize_and_load_mxfp4(mapped_name, weight)
                 return
+
+        # Pad standard weights if vLLM's target param is larger (e.g. GPT-OSS MoE padding)
+        if target_param is not None and weight.shape != target_param.data.shape:
+            # Create a zero tensor of the target shape and copy weight in
+            padded_weight = torch.zeros_like(target_param.data, dtype=weight.dtype, device=weight.device)
+            # Assuming padding is at the end of dimensions
+            slices = tuple(slice(0, s) for s in weight.shape)
+            padded_weight[slices] = weight
+            weight = padded_weight
 
         # Standard path: try vLLM's load_weights first, fallback to direct copy
         try:
@@ -235,13 +245,12 @@ class WorkerWrap:
                 print(f"[WorkerWrap] load_weights TypeError workaround activated: {e}")
                 self._fallback_warned = True
 
-            param = self._find_param(mapped_name)
-            if param is not None:
-                param.data.copy_(weight)
+            if target_param is not None:
+                target_param.data.copy_(weight)
             else:
                 raise KeyError(f"Failed to find parameter {mapped_name} (original: {name}) for fallback. Available: {list(self._get_param_cache())[:5]}...")
 
-    def update_weight(self, name, dtype, shape, empty_cache=False):
+    def update_weight(self, name, dtype, shape, empty_cache=False, mxfp4_quantize_on_the_fly=False):
         import torch
 
         """Broadcast weight to all vllm workers from source rank 0 (actor model)"""
@@ -257,14 +266,14 @@ class WorkerWrap:
         else:
             self._model_update_group.broadcast(weight, src=0, stream=torch.cuda.current_stream())
 
-        self._load_weight_into_model(name, weight)
+        self._load_weight_into_model(name, weight, mxfp4_quantize_on_the_fly)
 
         del weight
         # TODO: should we empty cache if all weights have updated?
         # if empty_cache:
         #     torch.cuda.empty_cache()
 
-    def update_weight_cuda_ipc(self, name, dtype, shape, ipc_handles=None, empty_cache=False):
+    def update_weight_cuda_ipc(self, name, dtype, shape, ipc_handles=None, empty_cache=False, mxfp4_quantize_on_the_fly=False):
         import torch
         from openrlhf.trainer.ray.utils import get_physical_gpu_id
 
@@ -282,6 +291,6 @@ class WorkerWrap:
         list_args[6] = device_id
         weight = func(*list_args)
 
-        self._load_weight_into_model(name, weight)
+        self._load_weight_into_model(name, weight, mxfp4_quantize_on_the_fly)
 
         torch.cuda.synchronize()

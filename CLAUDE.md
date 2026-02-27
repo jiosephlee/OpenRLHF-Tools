@@ -16,6 +16,7 @@ This fork extends OpenRLHF with multi-turn tool-calling support for GRPO trainin
 - Eval at step 0, macro-F1 for TDC, `eval/global_step` W&B axis
 - Checkpoint uploading to HF Hub
 - Rollout trace logging to `runs/<run_name>/traces/`
+- On-the-fly MXFP4 quantization for bf16→MXFP4 weight sync to vLLM
 - Unified bash scripting system and 1a1v lightweight distributed training
 
 ## Major Changes from Upstream OpenRLHF
@@ -63,7 +64,7 @@ Changed `(tensor * mask).sum()` to `torch.where(mask.bool(), tensor, torch.zeros
 ### 7. Checkpoint Uploading
 **Files:** `openrlhf/cli/train_ppo_ray.py`, `openrlhf/trainer/ppo_trainer.py`
 
-New CLI args: `--push_to_hub`, `--push_to_hub_private`, `--delete_local_after_push`, `--save_steps_ratio`
+New CLI args: `--push_to_hub`, `--push_to_hub_private`, `--delete_local_after_push`, `--save_steps`
 
 ### 8. Rollout Trace Logging
 **File:** `openrlhf/trainer/ppo_utils/experience_maker.py`
@@ -87,7 +88,12 @@ Saves one decoded rollout trace per step to `runs/<run_name>/traces/`. Annotates
 
 In colocate mode, vLLM's `sleep()` releases weights but doesn't return the memory to the CUDA driver. The Actor process then OOMs during backward passes because `torch.cuda.memory.caching_allocator` still holds the pages. Fix: call `torch.cuda.empty_cache()` in both `sleep()` and `gc_collect()` so freed GPU memory is actually returned to the driver and available to the Actor.
 
-### 13. Ceiling Fix for Dynamic Batch Splitting
+### 14. On-the-Fly MXFP4 Quantization for Weight Sync
+**Files:** `openrlhf/trainer/ray/vllm_worker_wrap.py`, `openrlhf/utils/mxfp4_quantize.py`
+
+When the Actor trains in bf16 but vLLM serves with MXFP4-quantized weights (e.g. GPT-OSS MoE), the weight sync must quantize on the fly. `quantize_to_mxfp4()` reimplements NVIDIA ModelOpt's E8M0-scaled FP4 E2M1 packing (transpose, per-expert block scaling, uint8 nibble packing). After writing packed weights + scales into vLLM's parameter storage, `reprocess_mxfp4_weights()` calls `process_weights_after_loading()` on dirty layers to re-run FlashInfer's swizzle/interleave pass.
+
+### 15. Ceiling Fix for Dynamic Batch Splitting
 **File:** `openrlhf/trainer/ppo_utils/experience_maker.py`
 
 `minimum_batch_num` was rounded down with floor division (`//`), which could produce 0 microbatches when `minimum_batch_num < effective_actor_num`, causing packed sequences to accidentally exceed `rollout_max_tokens_per_gpu`. Fix: use `math.ceil()` to round up, ensuring at least one microbatch per actor and respecting the token budget.
@@ -155,7 +161,7 @@ GRPO Training Loop
 - `--push_to_hub <repo_id>`: Upload checkpoints to HF Hub
 - `--push_to_hub_private`: Make repo private
 - `--delete_local_after_push`: Delete local checkpoint after upload
-- `--save_steps_ratio <float>`: Compute save_steps as fraction of total steps
+- `--save_steps <int>`: Save checkpoint every N steps
 
 **Environment Variables:**
 Set automatically by vllm_engine.py:
@@ -179,8 +185,10 @@ Debug flags:
 | `openrlhf/datasets/prompts_dataset.py` | Per-task tool schema injection via tools_map |
 | `openrlhf/trainer/ppo_utils/experience_maker.py` | 3-stage dispatch, trace logging, filtered count logging |
 | `openrlhf/trainer/ppo_trainer.py` | evaluate() in BasePPOTrainer, step-0 eval, macro-F1, hub push |
-| `openrlhf/trainer/ppo_trainer_async.py` | Eval wired into async trainer |
-| `openrlhf/trainer/ray/vllm_engine.py` | Passes chat_protocol env var to Ray actors |
+| `openrlhf/trainer/ppo_trainer_async.py` | Eval wired into async trainer, missing logging/cleanup fixes |
+| `openrlhf/trainer/ray/vllm_engine.py` | Passes chat_protocol env var to Ray actors, reduced CUDA graphs, MXFP4 weight sync |
+| `openrlhf/trainer/ray/vllm_worker_wrap.py` | On-the-fly bf16→MXFP4 quantization for vLLM weight sync |
+| `openrlhf/utils/mxfp4_quantize.py` | New: Self-contained MXFP4 (E8M0 + FP4 E2M1) quantization utility |
 | `openrlhf/trainer/ray/ppo_actor.py` | NaN guard assertions |
 | `openrlhf/models/actor.py` | torch.where NaN fix, logit diagnostics |
 | `openrlhf/models/utils.py` | torch.where in masked_mean |
@@ -194,5 +202,5 @@ Debug flags:
 
 ---
 
-**Last Updated:** 2026-02-24
+**Last Updated:** 2026-02-26
 **Base Version:** OpenRLHF (latest main branch)

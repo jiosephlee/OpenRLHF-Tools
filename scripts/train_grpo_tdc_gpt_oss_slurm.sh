@@ -140,12 +140,6 @@ run_task() {
         LAYOUT_TAG="${ACTOR_GPUS}a${VLLM_GPUS}v"
     fi
 
-    ### AUTOTP (when distributed and ACTOR_GPUS > 1) ###
-    AUTOTP_FLAGS=""
-    if [ "$MODE" = "distributed" ] && [ "$ACTOR_GPUS" -gt 1 ]; then
-        AUTOTP_FLAGS="--ring_attn_size 1 --ring_head_stride 8 --ds_tensor_parallel_size $ACTOR_GPUS"
-    fi
-
     ### MODE FLAGS ###
     if [ "$MODE" = "colocated" ]; then
         MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep --adam_offload" #gpt-oss always needs adam_offload as it can't fit on 8 GPUs with colocated mode otherwise.
@@ -314,9 +308,6 @@ run_task() {
     echo "TRAIN_BATCH_SIZE: $TRAIN_BATCH_SIZE"
     echo "VLLM_NUM_ENGINES: $VLLM_NUM_ENGINES"
     echo "EVAL_STEPS: $EVAL_STEPS"
-    if [ -n "$AUTOTP_FLAGS" ]; then
-        echo "AutoTP: $AUTOTP_FLAGS"
-    fi
     echo "----------------------------------------"
     echo "Agent Max Steps: $AGENT_MAX_STEPS"
     echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
@@ -435,7 +426,6 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --warmup_steps $WARMUP_STEPS \
         --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
         $MODE_FLAGS \
-        $AUTOTP_FLAGS \
         $OPTIONAL_FLAGS \
         $EXTRA_ARGS
 

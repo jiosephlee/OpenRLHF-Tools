@@ -530,22 +530,29 @@ class SamplesGenerator:
 
         smart_replay = getattr(self.args, "smart_replay", False)
 
-        # Staged dispatch (50/35/15): send half immediately, hold the rest
-        # in a queue.  Each subsequent stage dispatches when an engine is
-        # nearly idle, so the heap-based balancer sees real load imbalance.
-        # The small final reserve (15%) means the balancer has the most
-        # information from completed jobs before the last rebalancing decision.
+        multi_stage = getattr(self.args, "multi_stage_dispatch", False)
         n = len(prompts)
-        mid = max(1, n // 2)
-        q3 = mid + max(1, int(n * 0.35))
-        staged_batches = [
-            (prompts[mid:q3], labels[mid:q3], dataset_indices[mid:q3]),
-            (prompts[q3:], labels[q3:], dataset_indices[q3:]),
-        ]
-        # Drop empty trailing stages (e.g. when batch is very small).
-        staged_batches = [(p, l, ix) for p, l, ix in staged_batches if p]
 
-        dispatches = self._dispatch_prompts_to_vllm(prompts[:mid], labels[:mid], **generate_kwargs)
+        if multi_stage:
+            # Continuous-refill dispatch: send 75% upfront, hold 25% as a
+            # reserve that drip-feeds to whichever engine drops below the
+            # low-watermark.  Best for small GPU counts (e.g. 2) where load
+            # imbalance between engines is common.
+            LOW_WATERMARK = 4  # refill when engine has fewer than this many pending tasks
+            initial_count = max(1, int(n * 0.75))
+            reserve = list(zip(
+                prompts[initial_count:],
+                labels[initial_count:],
+                dataset_indices[initial_count:],
+            ))
+            dispatches = self._dispatch_prompts_to_vllm(prompts[:initial_count], labels[:initial_count], **generate_kwargs)
+        else:
+            # Default: dispatch everything upfront.  The heap balancer in
+            # _dispatch_prompts_to_vllm already spreads load evenly, and
+            # vLLM's internal scheduler handles queuing efficiently.
+            reserve = []
+            dispatches = self._dispatch_prompts_to_vllm(prompts, labels, **generate_kwargs)
+
         pending_refs = [ref for ref, _ in dispatches]
         ref_to_engine = {ref: engine_idx for ref, engine_idx in dispatches}
         # Map each ref → its dataset index for smart replay tracking.
@@ -571,20 +578,17 @@ class SamplesGenerator:
                 ds_idx = ref_to_dataset_idx.pop(ref, None)
                 engine_pending[engine_idx] -= 1
 
-                # Dispatch next staged batch when any engine is nearly idle,
-                # so new work is queued before the engine fully drains.
-                if staged_batches and engine_pending[engine_idx] <= 1:
-                    next_prompts, next_labels, next_indices = staged_batches.pop(0)
-                    logger.info(
-                        f"Stage-{3 - len(staged_batches)} dispatch triggered: "
-                        f"engine {engine_idx} nearly idle, pending={dict(engine_pending)}"
-                    )
-                    next_dispatches = self._dispatch_prompts_to_vllm(next_prompts, next_labels, **generate_kwargs)
-                    for j, (new_ref, new_engine_idx) in enumerate(next_dispatches):
-                        pending_refs.append(new_ref)
-                        ref_to_engine[new_ref] = new_engine_idx
-                        ref_to_dataset_idx[new_ref] = next_indices[j]
-                        engine_pending[new_engine_idx] += 1
+                # Continuous refill: when an engine drops below the watermark,
+                # feed it prompts from the reserve one at a time.
+                if multi_stage and reserve:
+                    while reserve and engine_pending[engine_idx] < LOW_WATERMARK:
+                        r_prompt, r_label, r_ds_idx = reserve.pop(0)
+                        new_dispatches = self._dispatch_prompts_to_vllm([r_prompt], [r_label], **generate_kwargs)
+                        for new_ref, new_engine_idx in new_dispatches:
+                            pending_refs.append(new_ref)
+                            ref_to_engine[new_ref] = new_engine_idx
+                            ref_to_dataset_idx[new_ref] = r_ds_idx
+                            engine_pending[new_engine_idx] += 1
 
                 # Build Experience objects for each vLLM response returned from this worker.
                 responses = ray.get(ref)

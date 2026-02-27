@@ -383,6 +383,16 @@ if __name__ == "__main__":
         default=False,
         help="Quantize bf16 actor weights to MXFP4 on the fly during vLLM weight synchronization.",
     )
+    parser.add_argument(
+        "--qat_mxfp4",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable MXFP4 QAT: during actor forward passes, expert weights are "
+            "fake-quantized (bf16 -> nearest MXFP4 value -> bf16) via STE. "
+            "Requires --mxfp4_dequantize."
+        ),
+    )
     parser.add_argument("--lora_rank", type=int, default=0)
     parser.add_argument("--lora_alpha", type=int, default=16)
     parser.add_argument("--target_modules", type=str, nargs="*", default="all-linear")

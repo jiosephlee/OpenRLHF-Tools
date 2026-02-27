@@ -60,6 +60,7 @@ class Actor(nn.Module):
         temperature=1.0,
         use_liger_kernel=False,
         mxfp4_dequantize=False,
+        qat_mxfp4=False,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -163,6 +164,16 @@ class Actor(nn.Module):
                         if "lm_head" in name or "embed_tokens" in name:
                             if hasattr(module, "weight"):
                                 module = module.to(torch.bfloat16)
+
+            # QAT: fake-quantize MoE expert weights during training forward passes (STE)
+            if qat_mxfp4:
+                assert mxfp4_dequantize, (
+                    "--qat_mxfp4 requires --mxfp4_dequantize. The model must be loaded "
+                    "with Mxfp4Config(dequantize=True) so expert weights are in bf16."
+                )
+                from openrlhf.utils.mxfp4_quantize import register_mxfp4_qat_parametrization
+                n = register_mxfp4_qat_parametrization(self.model)
+                logger.info(f"[QAT MXFP4] Applied to {n} expert weight layers in actor.")
 
             # MoE - balancing loss
             model_config = self.model.config.to_dict()

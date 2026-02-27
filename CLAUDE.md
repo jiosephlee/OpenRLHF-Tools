@@ -93,7 +93,19 @@ In colocate mode, vLLM's `sleep()` releases weights but doesn't return the memor
 
 When the Actor trains in bf16 but vLLM serves with MXFP4-quantized weights (e.g. GPT-OSS MoE), the weight sync must quantize on the fly. `quantize_to_mxfp4()` reimplements NVIDIA ModelOpt's E8M0-scaled FP4 E2M1 packing (transpose, per-expert block scaling, uint8 nibble packing). After writing packed weights + scales into vLLM's parameter storage, `reprocess_mxfp4_weights()` calls `process_weights_after_loading()` on dirty layers to re-run FlashInfer's swizzle/interleave pass.
 
-### 15. Ceiling Fix for Dynamic Batch Splitting
+### 15. MXFP4 Quantization-Aware Training (QAT)
+**Files:** `openrlhf/utils/mxfp4_quantize.py`, `openrlhf/models/actor.py`, `openrlhf/trainer/ray/ppo_actor.py`, `openrlhf/cli/train_ppo_ray.py`
+
+Closes the train/inference distribution gap when vLLM serves with MXFP4-quantized MoE expert weights but the actor trains in bf16. During actor forward passes, expert weights are fake-quantized (bf16 → nearest MXFP4 value → bf16) via Straight-Through Estimator. Only MoE expert projections are targeted (same name filter as `vllm_worker_wrap`: `"experts"` in path AND one of `gate_up_proj`/`down_proj`/`w13_weight`/`w2_weight`).
+
+- `fake_quantize_mxfp4()`: STE fake-quantizer using `weight + (dequantized - weight).detach()`
+- `_Mxfp4FakeQuant`: `nn.Module` parametrization for plain `nn.Linear` expert layers
+- `_patch_lora_layer_qat()`: patches `LoraLayer.forward` to fake-quantize the *merged* weight (`base + lora_B @ lora_A * scaling`) — matches vLLM inference behavior
+- `register_mxfp4_qat_parametrization()`: walks model, registers parametrization or patches LoRA layers
+- Weight sync unaffected: `named_parameters()` yields `.parametrizations.weight.original` (true bf16)
+- Enabled via `--qat_mxfp4` (requires `--mxfp4_dequantize`)
+
+### 16. Ceiling Fix for Dynamic Batch Splitting
 **File:** `openrlhf/trainer/ppo_utils/experience_maker.py`
 
 `minimum_batch_num` was rounded down with floor division (`//`), which could produce 0 microbatches when `minimum_batch_num < effective_actor_num`, causing packed sequences to accidentally exceed `rollout_max_tokens_per_gpu`. Fix: use `math.ceil()` to round up, ensuring at least one microbatch per actor and respecting the token budget.
@@ -188,19 +200,19 @@ Debug flags:
 | `openrlhf/trainer/ppo_trainer_async.py` | Eval wired into async trainer, missing logging/cleanup fixes |
 | `openrlhf/trainer/ray/vllm_engine.py` | Passes chat_protocol env var to Ray actors, reduced CUDA graphs, MXFP4 weight sync |
 | `openrlhf/trainer/ray/vllm_worker_wrap.py` | On-the-fly bf16→MXFP4 quantization for vLLM weight sync |
-| `openrlhf/utils/mxfp4_quantize.py` | New: Self-contained MXFP4 (E8M0 + FP4 E2M1) quantization utility |
-| `openrlhf/trainer/ray/ppo_actor.py` | NaN guard assertions |
-| `openrlhf/models/actor.py` | torch.where NaN fix, logit diagnostics |
+| `openrlhf/utils/mxfp4_quantize.py` | MXFP4 quantization utility + QAT: `fake_quantize_mxfp4`, `_Mxfp4FakeQuant`, `register_mxfp4_qat_parametrization` |
+| `openrlhf/trainer/ray/ppo_actor.py` | NaN guard assertions; `qat_mxfp4` forwarded to Actor() |
+| `openrlhf/models/actor.py` | torch.where NaN fix, logit diagnostics; `qat_mxfp4` param + registration block |
 | `openrlhf/models/utils.py` | torch.where in masked_mean |
 | `openrlhf/utils/deepspeed/deepspeed.py` | Recreate optimizer after AutoTP to free pre-sharded weights |
 | `openrlhf/utils/distributed_util.py` | NCCL diagnostic logging |
 | `openrlhf/utils/logging_utils.py` | eval/global_step W&B axis |
 | `openrlhf/cli/batch_inference.py` | Transformers v4/v5 compat |
 | `openrlhf/cli/interactive_chat.py` | Transformers v4/v5 compat |
-| `openrlhf/cli/train_ppo_ray.py` | New CLI args for tools, eval, checkpointing |
+| `openrlhf/cli/train_ppo_ray.py` | New CLI args for tools, eval, checkpointing, `--qat_mxfp4` |
 | `openrlhf/utils/agent.py` | Pass hf_tokenizer through to agent instance |
 
 ---
 
-**Last Updated:** 2026-02-26
+**Last Updated:** 2026-02-27
 **Base Version:** OpenRLHF (latest main branch)

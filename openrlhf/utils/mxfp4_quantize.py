@@ -7,6 +7,7 @@
 # before writing them into vLLM's MXFP4 parameter storage.
 
 import torch
+import torch.nn as nn
 
 # FP4 E2M1 representable values: ±{0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0}
 E2M1_MAX = 6.0
@@ -62,3 +63,138 @@ def quantize_to_mxfp4(
     e8m0_scales = (e8m0_exp + 127).to(torch.uint8)
 
     return packed, e8m0_scales
+
+
+# FP4 E2M1 magnitude lookup: ord_ index 0..7 -> representable magnitude
+# Matches the 8 representable values: 0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0
+E2M1_VALUES = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0])
+
+
+def fake_quantize_mxfp4(weight: torch.Tensor, block_size: int = 32) -> torch.Tensor:
+    """Differentiable MXFP4 fake-quantizer for QAT.
+
+    Forward: returns MXFP4-dequantized approximation (same shape/dtype as input).
+    Backward: straight-through estimator — gradient flows unchanged.
+    """
+    original_shape = weight.shape
+    original_dtype = weight.dtype
+
+    # Work in float32 for numerical stability (mirrors quantize_to_mxfp4)
+    w_blocks = weight.float().reshape(-1, block_size)
+
+    # Per-block E8M0 scale (reuses same logic as quantize_to_mxfp4)
+    amax = w_blocks.abs().max(dim=-1, keepdim=True).values
+    descale = amax / E2M1_MAX
+    min_exp = torch.tensor(-127.0, device=weight.device)
+    e8m0_exp = torch.ceil(torch.maximum(torch.log2(descale), min_exp))
+    scale = torch.exp2(e8m0_exp)  # [num_blocks, 1]
+
+    # Normalize and round to nearest FP4 E2M1 magnitude (reuses E2M1_BOUNDS)
+    w_normalized = w_blocks / scale
+    sign = torch.sign(w_normalized)
+    bounds = E2M1_BOUNDS.to(weight.device)
+    ord_ = torch.sum((w_normalized.abs().unsqueeze(-1) - bounds) > 0, dim=-1)
+
+    # Map ordinal -> fp4 magnitude -> dequantized value
+    values = E2M1_VALUES.to(weight.device)
+    dequantized = (sign * values[ord_] * scale).reshape(original_shape).to(original_dtype)
+
+    # STE: forward = dequantized value, backward = identity through weight
+    return weight + (dequantized - weight).detach()
+
+
+class _Mxfp4FakeQuant(nn.Module):
+    """Parametrization that applies MXFP4 fake-quantization to a weight."""
+
+    def __init__(self, block_size: int = 32):
+        super().__init__()
+        self.block_size = block_size
+
+    def forward(self, weight: torch.Tensor) -> torch.Tensor:
+        return fake_quantize_mxfp4(weight, block_size=self.block_size)
+
+
+def _patch_lora_layer_qat(lora_module, block_size: int = 32) -> None:
+    """Patch a PEFT LoraLayer's forward to fake-quantize the merged expert weight.
+
+    Instead of:
+        output = base_linear(x) + lora_B(lora_A(x)) * scaling
+    computes:
+        merged_w = base_weight + lora_B.weight @ lora_A.weight * scaling
+        output   = F.linear(x, fake_quantize_mxfp4(merged_w), bias)
+
+    This matches what vLLM would do after LoRA merge: MXFP4-quantize the full
+    merged weight. Gradients flow via STE to both base_weight and LoRA adapters.
+    Dropout is skipped (acceptable — it only regularizes LoRA, not quantization).
+    """
+    import types
+    import torch.nn.functional as F
+
+    def qat_forward(self, x, *args, **kwargs):
+        # Resolve active adapter name (PEFT stores as string or list)
+        adapter = getattr(self, "active_adapter", None)
+        if adapter is None:
+            adapters = getattr(self, "active_adapters", None) or list(self.lora_A.keys())
+            adapter = adapters[0]
+
+        # Merged weight: [out_features, in_features]
+        base_w = self.base_layer.weight
+        lora_delta = (self.lora_B[adapter].weight @ self.lora_A[adapter].weight) * self.scaling[adapter]
+        merged_w = base_w + lora_delta
+
+        # Fake-quantize merged weight via STE
+        fq_w = fake_quantize_mxfp4(merged_w, block_size=block_size)
+
+        bias = self.base_layer.bias if hasattr(self.base_layer, "bias") else None
+        return F.linear(x.to(fq_w.dtype), fq_w, bias)
+
+    lora_module.forward = types.MethodType(qat_forward, lora_module)
+
+
+# Name fragments identifying MXFP4-quantized MoE expert projections.
+# Mirrors the filter in vllm_worker_wrap._is_mxfp4_expert_weight.
+_MXFP4_EXPERT_NAME_FRAGMENTS = ("gate_up_proj", "down_proj", "w13_weight", "w2_weight")
+
+
+def register_mxfp4_qat_parametrization(model: nn.Module, block_size: int = 32) -> int:
+    """Register MXFP4 fake-quantization on MoE expert weight layers.
+
+    Name-based filter (mirrors vllm_worker_wrap._is_mxfp4_expert_weight):
+      - "experts" in module path, AND
+      - module name contains one of gate_up_proj / down_proj / w13_weight / w2_weight
+
+    For plain nn.Linear: uses register_parametrization on module.weight.
+    For PEFT LoraLayer: monkey-patches forward to fake-quantize the *merged* weight
+      (base_weight + lora_B @ lora_A * scaling). This is the correct QAT target
+      because vLLM MXFP4-quantizes the merged weight at inference.
+
+    ZeRO-2 / ZeRO-3 compatible: both approaches operate on already-gathered
+    parameter tensors during forward (DeepSpeed gathers before forward hooks run).
+
+    Returns: count of layers registered.
+    """
+    import torch.nn.utils.parametrize as parametrize
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        from peft.tuners.lora import LoraLayer
+        _has_peft = True
+    except ImportError:
+        _has_peft = False
+
+    count = 0
+    for name, module in model.named_modules():
+        if "experts" not in name:
+            continue
+        if not any(frag in name for frag in _MXFP4_EXPERT_NAME_FRAGMENTS):
+            continue
+        if isinstance(module, nn.Linear):
+            parametrize.register_parametrization(module, "weight", _Mxfp4FakeQuant(block_size))
+            count += 1
+        elif _has_peft and isinstance(module, LoraLayer):
+            _patch_lora_layer_qat(module, block_size)
+            count += 1
+
+    logger.info(f"[QAT MXFP4] Registered fake-quantization on {count} expert weight layers.")
+    return count

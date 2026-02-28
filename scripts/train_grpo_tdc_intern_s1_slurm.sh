@@ -51,8 +51,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=256G
 #SBATCH --cpus-per-gpu=8
-#SBATCH --nodelist=dgx012
-#SBATCH --time=0-1:00:00
+#SBATCH --time=0-10:00:00
+#SBATCH --sockets-per-node=1
 #SBATCH --account=myatskar-lab
 
 ### PARCC PARAMETERS ###
@@ -264,12 +264,15 @@ run_task() {
         find "$real/logs" -type f -size +0c 2>/dev/null | head -n 20 || true
         echo "Top non-empty logs (dest):"
         find "$PERSIST_RAY_DIR/session_latest/logs" -type f -size +0c 2>/dev/null | head -n 20 || true
+
+        rm -rf "/tmp/triton_${USER}_${SLURM_JOB_ID}" "/tmp/torchinductor_${USER}_${SLURM_JOB_ID}" 2>/dev/null || true
     }
     trap copy_ray_logs EXIT
 
     ### ENVIRONMENT VARIABLES ###
-    export TRITON_CACHE_DIR="/tmp/triton_${USER}"
-    mkdir -p "$TRITON_CACHE_DIR"
+    export TRITON_CACHE_DIR="/tmp/triton_${USER}_${SLURM_JOB_ID}"
+    export TORCHINDUCTOR_CACHE_DIR="/tmp/torchinductor_${USER}_${SLURM_JOB_ID}"
+    mkdir -p "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR"
 
     export VLLM_NO_USAGE_STATS=1
     export VLLM_DISABLE_TELEMETRY=1

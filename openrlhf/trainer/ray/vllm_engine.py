@@ -162,6 +162,10 @@ class LLMRayActor:
             args=(name, dtype, shape, ipc_handles, empty_cache, mxfp4_quantize_on_the_fly),
         )
 
+    async def initialize_weight_reload(self):
+        """Prepare model for layerwise weight reloading before weight sync."""
+        return await self.llm.collective_rpc("initialize_weight_reload")
+
     async def post_weight_sync(self):
         """Run process_weights_after_loading() after all weights are synced.
 

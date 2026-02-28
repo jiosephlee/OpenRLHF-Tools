@@ -506,6 +506,12 @@ class ActorPPOTrainer(ABC):
                 ray.get(refs)
             torch_dist_barrier_and_cuda_sync()
 
+        # Initialize layerwise reload on vLLM workers before syncing weights.
+        # This prepares the model for deferred per-layer processing.
+        if getattr(self.strategy.args, "vllm_sync_mxfp4", False) and torch.distributed.get_rank() == 0:
+            init_refs = [engine.initialize_weight_reload.remote() for engine in self.vllm_engines]
+            ray.get(init_refs)
+
         for name, param in broadcast_params:
             count += 1  # empty_cache at last param
             # Merged LoRA tensors are plain torch.Tensor (no ds_shape) — skip ZeRO gather

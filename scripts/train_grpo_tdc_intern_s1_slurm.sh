@@ -75,14 +75,14 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 module load MAMBA
 module load cuda/13.1.0
 export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern"
-export DS_SKIP_CUDA_CHECK=1
+
 ############################
 #        TASK SCRIPT       #
 ############################
 run_task() {
     set -euo pipefail
     export MALLOC_TRIM_THRESHOLD_=0
-
+    export DS_SKIP_CUDA_CHECK=1
     # Prevent corrupted torch inductor cache from crashing vLLM compilation.
     # We nuke any leftover default-location cache from prior runs.
     # rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ 2>/dev/null || true

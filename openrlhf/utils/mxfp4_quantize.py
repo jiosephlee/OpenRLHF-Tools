@@ -48,7 +48,7 @@ def quantize_to_mxfp4(
     sign = torch.sign(normalized)
     sign_bit = (2 - sign) // 2
     bounds = E2M1_BOUNDS.to(normalized.device)
-    ord_ = torch.sum((normalized.abs().unsqueeze(-1) - bounds) > 0, dim=-1)
+    ord_ = torch.bucketize(normalized.abs(), bounds)
     fp4_val = (sign_bit * 0b1000 + ord_).to(torch.uint8)
 
     # Pack two 4-bit values into one uint8
@@ -93,7 +93,7 @@ def fake_quantize_mxfp4(weight: torch.Tensor, block_size: int = 32) -> torch.Ten
     w_normalized = w_blocks / scale
     sign = torch.sign(w_normalized)
     bounds = E2M1_BOUNDS.to(weight.device)
-    ord_ = torch.sum((w_normalized.abs().unsqueeze(-1) - bounds) > 0, dim=-1)
+    ord_ = torch.bucketize(w_normalized.abs(), bounds)
 
     # Map ordinal -> fp4 magnitude -> dequantized value
     values = E2M1_VALUES.to(weight.device)

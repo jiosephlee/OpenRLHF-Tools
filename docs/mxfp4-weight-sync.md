@@ -165,6 +165,48 @@ def post_weight_sync(self):
 
 ---
 
+### Bug 4: OOM in `fake_quantize_mxfp4` during QAT backward pass
+
+**Symptom:**
+```
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 27.69 GiB.
+  File "mxfp4_quantize.py", line 96, in fake_quantize_mxfp4
+    ord_ = torch.sum((w_normalized.abs().unsqueeze(-1) - bounds) > 0, dim=-1)
+```
+
+**Root Cause:** The original NVIDIA Model-Optimizer code uses a broadcast pattern to find
+which FP4 E2M1 bucket each value falls into:
+```python
+# bounds has 7 elements → broadcasts [N, 32] to [N, 32, 7] float32 intermediate
+ord_ = torch.sum((w_normalized.abs().unsqueeze(-1) - bounds) > 0, dim=-1)
+```
+
+This works fine for ModelOpt's use case (single-layer quantization, e.g. `[4096, 4096]` = 16M
+elements → 0.5 GiB intermediate). But GPT-OSS stacked expert weights are `[32, 2880, 5760]`
+= 530M elements. The broadcast creates a `[16.6M, 32, 7]` intermediate (14 GiB) plus a
+same-sized boolean mask, totaling ~27 GiB — matching the error message exactly.
+
+The same pattern exists in both `quantize_to_mxfp4()` (line 51) and `fake_quantize_mxfp4()`
+(line 96). The weight sync path calls `quantize_to_mxfp4()` per-expert so it doesn't OOM,
+but `fake_quantize_mxfp4()` is called via QAT parametrization on the full stacked tensor.
+
+**Fix:** Replace with `torch.bucketize()`, which does the identical bucket lookup in O(N)
+memory instead of O(N×7):
+```python
+# Before (O(N×7) memory — broadcasts to [N, 32, 7]):
+ord_ = torch.sum((w_normalized.abs().unsqueeze(-1) - bounds) > 0, dim=-1)
+
+# After (O(N) memory — element-wise binary search):
+ord_ = torch.bucketize(w_normalized.abs(), bounds)
+```
+
+**Why this is equivalent:** Both compute `bisect_left(x, bounds)` — the number of bounds
+strictly less than x. `sum((x - b) > 0)` counts bounds where `x > b` (strict inequality);
+`torch.bucketize(x, bounds, right=False)` returns the leftmost insertion index, which is
+the same value. Verified for all FP4 E2M1 representable values including exact boundary hits.
+
+---
+
 ## Previous Approach (Pre-Layerwise Reload)
 
 Before adopting the layerwise reload API, the flow was:
@@ -186,9 +228,11 @@ This required hacking `process_weights_after_loading()` in vLLM's `mxfp4.py` to 
 Enabled via `--qat_mxfp4` (requires `--mxfp4_dequantize`). Closes the train/inference distribution gap by fake-quantizing expert weights during the Actor's forward pass.
 
 - **Plain nn.Linear experts:** `register_parametrization(module, "weight", _Mxfp4FakeQuant())`
+- **Stacked-parameter experts (GPT-OSS):** `GptOssExperts` holds `gate_up_proj`, `down_proj` as bare `nn.Parameter` (not `nn.Linear` submodules). `register_mxfp4_qat_parametrization()` detects these via `named_parameters(recurse=False)` and registers `_Mxfp4FakeQuant(transpose=True)` — `transpose=True` transposes to `[E, out, in]` before quantizing (blocks run along in_features, matching vLLM's layout) and transposes back after.
 - **LoRA experts:** Monkey-patches `forward()` to fake-quantize the *merged* weight (`base + lora_B @ lora_A * scaling`)
 - **STE backward:** `weight + (dequantized - weight).detach()`
 - **Weight sync unaffected:** `named_parameters()` yields `.parametrizations.weight.original` (true bf16)
+- **Memory optimization:** Uses `torch.bucketize()` instead of ModelOpt's broadcast pattern for FP4 bucket lookup (see Bug 4 above)
 
 ---
 

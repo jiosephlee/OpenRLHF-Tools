@@ -75,7 +75,7 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 module load MAMBA
 module load cuda/13.1.0
 export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern"
-
+export DS_SKIP_CUDA_CHECK=1
 ############################
 #        TASK SCRIPT       #
 ############################

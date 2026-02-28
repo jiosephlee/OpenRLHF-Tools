@@ -269,9 +269,7 @@ class SamplesGenerator:
         run_name = getattr(self.args, "wandb_run_name", "run")
         run_name = run_name.replace("/", "_")
 
-        project_root = os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        )
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
         self.runs_dir = os.path.join(project_root, "runs", run_name)
         self.rollout_trace_run_dir = os.path.join(self.runs_dir, "traces")
         os.makedirs(self.rollout_trace_run_dir, exist_ok=True)
@@ -316,36 +314,44 @@ class SamplesGenerator:
         if action_ranges:
             first_start = action_ranges[0][0]
             if first_start > 0:
-                sections.append({
-                    "type": "prompt",
-                    "token_range": [0, first_start],
-                    "text": self.tokenizer.decode(obs_tokens[:first_start], skip_special_tokens=False),
-                })
+                sections.append(
+                    {
+                        "type": "prompt",
+                        "token_range": [0, first_start],
+                        "text": self.tokenizer.decode(obs_tokens[:first_start], skip_special_tokens=False),
+                    }
+                )
 
             for i, (start, end) in enumerate(action_ranges):
-                sections.append({
-                    "type": "action",
-                    "index": i + 1,
-                    "token_range": [start, end],
-                    "text": self.tokenizer.decode(obs_tokens[start:end], skip_special_tokens=False),
-                })
+                sections.append(
+                    {
+                        "type": "action",
+                        "index": i + 1,
+                        "token_range": [start, end],
+                        "text": self.tokenizer.decode(obs_tokens[start:end], skip_special_tokens=False),
+                    }
+                )
                 if i + 1 < len(action_ranges):
                     next_start = action_ranges[i + 1][0]
                     if end < next_start:
-                        sections.append({
-                            "type": "observation",
-                            "index": i + 1,
-                            "token_range": [end, next_start],
-                            "text": self.tokenizer.decode(obs_tokens[end:next_start], skip_special_tokens=False),
-                        })
+                        sections.append(
+                            {
+                                "type": "observation",
+                                "index": i + 1,
+                                "token_range": [end, next_start],
+                                "text": self.tokenizer.decode(obs_tokens[end:next_start], skip_special_tokens=False),
+                            }
+                        )
                 else:
                     remaining = obs_tokens[end:]
                     if remaining:
-                        sections.append({
-                            "type": "trailing",
-                            "token_range": [end, len(obs_tokens)],
-                            "text": self.tokenizer.decode(remaining, skip_special_tokens=False),
-                        })
+                        sections.append(
+                            {
+                                "type": "trailing",
+                                "token_range": [end, len(obs_tokens)],
+                                "text": self.tokenizer.decode(remaining, skip_special_tokens=False),
+                            }
+                        )
 
         decoded["sections"] = sections
         return decoded
@@ -356,7 +362,9 @@ class SamplesGenerator:
             trace_no_ids.pop(key, None)
         return trace_no_ids
 
-    def _write_step_trace(self, step_idx: int, episode_traces: list, prompts_consumed: int, filtered_count: int, total_episodes: int = 0):
+    def _write_step_trace(
+        self, step_idx: int, episode_traces: list, prompts_consumed: int, filtered_count: int, total_episodes: int = 0
+    ):
         if not self.rollout_trace_run_dir or not episode_traces:
             return
         step_id = step_idx + 1
@@ -398,7 +406,8 @@ class SamplesGenerator:
 
         # Wake sleeping vLLM engines before dispatching.
         if self.args.vllm_enable_sleep:
-            batch_vllm_engine_call(self.vllm_engines, "wake_up")
+            # Only wake KV cache; weights are already awake from broadcast_to_vllm
+            batch_vllm_engine_call(self.vllm_engines, "wake_up", tags=["kv_cache"])
 
         experiences, prompts_consumed, exhausted = self._generate_vllm(
             dataloader_iter=self._eval_dataloader_iter,
@@ -445,11 +454,13 @@ class SamplesGenerator:
         data = {
             "episode": episode,
             "too_easy": sorted(list(self._discarded_easy_indices)),
-            "too_hard": sorted(list(self._discarded_hard_indices))
+            "too_hard": sorted(list(self._discarded_hard_indices)),
         }
         with open(out_path, "w") as f:
             json.dump(data, f)
-        logger.info(f"Saved {len(self._discarded_easy_indices)} too_easy and {len(self._discarded_hard_indices)} too_hard indices to {out_path}")
+        logger.info(
+            f"Saved {len(self._discarded_easy_indices)} too_easy and {len(self._discarded_hard_indices)} too_hard indices to {out_path}"
+        )
 
     @property
     def step_too_easy_pct(self) -> float:
@@ -489,7 +500,8 @@ class SamplesGenerator:
 
         # Wake sleeping vLLM engines before dispatching.
         if self.args.vllm_enable_sleep:
-            batch_vllm_engine_call(self.vllm_engines, "wake_up")
+            # Only wake KV cache; weights are already awake from broadcast_to_vllm
+            batch_vllm_engine_call(self.vllm_engines, "wake_up", tags=["kv_cache"])
 
         experiences, prompts_consumed, exhausted = self._generate_vllm(
             dataloader_iter=self._dataloader_iter,
@@ -542,7 +554,9 @@ class SamplesGenerator:
             reserve_prompts = prompts[initial_count:]
             reserve_labels = labels[initial_count:]
             reserve_dataset_indices = dataset_indices[initial_count:]
-            dispatches = self._dispatch_prompts_to_vllm(prompts[:initial_count], labels[:initial_count], **generate_kwargs)
+            dispatches = self._dispatch_prompts_to_vllm(
+                prompts[:initial_count], labels[:initial_count], **generate_kwargs
+            )
         else:
             # Default: dispatch everything upfront.  The heap balancer in
             # _dispatch_prompts_to_vllm already spreads load evenly, and
@@ -580,7 +594,12 @@ class SamplesGenerator:
 
                 # Single-stage reserve dispatch: when any engine drops to
                 # ≤RESERVE_THRESHOLD pending, dispatch all reserve prompts at once.
-                if multi_stage and reserve_prompts and not reserve_dispatched and engine_pending[engine_idx] <= RESERVE_THRESHOLD:
+                if (
+                    multi_stage
+                    and reserve_prompts
+                    and not reserve_dispatched
+                    and engine_pending[engine_idx] <= RESERVE_THRESHOLD
+                ):
                     new_dispatches = self._dispatch_prompts_to_vllm(reserve_prompts, reserve_labels, **generate_kwargs)
                     for j, (new_ref, new_engine_idx) in enumerate(new_dispatches):
                         pending_refs.append(new_ref)
@@ -597,7 +616,9 @@ class SamplesGenerator:
                 # multi-turn mode (each resp contains full observation_tokens + log_probs).
                 if not episode_traces:
                     episode_traces.append((engine_idx, responses[0]))
-                experiences = [self._process_response_into_experience(response, **generate_kwargs) for response in responses]
+                experiences = [
+                    self._process_response_into_experience(response, **generate_kwargs) for response in responses
+                ]
                 del responses  # free raw vLLM response dicts before processing next batch
 
                 # Drop experiences if the average score falls outside the allowed range.
@@ -700,7 +721,15 @@ class SamplesGenerator:
             max_tokens=generate_kwargs.get("max_new_tokens", 1024),
             min_tokens=generate_kwargs.get("min_new_tokens", 1),
             skip_special_tokens=generate_kwargs.get("skip_special_tokens", False),
-            **({"spaces_between_special_tokens": False, "stop": self.args.vllm_stop_strings, "include_stop_str_in_output": True} if self.args.agent_func_path else {}),
+            **(
+                {
+                    "spaces_between_special_tokens": False,
+                    "stop": self.args.vllm_stop_strings,
+                    "include_stop_str_in_output": True,
+                }
+                if self.args.agent_func_path
+                else {}
+            ),
             logprobs=1 if self.args.enable_vllm_is_correction else None,
         )
         truncate_length = generate_kwargs.get("prompt_max_len", 1024) + generate_kwargs.get("max_new_tokens", 1024)
@@ -841,6 +870,7 @@ class RemoteExperienceMaker:
 
         samples_list = []
         import math
+
         if self.args.use_dynamic_batch:
             total_lengths = [int(s.info["total_length"].item()) for s in rollout_samples]
             effective_actor_num = (
@@ -862,10 +892,12 @@ class RemoteExperienceMaker:
                 micro_batch = [rollout_samples[idx] for idx in micro_index]
                 concat_samples = Experience.concat_experiences(micro_batch, self.tokenizer.pad_token_id)
                 samples_list.append(concat_samples)
-                
+
             # Interleave samples_list so each contiguous chunk assigned to an actor has
             # an identical distribution of heavy and light microbatches.
-            split_items = [samples_list[i : i + effective_actor_num] for i in range(0, len(samples_list), effective_actor_num)]
+            split_items = [
+                samples_list[i : i + effective_actor_num] for i in range(0, len(samples_list), effective_actor_num)
+            ]
             half = len(split_items) // 2
             first_half = split_items[:half]
             last_half = [item[::-1] for item in split_items[half:]]
@@ -1015,9 +1047,9 @@ class RemoteExperienceMaker:
                 samples.rewards = rewards_list[i]
                 samples.info["reward"] = rewards_list[i]
 
-        assert (
-            len(samples_list) == len(action_log_probs_list) == len(base_action_log_probs_list) == len(value_list)
-        ), f"len(samples_list): {len(samples_list)}, len(action_log_probs_list): {len(action_log_probs_list)}, len(base_action_log_probs_list): {len(base_action_log_probs_list)}, len(value_list): {len(value_list)}"
+        assert len(samples_list) == len(action_log_probs_list) == len(base_action_log_probs_list) == len(value_list), (
+            f"len(samples_list): {len(samples_list)}, len(action_log_probs_list): {len(action_log_probs_list)}, len(base_action_log_probs_list): {len(base_action_log_probs_list)}, len(value_list): {len(value_list)}"
+        )
 
         # Process results for each sample
         for i, (samples, action_log_probs, base_action_log_probs, value) in enumerate(

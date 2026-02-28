@@ -46,6 +46,7 @@ def _build_vllm_sync_params(model, zero_stage: int):
     try:
         from peft import PeftModel
         from peft.tuners.lora import LoraLayer
+
         is_peft = isinstance(model, PeftModel)
     except ImportError:
         is_peft = False
@@ -55,16 +56,11 @@ def _build_vllm_sync_params(model, zero_stage: int):
 
     if zero_stage == 3:
         raise NotImplementedError(
-            "LoRA weight sync to vLLM with ZeRO-3 is not yet supported. "
-            "Use ZeRO-2 when training with lora_rank > 0."
+            "LoRA weight sync to vLLM with ZeRO-3 is not yet supported. Use ZeRO-2 when training with lora_rank > 0."
         )
 
     # Build peft_module_path -> LoraLayer
-    lora_module_map = {
-        name: mod
-        for name, mod in model.named_modules()
-        if isinstance(mod, LoraLayer)
-    }
+    lora_module_map = {name: mod for name, mod in model.named_modules() if isinstance(mod, LoraLayer)}
 
     skip_names = set()
     result = []
@@ -89,7 +85,7 @@ def _build_vllm_sync_params(model, zero_stage: int):
         # Canonical HF name: strip PEFT prefix and .base_layer path segment
         hf_name = peft_name
         if hf_name.startswith("base_model.model."):
-            hf_name = hf_name[len("base_model.model."):]
+            hf_name = hf_name[len("base_model.model.") :]
         result.append((hf_name + ".weight", merged))
 
         # Bias (if present in base layer, rare)
@@ -105,7 +101,7 @@ def _build_vllm_sync_params(model, zero_stage: int):
             continue
         hf_name = name
         if hf_name.startswith("base_model.model."):
-            hf_name = hf_name[len("base_model.model."):]
+            hf_name = hf_name[len("base_model.model.") :]
         hf_name = hf_name.replace(".base_layer.", ".")  # safety strip
         result.append((hf_name, param))
 
@@ -261,12 +257,25 @@ class ActorPPOTrainer(ABC):
                 disable=not self.strategy.is_rank_0(),
             )
             for step, experience in enumerate(pbar):
-
                 experience.to_device(device)
                 status = self.training_step(experience, kl_ctl, step)
                 status["kl"] *= status["response_length"]
                 if "logprobs_diff" in status:
                     status["logprobs_diff"] *= status["response_length"]
+
+                # Normalize sparse keys across ranks so all_reduce sees
+                # identical key sets. parse_method__* keys are data-dependent
+                # (e.g. parse_method__regex only appears when regex fallback
+                # fires), so different ranks may have different subsets.
+                if torch.distributed.is_initialized():
+                    sparse_keys = [k for k in status if k.startswith("parse_method__")]
+                    all_sparse = [None] * self.strategy.world_size
+                    torch.distributed.all_gather_object(all_sparse, sparse_keys)
+                    union_keys = sorted(set(k for rank_keys in all_sparse for k in rank_keys))
+                    for k in union_keys:
+                        if k not in status:
+                            status[k] = 0.0
+
                 status = self.strategy.all_reduce(status)
                 status["kl"] /= status["response_length"]
                 if "logprobs_diff" in status:
@@ -421,6 +430,8 @@ class ActorPPOTrainer(ABC):
         # ranks may have different sets) and would cause NCCL deadlock in
         # the downstream strategy.all_reduce() call which iterates over
         # every key.  Tool counts are only consumed during eval, not training.
+        # NOTE: parse_method__* keys are also sparse but are normalized
+        # across ranks via all_gather_object in ppo_train() before all_reduce.
         for k in sorted(experience.info.keys()):
             v = experience.info[k]
             if k.startswith("tool_count__"):
@@ -458,11 +469,20 @@ class ActorPPOTrainer(ABC):
             use_ray = getattr(self.strategy.args, "vllm_sync_with_ray", False)
             # Fire all vllm engines for broadcast
             if torch.distributed.get_rank() == 0:
-                shape = (param.ds_shape if (self.strategy.args.zero_stage == 3 and hasattr(param, "ds_shape"))
-                         else param.shape)
+                shape = (
+                    param.ds_shape
+                    if (self.strategy.args.zero_stage == 3 and hasattr(param, "ds_shape"))
+                    else param.shape
+                )
                 mxfp4_flag = getattr(self.strategy.args, "vllm_sync_mxfp4", False)
                 refs = [
-                    engine.update_weight.remote(name, dtype=param.dtype, shape=shape, empty_cache=count == num_params, mxfp4_quantize_on_the_fly=mxfp4_flag)
+                    engine.update_weight.remote(
+                        name,
+                        dtype=param.dtype,
+                        shape=shape,
+                        empty_cache=count == num_params,
+                        mxfp4_quantize_on_the_fly=mxfp4_flag,
+                    )
                     for engine in self.vllm_engines
                 ]
 
@@ -489,8 +509,11 @@ class ActorPPOTrainer(ABC):
                 for d in ipc_handle_list:
                     ipc_handles.update(d)
 
-                shape = (param.ds_shape if (self.strategy.args.zero_stage == 3 and hasattr(param, "ds_shape"))
-                         else param.shape)
+                shape = (
+                    param.ds_shape
+                    if (self.strategy.args.zero_stage == 3 and hasattr(param, "ds_shape"))
+                    else param.shape
+                )
                 mxfp4_flag = getattr(self.strategy.args, "vllm_sync_mxfp4", False)
                 refs = [
                     engine.update_weight_cuda_ipc.remote(
@@ -524,7 +547,9 @@ class ActorPPOTrainer(ABC):
                     with deepspeed.module_inject.layers.GatherReplacedLayerParams([param], model, enabled=True):
                         _broadcast_param(param, count, num_params)
                 else:
-                    with deepspeed.zero.GatheredParameters([param], enabled=self.strategy.args.zero_stage == 3 and is_ds_param):
+                    with deepspeed.zero.GatheredParameters(
+                        [param], enabled=self.strategy.args.zero_stage == 3 and is_ds_param
+                    ):
                         _broadcast_param(param, count, num_params)
             # CUDA IPC
             else:
@@ -532,7 +557,9 @@ class ActorPPOTrainer(ABC):
                     with deepspeed.module_inject.layers.GatherReplacedLayerParams([param], model, enabled=True):
                         _handle_cuda_ipc(param, count, num_params)
                 else:
-                    with deepspeed.zero.GatheredParameters([param], enabled=self.strategy.args.zero_stage == 3 and is_ds_param):
+                    with deepspeed.zero.GatheredParameters(
+                        [param], enabled=self.strategy.args.zero_stage == 3 and is_ds_param
+                    ):
                         _handle_cuda_ipc(param, count, num_params)
 
         if cache_reset_refs:

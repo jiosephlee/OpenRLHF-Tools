@@ -19,6 +19,7 @@
 #   TOOL_VERSION=v4              # Tool schema version (default: v4)
 #   SMART_REPLAY=1               # Enable smart replay with max_replay_rounds=2
 #   CURRICULUM_BALANCED=1        # Enable curriculum-balanced sampling
+#   MULTI_STAGE_DISPATCH=1       # Continuous-refill dispatch (best for 2-GPU setups)
 #   MAX_EPOCHS=2                 # Training epochs (default: 2)
 #   EXTRA_ARGS="..."             # Additional CLI flags
 #
@@ -77,6 +78,7 @@ run_task() {
     MODE="${MODE:-colocated}"
     TOOL_VERSION="${TOOL_VERSION:-v4}"
     SMART_REPLAY="${SMART_REPLAY:-0}"
+    MULTI_STAGE_DISPATCH="${MULTI_STAGE_DISPATCH:-0}"
     CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
     MAX_EPOCHS="${MAX_EPOCHS:-1}"
     EXTRA_ARGS="${EXTRA_ARGS:-}"
@@ -316,6 +318,7 @@ run_task() {
     echo "----------------------------------------"
     echo "Smart Replay: $SMART_REPLAY"
     echo "Curriculum Balanced: $CURRICULUM_BALANCED"
+    echo "Multi Stage Dispatch: $MULTI_STAGE_DISPATCH"
     echo "Tool Version: $TOOL_VERSION"
     echo "----------------------------------------"
     echo "Runs Dir: $RUNS_DIR"
@@ -351,6 +354,9 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
     fi
     if [ "$CURRICULUM_BALANCED" = "1" ]; then
         OPTIONAL_FLAGS+=" --curriculum_balanced"
+    fi
+    if [ "$MULTI_STAGE_DISPATCH" = "1" ]; then
+        OPTIONAL_FLAGS+=" --multi_stage_dispatch"
     fi
 
     ### TRAINING ###

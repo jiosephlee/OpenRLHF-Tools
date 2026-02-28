@@ -1,6 +1,7 @@
 # Adapted from
 # https://github.com/skypilot-org/skypilot/blob/86dc0f6283a335e4aa37b3c10716f90999f48ab6/sky/sky_logging.py
 """Logging configuration for vLLM."""
+
 import logging
 import os
 import sys
@@ -77,6 +78,8 @@ class WandbLogger:
 
         wandb.define_metric("train/global_step")
         wandb.define_metric("train/*", step_metric="train/global_step", step_sync=True)
+        wandb.define_metric("parse/*", step_metric="train/global_step", step_sync=True)
+        wandb.define_metric("system/*", step_metric="train/global_step", step_sync=True)
         wandb.define_metric("eval/global_step")
         wandb.define_metric("eval/*", step_metric="eval/global_step", step_sync=True)
         wandb.define_metric("episode/episode")
@@ -84,8 +87,21 @@ class WandbLogger:
         self.handle = wandb
         self.samples_table = wandb.Table(columns=["global_step", "text", "reward"])
 
+    # Keys routed to the "parse/" wandb panel instead of "train/".
+    _PARSE_KEYS = {"parse_failed", "tool_call_attempted", "tool_call_count"}
+
+    @staticmethod
+    def _route_key(k: str) -> str:
+        """Return the wandb section prefix for a given metric key."""
+        if k.startswith("parse_method__") or k in WandbLogger._PARSE_KEYS:
+            return "parse"
+        if k in ("cpu_percent", "cpu_cores_affinity"):
+            return "system"
+        return "train"
+
     def log_train(self, global_step: int, logs_dict: Dict[str, Any]) -> None:
         import psutil
+
         logs_dict = dict(logs_dict)
         logs_dict["cpu_percent"] = psutil.cpu_percent()
         try:
@@ -95,8 +111,11 @@ class WandbLogger:
 
         generated_samples = logs_dict.pop("generated_samples", None)
 
-        metrics = {k: v for k, v in logs_dict.items() if v is not None}
-        logs = {"train/%s" % k: v for k, v in {**metrics, "global_step": global_step}.items()}
+        logs = {"train/global_step": global_step}
+        for k, v in logs_dict.items():
+            if v is not None:
+                section = self._route_key(k)
+                logs[f"{section}/{k}"] = v
 
         if generated_samples:
             # https://github.com/wandb/wandb/issues/2981#issuecomment-1997445737
@@ -112,6 +131,7 @@ class WandbLogger:
 
     def log_eval(self, global_step: int, logs_dict: Dict[str, Any]) -> None:
         import psutil
+
         logs_dict = dict(logs_dict)
         logs_dict["cpu_percent"] = psutil.cpu_percent()
         try:
@@ -125,13 +145,14 @@ class WandbLogger:
 
     def log_episode(self, episode: int, logs_dict: Dict[str, Any]) -> None:
         import psutil
+
         logs_dict = dict(logs_dict)
         logs_dict["cpu_percent"] = psutil.cpu_percent()
         try:
             logs_dict["cpu_cores_affinity"] = len(os.sched_getaffinity(0))
         except AttributeError:
             pass
-            
+
         metrics = {k: v for k, v in logs_dict.items() if v is not None}
         logs = {"episode/%s" % k: v for k, v in {**metrics, "episode": episode}.items()}
         self.handle.log(logs)
@@ -158,7 +179,8 @@ class TensorboardLogger:
                 formatted_text = f"Sample:\\n{text}\\n\\nReward: {reward:.4f}"
                 self.writer.add_text("train/generated_samples", formatted_text, global_step)
             elif v is not None:
-                self.writer.add_scalar(f"train/{k}", v, global_step)
+                section = WandbLogger._route_key(k)
+                self.writer.add_scalar(f"{section}/{k}", v, global_step)
 
     def log_eval(self, global_step: int, logs_dict: Dict[str, Any]) -> None:
         for k, v in logs_dict.items():

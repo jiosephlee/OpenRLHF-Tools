@@ -413,6 +413,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --prompt_max_len $PROMPT_MAX_LEN \
         --generate_max_len 2048 \
         --max_samples 1000000 \
+        --reduce_cuda_graph \
         --enable_prefix_caching \
         --zero_stage $ZERO_STAGE \
         --param_dtype bf16 \

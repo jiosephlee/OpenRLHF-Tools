@@ -50,10 +50,13 @@
 #SBATCH --gpus=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=256G
-#SBATCH --cpus-per-gpu=8
+#SBATCH --cpus-per-gpu=12
 #SBATCH --time=0-1:00:00
+#SBATCH --core-spec=0
 #SBATCH --sockets-per-node=1
 #SBATCH --account=myatskar-lab
+
+nvidia-smi topo -m
 
 ### PARCC PARAMETERS ###
 export OMP_NUM_THREADS=16

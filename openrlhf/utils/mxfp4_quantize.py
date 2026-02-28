@@ -59,8 +59,10 @@ def quantize_to_mxfp4(
     right = fp4_val[..., 1::2]
     packed = (right << 4) + left
 
-    # Convert exponent to biased E8M0 format
-    e8m0_scales = (e8m0_exp + 127).to(torch.uint8)
+    # Convert exponent to biased E8M0 format and reshape to [..., last_dim // block_size]
+    scale_shape = list(original_shape)
+    scale_shape[-1] = scale_shape[-1] // block_size
+    e8m0_scales = (e8m0_exp + 127).to(torch.uint8).reshape(scale_shape)
 
     return packed, e8m0_scales
 

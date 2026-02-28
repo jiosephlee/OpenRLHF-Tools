@@ -33,7 +33,7 @@
 #SBATCH --gpus=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=768G
-#SBATCH --cpus-per-gpu=8
+#SBATCH --cpus-per-gpu=16
 #SBATCH --time=00-1:00:00
 
 ### PARCC PARAMETERS ###

@@ -85,7 +85,13 @@ class WandbLogger:
         self.samples_table = wandb.Table(columns=["global_step", "text", "reward"])
 
     def log_train(self, global_step: int, logs_dict: Dict[str, Any]) -> None:
+        import psutil
         logs_dict = dict(logs_dict)
+        logs_dict["cpu_percent"] = psutil.cpu_percent()
+        try:
+            logs_dict["cpu_cores_affinity"] = len(os.sched_getaffinity(0))
+        except AttributeError:
+            pass
 
         generated_samples = logs_dict.pop("generated_samples", None)
 
@@ -105,13 +111,27 @@ class WandbLogger:
         self.handle.log(logs)
 
     def log_eval(self, global_step: int, logs_dict: Dict[str, Any]) -> None:
+        import psutil
         logs_dict = dict(logs_dict)
+        logs_dict["cpu_percent"] = psutil.cpu_percent()
+        try:
+            logs_dict["cpu_cores_affinity"] = len(os.sched_getaffinity(0))
+        except AttributeError:
+            pass
 
         metrics = {k: v for k, v in logs_dict.items() if v is not None}
         logs = {"eval/%s" % k: v for k, v in {**metrics, "global_step": global_step}.items()}
         self.handle.log(logs)
 
     def log_episode(self, episode: int, logs_dict: Dict[str, Any]) -> None:
+        import psutil
+        logs_dict = dict(logs_dict)
+        logs_dict["cpu_percent"] = psutil.cpu_percent()
+        try:
+            logs_dict["cpu_cores_affinity"] = len(os.sched_getaffinity(0))
+        except AttributeError:
+            pass
+            
         metrics = {k: v for k, v in logs_dict.items() if v is not None}
         logs = {"episode/%s" % k: v for k, v in {**metrics, "episode": episode}.items()}
         self.handle.log(logs)

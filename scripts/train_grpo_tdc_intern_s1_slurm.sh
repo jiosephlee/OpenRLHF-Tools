@@ -50,7 +50,7 @@
 #SBATCH --gpus=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=512G
-#SBATCH --cpus-per-gpu=12
+#SBATCH --cpus-per-gpu=16
 #SBATCH --time=0-1:00:00
 #SBATCH --sockets-per-node=1
 #SBATCH --account=myatskar-lab

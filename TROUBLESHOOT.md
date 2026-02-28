@@ -17,22 +17,20 @@
 2. **Increase Actor GPUs:** Shard the actor across multiple GPUs (e.g., `ACTOR_GPUS=2`), cutting the per-process CPU memory requirement in half (to 80GB), which safely fits inside a 128GB allocation.
 3. **Increase CPU RAM Allocation:** If using `--adam_offload` with a 1-GPU actor is absolutely necessary, request significantly more memory from SLURM (e.g., `--mem=256G` or `--mem-per-gpu=256G`).
 
-## Raylet Killed (SIGKILL) During vLLM Engine Initialization
+## Raylet Killed (SIGKILL) or ActorUnavailableError (Socket Closed)
 **Symptoms:**
-- Raylet terminates unexpectedly shortly after vLLM engines begin loading (you'll see model weights loaded successfully, then `Dynamo bytecode transform time: ~15s`, then the Raylet dies).
-- The error says "Possible reasons include: (1) SIGKILL by the user or system OOM killer" with only Ray state-dump lines — no Python traceback.
-- You may also see `ray.exceptions.ActorUnavailableError: The actor is temporarily unavailable: RpcError: RPC Error message: Socket closed` — this means the actor's process was killed out from under Ray by the OS OOM killer.
-- Typically happens when **multiple vLLM engines initialize concurrently** in colocated mode.
+- Raylet terminates unexpectedly randomly during the run or during vLLM engine initialization.
+- The error says "Possible reasons include: (1) SIGKILL by the user or system OOM killer" with Ray state-dump lines.
+- You see `ray.exceptions.ActorUnavailableError: The actor is temporarily unavailable: RpcError: RPC Error message: Socket closed`.
 
 **Root Cause:**
-- **Newer vLLM versions** (especially builds from git main) aggressively pre-allocate GPU memory for CUDAGraph capture. The default config captures **84 different batch sizes** (1 through 1024) using `FULL_AND_PIECEWISE` CUDAGraph mode.
-- Each capture allocates temporary GPU memory on top of model weights + KV cache (`gpu_memory_utilization`), easily exceeding available VRAM when two engines init simultaneously.
-- The worker process hits a CUDA OOM, crashes, and the Raylet is killed — often with no Python traceback, just a silent SIGKILL.
+- **Unknown, but highly correlated with System RAM exhaustion.** While it can sometimes be triggered by vLLM CUDAGraph allocations crashing silently, the most common trigger is the Linux Out-Of-Memory (OOM) killer assassinating the Ray background process or PyTorch workers when the job exceeds its SLURM `--mem` limit.
+- Peak memory usage spikes aggressively during model loading, Ray object store spilling, and DeepSpeed CPU offloading.
 
 **Solutions:**
-1. **`--reduce_cuda_graph`** (preferred): Reduces CUDAGraph capture sizes from 84 to `[1, 2, 4, 8, 16, 32]` via `CompilationConfig`. Keeps torch.compile benefits with much lower init-time memory.
-2. **`--enforce_eager`:** Disables torch.compile and CUDAGraph entirely. ~10-15% generation slowdown but zero OOM risk during init.
-3. **Lower `--vllm_gpu_memory_utilization`:** Reduces KV cache pre-allocation (e.g., 0.7 → 0.5) to leave more headroom for CUDAGraph capture. May reduce throughput.
+1. **Increase System RAM (Most Effective):** Bump your SLURM memory request significantly (e.g., from `--mem=256G` to `--mem=512G` or higher). This solves the vast majority of silent Raylet SIGKILLs.
+2. **`--reduce_cuda_graph`:** If the crash happens strictly during initialization, you can reduce CUDAGraph capture sizes to save init-time VRAM/RAM.
+3. **`--enforce_eager`:** Disables torch.compile and CUDAGraph entirely.
 
 **Note:** Environment variables like `VLLM_CUDAGRAPH_CAPTURE_SIZES` are **not recognized** by all vLLM builds. Use the `--reduce_cuda_graph` CLI flag instead, which passes a `CompilationConfig` directly through the Python API.
 
@@ -67,3 +65,16 @@ Clear the `torch.inductor` caches before running (this has already been added to
 ```bash
 rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/
 ```
+
+## Training Jobs Running 3-4x Slower Than Expected
+**Symptoms:**
+- The evaluation `tqdm` bar or generation rollouts take proportionally much longer (e.g., 16 minutes instead of 5 minutes) consistently across an entire run.
+- W&B metrics for "Network Traffic" and "Disk I/O" climb linearly but at very low actual bandwidths (e.g., ~1MB/s).
+
+**Root Cause:**
+- **CPU Core Starvation by SLURM allocations:** Even if you request `--cpus-per-gpu=12`, SLURM's `cgroups` might artificially restrict your job to a fraction of the requested physical cores on densely packed nodes. `vLLM` and `DeepSpeed` are highly CPU-bound; if they are forced to share 4 or 8 physical cores, the constant Python thread context-switching leaves the GPUs entirely idle, causing massive artificial bottlenecks.
+- To verify this, run `nvidia-smi topo -m` and look at the `CPU Affinity` column for your assigned GPUs. If the number of logical threads assigned is significantly lower than your requested `--cpus-per-gpu * gpus`, you are being starved.
+
+**Solutions:**
+1. **Force Exclusive Cores:** Add `#SBATCH --exclusive` or `#SBATCH --core-spec=0` (if allowed by your cluster admin) to guarantee dedicated physical cores.
+2. **Increase CPU Requests:** Bump `--cpus-per-gpu` higher (e.g. to 12 or 16) to force SLURM to find a node with enough free continuous cores.

@@ -15,14 +15,14 @@
 #   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
 #
 # With smart replay (halved effective rollout batch size):
-#   SMART_REPLAY=1 COLO_EVAL_STEPS=8 EFFECTIVE_ROLLOUT_BATCH_SIZE=4 sbatch train_grpo_tdc_intern_s1_slurm.sh
+#   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 SMART_REPLAY=1 COLO_EVAL_STEPS=32 EFFECTIVE_ROLLOUT_BATCH_SIZE=4 sbatch train_grpo_tdc_intern_s1_slurm.sh
 #   SMART_REPLAY=1 COLO_EVAL_STEPS=16 sbatch train_grpo_tdc_intern_s1_slurm.sh
 # With curriculum balanced:
 #   CURRICULUM_BALANCED=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
 #
 # With both:
 #   SMART_REPLAY=1 CURRICULUM_BALANCED=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
-#  SMART_REPLAY=1 COLO_EVAL_STEPS=16 MULTI_STAGE_DISPATCH=1
+#  SMART_REPLAY=1 COLO_EVAL_STEPS=16 MULTI_STAGE_DISPATCH=1 EFFECTIVE_ROLLOUT_BATCH_SIZE=4
 # Feature flags (set via env before sbatch):
 #   MODE=colocated|distributed           # Default: colocated
 #   EFFECTIVE_ROLLOUT_BATCH_SIZE=8       # Rollout batch size in distributed/async mode.
@@ -51,7 +51,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=512G
 #SBATCH --cpus-per-gpu=16
-#SBATCH --time=0-1:00:00
+#SBATCH --time=0-10:00:00
 #SBATCH --sockets-per-node=1
 #SBATCH --account=myatskar-lab
 

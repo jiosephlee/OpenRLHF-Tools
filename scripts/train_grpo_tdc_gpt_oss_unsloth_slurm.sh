@@ -33,7 +33,7 @@
 #SBATCH --gpus=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=1228G
-#SBATCH --cpus-per-gpu=8
+#SBATCH --cpus-per-gpu=16
 #SBATCH --time=00-12:00:00
 
 ### PARCC PARAMETERS ###
@@ -95,11 +95,11 @@ run_task() {
         MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-8}" # This decides how many mini gradient updates are used per rollout; Rollout_batch_size * N_samples_per_prompt / Mini_gradient_steps = number of trajectories used for each gradient update.
         MICRO_TRAIN_BATCH_SIZE=1 # The larger the micro_train_batch_size, the more memory and less gradient accumulation steps for backwards pass.
         MICRO_ROLLOUT_BATCH_SIZE=2 # ^ but for forwards pass. These two parameters are overridden, however, by default since we use dynamic batching.
-        VLLM_GPU_MEM_UTIL=0.625
+        VLLM_GPU_MEM_UTIL=0.695
         VLLM_SYNC_BACKEND=nccl
         EVAL_STEPS="${EVAL_STEPS:-32}"
-        TRAIN_MAX_TOKENS_PER_GPU=8192 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
-        ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')
+        TRAIN_MAX_TOKENS_PER_GPU=12288 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
+        ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.5" | bc | awk '{print int($1)}')
 
     elif [ "$MODE" = "distributed" ]; then
         ACTOR_GPUS="${ACTOR_GPUS:?"MODE=distributed requires ACTOR_GPUS"}"
@@ -393,6 +393,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --eval_steps $EVAL_STEPS \
         --eval_temperature $TEMPERATURE \
         --eval_n_samples_per_prompt 1 \
+        --max_num_batched_tokens 8192 \
         --input_key messages \
         --label_key answer \
         --apply_chat_template \

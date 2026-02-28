@@ -99,10 +99,10 @@ run_task() {
         MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-8}" # This decides how many mini gradient updates are used per rollout; Rollout_batch_size * N_samples_per_prompt / Mini_gradient_steps = number of trajectories used for each gradient update.
         MICRO_TRAIN_BATCH_SIZE=1 # The larger the micro_train_batch_size, the more memory and less gradient accumulation steps for backwards pass.
         MICRO_ROLLOUT_BATCH_SIZE=2 # ^ but for forwards pass. These two parameters are overridden, however, by default since we use dynamic batching.
-        VLLM_GPU_MEM_UTIL=0.675
+        VLLM_GPU_MEM_UTIL=0.6
         VLLM_SYNC_BACKEND=nccl
         EVAL_STEPS="${EVAL_STEPS:-32}"
-        TRAIN_MAX_TOKENS_PER_GPU=10240 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
+        TRAIN_MAX_TOKENS_PER_GPU=8192 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
         ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.25" | bc | awk '{print int($1)}')
 
     elif [ "$MODE" = "distributed" ]; then
@@ -145,9 +145,9 @@ run_task() {
 
     ### MODE FLAGS ###
     if [ "$MODE" = "colocated" ]; then
-        MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep --adam_offload" #gpt-oss always needs adam_offload as it can't fit on 8 GPUs with colocated mode otherwise.
+        MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep --adam_8bit" #gpt-oss: 8-bit Adam keeps optimizer on GPU with ~2x less memory than fp32, avoiding CPU offload OOM.
     else
-        MODE_FLAGS="--async_train --async_queue_size 1 --adam_offload"
+        MODE_FLAGS="--async_train --async_queue_size 1 --adam_8bit"
     fi
 
     ### WARMUP LOGIC (gpt_oss always) ###

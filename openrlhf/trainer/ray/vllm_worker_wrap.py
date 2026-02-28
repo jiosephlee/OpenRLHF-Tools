@@ -29,6 +29,14 @@ class WorkerWrap:
             f"rank={rank}, world_size={world_size}, group_name={group_name}",
         )
 
+    @property
+    def _is_mxfp4_quantized(self):
+        """Check if the model uses MXFP4 quantization."""
+        qconfig = getattr(self.model_config, "quantization_config", None)
+        if isinstance(qconfig, dict):
+            return qconfig.get("quant_method") == "mxfp4"
+        return getattr(self.model_config, "quantization", None) == "mxfp4"
+
     def debug_weight_snapshot(self, label=""):
         """Print a fingerprint of key model weights for debugging weight sync.
 
@@ -36,7 +44,12 @@ class WorkerWrap:
         - Weights that didn't change (sync missed them)
         - Weights that became NaN/Inf (corruption)
         - Weights that are all zeros (failed to load)
+
+        Only runs for MXFP4-quantized models (where weight sync is non-trivial).
         """
+        if not self._is_mxfp4_quantized:
+            return
+
         import torch
 
         model = self.model_runner.model

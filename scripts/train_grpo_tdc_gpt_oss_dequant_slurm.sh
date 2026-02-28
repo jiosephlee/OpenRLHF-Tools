@@ -1,6 +1,7 @@
 #!/bin/bash
 #
-# SLURM batch version of the GPT-OSS Unsloth BF16 GRPO training script.
+# SLURM batch version of the GPT-OSS GRPO training script.
+# ** Dequantize-only variant: no MXFP4 rollout or QAT. **
 #
 # Supports both colocated and distributed modes via MODE env var.
 #
@@ -9,11 +10,11 @@
 #
 # Usage:
 #   # Colocated (default):
-#   sbatch scripts/train_grpo_tdc_gpt_oss_unsloth_slurm.sh
+#   sbatch scripts/train_grpo_tdc_gpt_oss_dequant_slurm.sh
 #
 #   # Distributed:
-#   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 sbatch train_grpo_tdc_gpt_oss_unsloth_slurm.sh
-#
+#   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 sbatch scripts/train_grpo_tdc_gpt_oss_dequant_slurm.sh
+#      MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 sbatch train_grpo_tdc_gpt_oss_dequant_slurm.sh
 # Feature flags (set via env before sbatch):
 #   MODE=colocated|distributed   # Default: colocated
 #   TOOL_VERSION=v4              # Tool schema version (default: v4)
@@ -25,17 +26,18 @@
 #
 
 ### SLURM PARAMETERS ###
-#SBATCH --job-name=grpo-tdc-gptoss-unsloth
-#SBATCH --output=logs/grpo-tdc-gptoss-unsloth_%j.out
-#SBATCH --error=logs/grpo-tdc-gptoss-unsloth_%j.err
+#SBATCH --job-name=grpo-tdc-gptoss-dq
+#SBATCH --output=logs/grpo-tdc-gptoss-dq_%j.out
+#SBATCH --error=logs/grpo-tdc-gptoss-dq_%j.err
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
 #SBATCH --qos=normal
-#SBATCH --gpus=4
+#SBATCH --gpus=2
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=1228G
+#SBATCH --mem=768G
+#SBATCH --sockets-per-node=1
 #SBATCH --cpus-per-gpu=16
-#SBATCH --time=00-12:00:00
+#SBATCH --time=00-1:00:00
 
 ### PARCC PARAMETERS ###
 export OMP_NUM_THREADS=16
@@ -62,14 +64,14 @@ export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/open_r
 run_task() {
     set -euo pipefail
     export MALLOC_TRIM_THRESHOLD_=0
-    export DS_SKIP_CUDA_CHECK=1 # This disables the CUDA check that causes deepspeed exception
+    export DS_SKIP_CUDA_CHECK=1
 
     # Prevent corrupted torch inductor cache from crashing vLLM compilation.
     # We nuke any leftover default-location cache from prior runs.
     rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ ~/.cache/vllm/torch_compile_cache/ 2>/dev/null || true
 
     ### ARGS (override via env before sbatch) ###
-    PRETRAIN_PATH="${PRETRAIN_PATH:-unsloth/gpt-oss-20b-BF16}"
+    PRETRAIN_PATH="${PRETRAIN_PATH:-openai/gpt-oss-20b}"
     LEARNING_RATE="${LEARNING_RATE:-1e-6}"
     DEBUG_TRACES="${DEBUG_TRACES:-0}"
     NUM_GPUS=$SLURM_GPUS_ON_NODE
@@ -86,7 +88,7 @@ run_task() {
     ### UNIFIED CONSTANTS ###
     AGENT_MAX_STEPS=30
     ZERO_STAGE=2
-    PROMPT_MAX_LEN=6144 # Any responses longer than this will be truncated.
+    PROMPT_MAX_LEN=8192 # Any responses longer than this will be truncated.
     N_SAMPLES_PER_PROMPT=8
 
     ### MODE-DEPENDENT DEFAULTS ###
@@ -97,11 +99,11 @@ run_task() {
         MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-8}" # This decides how many mini gradient updates are used per rollout; Rollout_batch_size * N_samples_per_prompt / Mini_gradient_steps = number of trajectories used for each gradient update.
         MICRO_TRAIN_BATCH_SIZE=1 # The larger the micro_train_batch_size, the more memory and less gradient accumulation steps for backwards pass.
         MICRO_ROLLOUT_BATCH_SIZE=2 # ^ but for forwards pass. These two parameters are overridden, however, by default since we use dynamic batching.
-        VLLM_GPU_MEM_UTIL=0.715
+        VLLM_GPU_MEM_UTIL=0.7
         VLLM_SYNC_BACKEND=nccl
         EVAL_STEPS="${EVAL_STEPS:-32}"
-        TRAIN_MAX_TOKENS_PER_GPU=4096 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
-        ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.5" | bc | awk '{print int($1)}')
+        TRAIN_MAX_TOKENS_PER_GPU=12288 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and reduce the speed of the training by reducing gradient accumulation steps.
+        ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.65" | bc | awk '{print int($1)}')
 
     elif [ "$MODE" = "distributed" ]; then
         ACTOR_GPUS="${ACTOR_GPUS:?"MODE=distributed requires ACTOR_GPUS"}"
@@ -110,12 +112,12 @@ run_task() {
         MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-2}" # Decreasing rollout batch size 4x but we decrease # of mini-gradient steps by 4x -> same number of gradient steps in total as colocated.
         MICRO_TRAIN_BATCH_SIZE=1
         MICRO_ROLLOUT_BATCH_SIZE=2
-        VLLM_GPU_MEM_UTIL=0.965
+        VLLM_GPU_MEM_UTIL=0.96
         VLLM_SYNC_BACKEND=gloo
         COLO_ROLLOUT=32; COLO_EVAL=32 #
         EVAL_STEPS="${EVAL_STEPS:-$(( COLO_EVAL * COLO_ROLLOUT / ROLLOUT_BATCH_SIZE ))}" # To match the evaluation frequency of the colocated mode.
-        TRAIN_MAX_TOKENS_PER_GPU=18432
-        ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2.25" | bc | awk '{print int($1)}')
+        TRAIN_MAX_TOKENS_PER_GPU=8192
+        ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')
     else
         echo "Error: MODE must be 'colocated' or 'distributed', got '$MODE'" >&2
         exit 1
@@ -157,7 +159,7 @@ run_task() {
     fi
 
     ### MULTI-TASK ###
-    TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
+    TASK_NAMES=(BBB_Martins)
     TASK_LABEL="Base"
 
     ### W&B ###
@@ -198,14 +200,14 @@ run_task() {
     DATE_TAG=$(date +%m%d_%H%M)
     CHAT_PROTOCOL="gpt_oss"
     if [ "$MODE" = "colocated" ]; then
-        RUN_NAME="grpo-tdc-gptoss-unsloth-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-colo-${DATE_TAG}"
-        WANDB_GROUP="TDC-GPTOss-Unsloth-colo-$TASK_LABEL"
+        RUN_NAME="grpo-tdc-gptoss-dq-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-colo-${DATE_TAG}"
+        WANDB_GROUP="TDC-GPTOss-dq-colo-$TASK_LABEL"
     else
-        RUN_NAME="grpo-tdc-gptoss-unsloth-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-dist-${LAYOUT_TAG}-${DATE_TAG}"
-        WANDB_GROUP="TDC-GPTOss-Unsloth-dist-${LAYOUT_TAG}-$TASK_LABEL"
+        RUN_NAME="grpo-tdc-gptoss-dq-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-dist-${LAYOUT_TAG}-${DATE_TAG}"
+        WANDB_GROUP="TDC-GPTOss-dq-dist-${LAYOUT_TAG}-$TASK_LABEL"
     fi
     RUN_ID="${RUN_NAME}"
-    HUB_NAME="grpo-tdc-gptoss-unsloth-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
+    HUB_NAME="grpo-tdc-gptoss-dq-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
     RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}"
     mkdir -p "$RUNS_DIR"
     SAVE_PATH="$PROJECT_ROOT/saves/tdc/$RUN_NAME"
@@ -256,7 +258,7 @@ run_task() {
     mkdir -p "$TRITON_CACHE_DIR"
 
     export VLLM_NO_USAGE_STATS=1
-    export VLLM_DISABLE_TELEMETRY=1
+    export VLLM_ALLOW_INSECURE_SERIALIZATION=1  # vLLM v1 msgspec can't serialize torch.dtype; fall back to pickle
 
     export OPENRLHF_MODEL_PATH="$PRETRAIN_PATH"
     export OPENRLHF_CHAT_PROTOCOL="$CHAT_PROTOCOL"
@@ -288,7 +290,7 @@ run_task() {
 
     ### PRINT CONFIG ###
     echo "========================================"
-    echo "TDC GRPO Training — GPT-OSS Unsloth BF16 (MODE=$MODE, SLURM BATCH)"
+    echo "TDC GRPO Training — GPT-OSS DEQUANT-ONLY (MODE=$MODE, SLURM BATCH)"
     echo "========================================"
     echo "SLURM Job ID: $SLURM_JOB_ID"
     echo "Tasks: ${TASK_NAMES[*]}"
@@ -320,6 +322,8 @@ run_task() {
     echo "Curriculum Balanced: $CURRICULUM_BALANCED"
     echo "Multi Stage Dispatch: $MULTI_STAGE_DISPATCH"
     echo "Tool Version: $TOOL_VERSION"
+    echo "----------------------------------------"
+    echo "Quantization: dequantize-only (no MXFP4 rollout, no QAT)"
     echo "----------------------------------------"
     echo "Runs Dir: $RUNS_DIR"
     echo "W&B: project=$WANDB_PROJECT group=$WANDB_GROUP run=$RUN_ID"
@@ -372,6 +376,9 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --actor_num_gpus_per_node $ACTOR_GPUS \
         --vllm_num_engines $VLLM_NUM_ENGINES \
         --vllm_tensor_parallel_size 1 \
+        --reduce_cuda_graph \
+        --kv_cache_dtype fp8 \
+        --max_num_batched_tokens 8192 \
         --vllm_gpu_memory_utilization $VLLM_GPU_MEM_UTIL \
         --advantage_estimator $ADVANTAGE_ESTIMATOR \
         --init_kl_coef 0 \
@@ -390,7 +397,6 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --prompt_max_len $PROMPT_MAX_LEN \
         --generate_max_len 2048 \
         --max_samples 1000000 \
-        --enable_prefix_caching \
         --zero_stage $ZERO_STAGE \
         --param_dtype bf16 \
         --actor_learning_rate $LEARNING_RATE \
@@ -399,7 +405,6 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --eval_steps $EVAL_STEPS \
         --eval_temperature $TEMPERATURE \
         --eval_n_samples_per_prompt 1 \
-        --max_num_batched_tokens 8192 \
         --input_key messages \
         --label_key answer \
         --apply_chat_template \
@@ -421,12 +426,12 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --save_path "$SAVE_PATH" \
         --push_to_hub "$HUB_REPO_ID" \
         --delete_local_after_push \
-        --reduce_cuda_graph \
-        --kv_cache_dtype fp8 \
         --use_dynamic_batch \
         --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
         --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \
+        --mxfp4_dequantize \
         --constant_lr_with_warm_up \
+        --skip_eval_step_zero \
         --warmup_steps $WARMUP_STEPS \
         --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
         $MODE_FLAGS \

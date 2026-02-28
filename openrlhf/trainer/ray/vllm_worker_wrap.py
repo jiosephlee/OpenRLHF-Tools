@@ -29,6 +29,55 @@ class WorkerWrap:
             f"rank={rank}, world_size={world_size}, group_name={group_name}",
         )
 
+    def debug_weight_snapshot(self, label=""):
+        """Print a fingerprint of key model weights for debugging weight sync.
+
+        Call before and after weight sync to detect:
+        - Weights that didn't change (sync missed them)
+        - Weights that became NaN/Inf (corruption)
+        - Weights that are all zeros (failed to load)
+        """
+        import torch
+
+        model = self.model_runner.model
+        print(f"\n[DEBUG WeightSnapshot] {label}")
+        print(f"  model class: {model.__class__.__name__}")
+
+        # Check a few representative weights from different categories
+        snapshot_names = []
+        for name, param in model.named_parameters():
+            # Sample: first layer's layernorm, first expert weight, embedding, lm_head
+            if any(k in name for k in [
+                "layers.0.input_layernorm.weight",
+                "layers.0.mlp.experts.w13_weight",
+                "layers.0.mlp.experts.w2_weight",
+                "layers.0.mlp.experts.w13_weight_scale",
+                "layers.0.mlp.experts.w13_bias",
+                "layers.0.attn.qkv_proj.weight",
+                "embedding.weight",
+                "lm_head.weight",
+            ]):
+                snapshot_names.append((name, param))
+
+        for name, param in snapshot_names:
+            data = param.data
+            if data.is_meta:
+                print(f"  {name}: META DEVICE (not materialized!)")
+            elif data.numel() == 0:
+                print(f"  {name}: EMPTY shape={list(data.shape)}")
+            else:
+                flat = data.float().flatten()
+                print(
+                    f"  {name}: shape={list(data.shape)} dtype={data.dtype} "
+                    f"device={data.device} "
+                    f"mean={flat.mean().item():.6f} std={flat.std().item():.6f} "
+                    f"absmax={flat.abs().max().item():.6f} "
+                    f"nan={flat.isnan().any().item()} inf={flat.isinf().any().item()} "
+                    f"allzero={flat.eq(0).all().item()} "
+                    f"hash={flat[:8].tolist()}"  # first 8 values as fingerprint
+                )
+        print()
+
     def _maybe_quantize_for_vllm(self, name, weight):
         """If MXFP4 is active and this is a MoE expert weight, quantize bf16 → uint8.
 
@@ -41,6 +90,11 @@ class WorkerWrap:
 
         The Actor stores expert weights as [E, in_features, out_features] in bf16.
         The checkpoint expects [E, out_features, in_features] packed as uint8.
+
+        Note: gate_up_proj data is already interleaved [gate_0, up_0, gate_1, up_1, ...]
+        from the checkpoint. The Actor preserves this layout during training, so no
+        interleaving is needed here. vLLM's process_weights_after_loading applies
+        swap_every_two_rows to swap w1↔w3 for trtllm-gen's swiglu convention.
         """
         import torch
 
@@ -154,6 +208,7 @@ class WorkerWrap:
         import torch
         from vllm.model_executor.model_loader.reload import initialize_layerwise_reload
 
+        self.debug_weight_snapshot("BEFORE weight sync (pre-initialize_layerwise_reload)")
         with torch.device(self.device):
             initialize_layerwise_reload(self.model_runner.model)
         print("[WorkerWrap] initialize_weight_reload: layerwise reload initialized")
@@ -170,4 +225,5 @@ class WorkerWrap:
         with torch.device(self.device):
             finalize_layerwise_reload(self.model_runner.model, self.model_config)
         torch.cuda.synchronize()
+        self.debug_weight_snapshot("AFTER weight sync (post-finalize_layerwise_reload)")
         print("[WorkerWrap] post_weight_sync: finalize_layerwise_reload complete")

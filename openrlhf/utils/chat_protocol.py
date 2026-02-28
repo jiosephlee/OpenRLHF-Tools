@@ -406,6 +406,7 @@ class GPTOSSProtocol(ChatProtocol):
 
     # Patterns for harmony special tokens rendered as text
     _RE_TOOL_CALL = re.compile(
+        r'(?:<\|channel\|>\w+\s*)?'        # optional channel before to=
         r'to=functions\.(\S+?)'           # recipient: functions.TOOL_NAME
         r'(?:\s*<\|channel\|>\w+)?'       # optional channel after to= (role-section format)
         r'(?:\s*<\|constrain\|>[^<]*)*'   # zero or more constrain tags (id=1, json, etc.)

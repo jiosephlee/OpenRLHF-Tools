@@ -22,7 +22,7 @@
 #
 # With both:
 #   SMART_REPLAY=1 CURRICULUM_BALANCED=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
-#
+#  SMART_REPLAY=1 COLO_EVAL_STEPS=16 MULTI_STAGE_DISPATCH=1
 # Feature flags (set via env before sbatch):
 #   MODE=colocated|distributed           # Default: colocated
 #   EFFECTIVE_ROLLOUT_BATCH_SIZE=8       # Rollout batch size in distributed/async mode.
@@ -413,7 +413,6 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --prompt_max_len $PROMPT_MAX_LEN \
         --generate_max_len 2048 \
         --max_samples 1000000 \
-        --reduce_cuda_graph \
         --enable_prefix_caching \
         --zero_stage $ZERO_STAGE \
         --param_dtype bf16 \

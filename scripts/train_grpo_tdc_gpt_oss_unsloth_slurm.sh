@@ -66,7 +66,7 @@ run_task() {
 
     # Prevent corrupted torch inductor cache from crashing vLLM compilation.
     # We nuke any leftover default-location cache from prior runs.
-    rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ 2>/dev/null || true
+    rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ ~/.cache/vllm/torch_compile_cache/ 2>/dev/null || true
 
     ### ARGS (override via env before sbatch) ###
     PRETRAIN_PATH="${PRETRAIN_PATH:-unsloth/gpt-oss-20b-BF16}"

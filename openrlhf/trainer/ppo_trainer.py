@@ -127,6 +127,10 @@ class BasePPOTrainer(ABC):
             tokenizer,
         )
 
+        # Monotonic counter for episode/round wandb x-axis.
+        # Each initial episode pass and each replay round gets its own tick.
+        self._round_counter = 0
+
         # Tracking backends
         self.wandb_logger = WandbLogger(self.args) if self.args.use_wandb else None
         self.tensorboard_logger = TensorboardLogger(self.args) if self.args.use_tensorboard else None
@@ -149,12 +153,16 @@ class BasePPOTrainer(ABC):
                 per_dataset_total_prompts[datasource] += 1
                 for key, value in sample.info.items():
                     if key.startswith("tool_count__"):
-                        tool_name = key[len("tool_count__"):]
+                        tool_name = key[len("tool_count__") :]
                         tool_count = int(value.flatten()[i].item())
                         per_dataset_counts[datasource][tool_name] += tool_count
                         if tool_count >= 1:
                             per_dataset_prompts_used[datasource][tool_name] += 1
-                    elif key.startswith("parse_method__") or key in ["parse_failed", "tool_call_attempted", "tool_call_count"]:
+                    elif key.startswith("parse_method__") or key in [
+                        "parse_failed",
+                        "tool_call_attempted",
+                        "tool_call_count",
+                    ]:
                         count = int(value.flatten()[i].item())
                         per_dataset_parse_stats[datasource][key] += count
                 prompt_idx += 1
@@ -178,8 +186,7 @@ class BasePPOTrainer(ABC):
             if n == 0:
                 continue
             per_dataset_usage_pct[ds] = {
-                tool: per_dataset_prompts_used[ds].get(tool, 0) / n
-                for tool in per_dataset_counts.get(ds, {})
+                tool: per_dataset_prompts_used[ds].get(tool, 0) / n for tool in per_dataset_counts.get(ds, {})
             }
             if not per_dataset_usage_pct[ds]:
                 del per_dataset_usage_pct[ds]
@@ -189,7 +196,15 @@ class BasePPOTrainer(ABC):
 
         return per_dataset_counts, per_dataset_normalized, totals, per_dataset_usage_pct, per_dataset_parse_stats
 
-    def _write_eval_tool_usage(self, global_step, per_dataset_counts, per_dataset_normalized, totals, per_dataset_usage_pct, per_dataset_parse_stats):
+    def _write_eval_tool_usage(
+        self,
+        global_step,
+        per_dataset_counts,
+        per_dataset_normalized,
+        totals,
+        per_dataset_usage_pct,
+        per_dataset_parse_stats,
+    ):
         if not per_dataset_counts and not per_dataset_parse_stats:
             return
         run_dir = self.samples_generator.runs_dir
@@ -367,10 +382,17 @@ class BasePPOTrainer(ABC):
             if macro_f1_values:
                 logs["eval_avg_macro_f1"] = sum(macro_f1_values) / len(macro_f1_values)
 
-        per_dataset_counts, per_dataset_normalized, totals, per_dataset_usage_pct, per_dataset_parse_stats = self._collect_eval_tool_usage(
-            all_prompts, samples_list, prompt_to_datasource
+        per_dataset_counts, per_dataset_normalized, totals, per_dataset_usage_pct, per_dataset_parse_stats = (
+            self._collect_eval_tool_usage(all_prompts, samples_list, prompt_to_datasource)
         )
-        self._write_eval_tool_usage(global_step, per_dataset_counts, per_dataset_normalized, totals, per_dataset_usage_pct, per_dataset_parse_stats)
+        self._write_eval_tool_usage(
+            global_step,
+            per_dataset_counts,
+            per_dataset_normalized,
+            totals,
+            per_dataset_usage_pct,
+            per_dataset_parse_stats,
+        )
         self._write_eval_metrics(global_step, global_metrics, logs, n_samples_per_prompt)
 
         # Log to wandb/tensorboard
@@ -650,7 +672,9 @@ class PPOTrainer(BasePPOTrainer):
 
             subset = Subset(original_dataloader.dataset, replay_indices)
             replay_dataloader = DataLoader(
-                subset, batch_size=1, shuffle=replay_shuffle,
+                subset,
+                batch_size=1,
+                shuffle=replay_shuffle,
                 collate_fn=original_dataloader.dataset.collate_fn,
             )
             self.samples_generator.prompts_dataloader = replay_dataloader
@@ -696,6 +720,16 @@ class PPOTrainer(BasePPOTrainer):
                 del rollout_samples, status
                 gc.collect()
 
+            # Log episode stats for this replay round.
+            if self.wandb_logger:
+                self.wandb_logger.log_episode(
+                    self._round_counter,
+                    episode,
+                    replay_round + 1,
+                    self.samples_generator.episode_filter_stats,
+                )
+                self._round_counter += 1
+
             # Collect new replay indices from this round (everything that wasn't too easy).
             hard_indices, kept_indices = self.samples_generator.get_replay_indices()
             replay_indices = list(hard_indices | kept_indices)
@@ -732,23 +766,33 @@ class PPOTrainer(BasePPOTrainer):
             f.write(_json.dumps({"total_samples": n, "head": head, "tail": tail}) + "\n")
             for i in range(min(head, n)):
                 ds, prompt = all_samples[i]
-                f.write(_json.dumps({
-                    "index": i,
-                    "datasource": ds,
-                    "prompt_tail": prompt[-100:] if len(prompt) > 100 else prompt,
-                }) + "\n")
+                f.write(
+                    _json.dumps(
+                        {
+                            "index": i,
+                            "datasource": ds,
+                            "prompt_tail": prompt[-100:] if len(prompt) > 100 else prompt,
+                        }
+                    )
+                    + "\n"
+                )
             if n > head + tail:
                 f.write(_json.dumps({"gap": f"...skipped indices {head} to {n - tail - 1}..."}) + "\n")
             for i in range(max(head, n - tail), n):
                 ds, prompt = all_samples[i]
-                f.write(_json.dumps({
-                    "index": i,
-                    "datasource": ds,
-                    "prompt_tail": prompt[-100:] if len(prompt) > 100 else prompt,
-                }) + "\n")
+                f.write(
+                    _json.dumps(
+                        {
+                            "index": i,
+                            "datasource": ds,
+                            "prompt_tail": prompt[-100:] if len(prompt) > 100 else prompt,
+                        }
+                    )
+                    + "\n"
+                )
 
         logger.info(f"[DataloaderLog] Wrote {n} sample summary to {log_path}")
-        
+
         if n > 0:
             sample_prompt_path = os.path.join(log_dir, "sample0_prompt.txt")
             with open(sample_prompt_path, "w", encoding="utf-8") as f:
@@ -834,10 +878,16 @@ class PPOTrainer(BasePPOTrainer):
             # --- Save discarded prompts for offline analysis ---
             self.samples_generator.save_discarded_indices(episode)
 
-            # --- Smart replay: log episode stats and run replay episodes ---
+            # --- Smart replay: log initial-pass stats and run replay episodes ---
             if getattr(self.args, "smart_replay", False):
                 if self.wandb_logger:
-                    self.wandb_logger.log_episode(episode, self.samples_generator.episode_filter_stats)
+                    self.wandb_logger.log_episode(
+                        self._round_counter,
+                        episode,
+                        0,
+                        self.samples_generator.episode_filter_stats,
+                    )
+                    self._round_counter += 1
                 global_step = self._run_replay_episodes(episode, global_step, total_consumed_prompts)
 
         # Final eval at end of training (skip if last step already ran eval)

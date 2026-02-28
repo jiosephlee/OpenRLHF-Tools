@@ -61,9 +61,9 @@ Then re-run. FlashInfer will re-download cubins and JIT-recompile kernels agains
 - Previous interrupted runs can leave corrupted or structurally incompatible artifacts (such as empty AOT autograd artifact sets for some models) that cause subsequent vLLM engine initializations to crash when loading or saving compiled graphs.
 
 **Solution:**
-Clear the `torch.inductor` caches before running (this has already been added to the SLURM training scripts):
+Clear the `torch.inductor` and vLLM compile caches before running (this has already been added to the SLURM training scripts):
 ```bash
-rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/
+rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ ~/.cache/vllm/torch_compile_cache/
 ```
 
 ## Training Jobs Running 3-4x Slower Than Expected

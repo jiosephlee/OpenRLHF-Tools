@@ -85,7 +85,7 @@ run_task() {
     export DS_SKIP_CUDA_CHECK=1
     # Prevent corrupted torch inductor cache from crashing vLLM compilation.
     # We nuke any leftover default-location cache from prior runs.
-    # rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ 2>/dev/null || true
+    rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ ~/.cache/vllm/torch_compile_cache/ 2>/dev/null || true
 
     ### ARGS (override via env before sbatch) ###
     PRETRAIN_PATH="${PRETRAIN_PATH:-jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05}"

@@ -82,13 +82,13 @@ class WandbLogger:
         wandb.define_metric("system/*", step_metric="train/global_step", step_sync=True)
         wandb.define_metric("eval/global_step")
         wandb.define_metric("eval/*", step_metric="eval/global_step", step_sync=True)
-        wandb.define_metric("episode/episode")
-        wandb.define_metric("episode/*", step_metric="episode/episode")
+        wandb.define_metric("episode/round")
+        wandb.define_metric("episode/*", step_metric="episode/round")
         self.handle = wandb
         self.samples_table = wandb.Table(columns=["global_step", "text", "reward"])
 
     # Keys routed to the "parse/" wandb panel instead of "train/".
-    _PARSE_KEYS = {"parse_failed", "tool_call_attempted", "tool_call_count"}
+    _PARSE_KEYS = {"parse_failed", "tool_call_attempted"}
 
     @staticmethod
     def _route_key(k: str) -> str:
@@ -143,18 +143,21 @@ class WandbLogger:
         logs = {"eval/%s" % k: v for k, v in {**metrics, "global_step": global_step}.items()}
         self.handle.log(logs)
 
-    def log_episode(self, episode: int, logs_dict: Dict[str, Any]) -> None:
-        import psutil
+    def log_episode(self, round_idx: int, episode: int, replay_round: int, logs_dict: Dict[str, Any]) -> None:
+        """Log per-round episode metrics.
 
+        Args:
+            round_idx: Monotonically increasing counter (x-axis tick).
+            episode: Which training episode this round belongs to.
+            replay_round: 0 for the initial pass, 1+ for replay rounds.
+            logs_dict: Filter stats (easy_discarded, hard_kept, etc.).
+        """
         logs_dict = dict(logs_dict)
-        logs_dict["cpu_percent"] = psutil.cpu_percent()
-        try:
-            logs_dict["cpu_cores_affinity"] = len(os.sched_getaffinity(0))
-        except AttributeError:
-            pass
+        logs_dict["episode"] = episode
+        logs_dict["replay_round"] = replay_round
 
         metrics = {k: v for k, v in logs_dict.items() if v is not None}
-        logs = {"episode/%s" % k: v for k, v in {**metrics, "episode": episode}.items()}
+        logs = {"episode/%s" % k: v for k, v in {**metrics, "round": round_idx}.items()}
         self.handle.log(logs)
 
     def close(self) -> None:

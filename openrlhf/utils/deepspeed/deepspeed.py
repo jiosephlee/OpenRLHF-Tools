@@ -63,8 +63,10 @@ class DeepspeedStrategy(ABC):
         self.adam_offload = getattr(args, "adam_offload", False)
         self.adam_8bit = getattr(args, "adam_8bit", False)
         if self.adam_8bit and self.adam_offload:
-            raise ValueError("--adam_8bit and --adam_offload are mutually exclusive. "
-                             "8-bit Adam keeps optimizer states on GPU; offload moves them to CPU.")
+            raise ValueError(
+                "--adam_8bit and --adam_offload are mutually exclusive. "
+                "8-bit Adam keeps optimizer states on GPU; offload moves them to CPU."
+            )
         self.zpg = getattr(args, "zpg", 1)
         self.use_ds_universal_ckpt = getattr(args, "use_ds_universal_ckpt", False)
         self.grad_accum_dtype = getattr(args, "grad_accum_dtype", None)
@@ -140,7 +142,8 @@ class DeepspeedStrategy(ABC):
         """Create the appropriate Adam optimizer based on strategy flags."""
         if self.adam_8bit:
             from bitsandbytes.optim import AdamW
-            return AdamW(optim_params, optim_bits=8, is_paged=False, **kwargs)
+
+            return AdamW(optim_params, optim_bits=8, is_paged=True, **kwargs)
         elif self.adam_offload:
             return DeepSpeedCPUAdam(optim_params, **kwargs)
         else:
@@ -446,9 +449,9 @@ class DeepspeedStrategy(ABC):
             if getattr(model_to_save.config, "tie_word_embeddings", False) and "lm_head.weight" in state_dict_keys:
                 state_dict_keys.remove("lm_head.weight")
 
-            assert state_dict_keys.issubset(
-                output_state_dict_keys
-            ), f"mismatch keys {output_state_dict_keys.symmetric_difference(state_dict_keys)}"
+            assert state_dict_keys.issubset(output_state_dict_keys), (
+                f"mismatch keys {output_state_dict_keys.symmetric_difference(state_dict_keys)}"
+            )
 
             # only save peft weights https://github.com/microsoft/DeepSpeed/issues/4295
             if isinstance(model_to_save, PeftModel):

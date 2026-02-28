@@ -151,9 +151,11 @@ class WorkerWrap:
         loaders so that per-layer process_weights_after_loading runs automatically
         as weights arrive.
         """
+        import torch
         from vllm.model_executor.model_loader.reload import initialize_layerwise_reload
 
-        initialize_layerwise_reload(self.model_runner.model)
+        with torch.device(self.device):
+            initialize_layerwise_reload(self.model_runner.model)
         print("[WorkerWrap] initialize_weight_reload: layerwise reload initialized")
 
     def post_weight_sync(self):
@@ -165,6 +167,7 @@ class WorkerWrap:
         import torch
         from vllm.model_executor.model_loader.reload import finalize_layerwise_reload
 
-        finalize_layerwise_reload(self.model_runner.model, self.model_config)
+        with torch.device(self.device):
+            finalize_layerwise_reload(self.model_runner.model, self.model_config)
         torch.cuda.synchronize()
         print("[WorkerWrap] post_weight_sync: finalize_layerwise_reload complete")

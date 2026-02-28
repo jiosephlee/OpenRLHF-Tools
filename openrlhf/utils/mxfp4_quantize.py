@@ -48,9 +48,7 @@ def quantize_to_mxfp4(
     sign = torch.sign(normalized)
     sign_bit = (2 - sign) // 2
     bounds = E2M1_BOUNDS.to(normalized.device)
-    ord_ = torch.sum(
-        (normalized.abs().unsqueeze(-1) - bounds) > 0, dim=-1
-    )
+    ord_ = torch.sum((normalized.abs().unsqueeze(-1) - bounds) > 0, dim=-1)
     fp4_val = (sign_bit * 0b1000 + ord_).to(torch.uint8)
 
     # Pack two 4-bit values into one uint8
@@ -106,13 +104,25 @@ def fake_quantize_mxfp4(weight: torch.Tensor, block_size: int = 32) -> torch.Ten
 
 
 class _Mxfp4FakeQuant(nn.Module):
-    """Parametrization that applies MXFP4 fake-quantization to a weight."""
+    """Parametrization that applies MXFP4 fake-quantization to a weight.
 
-    def __init__(self, block_size: int = 32):
+    Args:
+        block_size: Number of elements per scaling block.
+        transpose: If True, transpose last two dims before quantizing and back
+            after. Use for stacked expert params [E, in, out] where quantization
+            blocks should run along in_features (matching vLLM's [E, out, in] layout).
+    """
+
+    def __init__(self, block_size: int = 32, transpose: bool = False):
         super().__init__()
         self.block_size = block_size
+        self.transpose = transpose
 
     def forward(self, weight: torch.Tensor) -> torch.Tensor:
+        if self.transpose:
+            weight = weight.transpose(-1, -2).contiguous()
+            weight = fake_quantize_mxfp4(weight, block_size=self.block_size)
+            return weight.transpose(-1, -2).contiguous()
         return fake_quantize_mxfp4(weight, block_size=self.block_size)
 
 
@@ -165,10 +175,15 @@ def register_mxfp4_qat_parametrization(model: nn.Module, block_size: int = 32) -
       - "experts" in module path, AND
       - module name contains one of gate_up_proj / down_proj / w13_weight / w2_weight
 
-    For plain nn.Linear: uses register_parametrization on module.weight.
-    For PEFT LoraLayer: monkey-patches forward to fake-quantize the *merged* weight
-      (base_weight + lora_B @ lora_A * scaling). This is the correct QAT target
-      because vLLM MXFP4-quantizes the merged weight at inference.
+    Handles three module patterns:
+      1. nn.Linear expert submodules (e.g. experts.gate_up_proj as Linear)
+         → register_parametrization on module.weight (transpose=False)
+      2. PEFT LoraLayer expert submodules
+         → monkey-patch forward to fake-quantize merged weight
+      3. Stacked-parameter expert modules (e.g. GptOssExperts with gate_up_proj
+         as a bare nn.Parameter [E, in, out])
+         → register_parametrization on the parameter directly (transpose=True,
+           because blocks must run along in_features to match vLLM's [E, out, in])
 
     ZeRO-2 / ZeRO-3 compatible: both approaches operate on already-gathered
     parameter tensors during forward (DeepSpeed gathers before forward hooks run).
@@ -177,10 +192,12 @@ def register_mxfp4_qat_parametrization(model: nn.Module, block_size: int = 32) -
     """
     import torch.nn.utils.parametrize as parametrize
     import logging
+
     logger = logging.getLogger(__name__)
 
     try:
         from peft.tuners.lora import LoraLayer
+
         _has_peft = True
     except ImportError:
         _has_peft = False
@@ -189,13 +206,27 @@ def register_mxfp4_qat_parametrization(model: nn.Module, block_size: int = 32) -
     for name, module in model.named_modules():
         if "experts" not in name:
             continue
-        if not any(frag in name for frag in _MXFP4_EXPERT_NAME_FRAGMENTS):
+
+        # Case 1 & 2: module name itself matches (e.g. "layers.0.mlp.experts.gate_up_proj")
+        if any(frag in name for frag in _MXFP4_EXPERT_NAME_FRAGMENTS):
+            if isinstance(module, nn.Linear):
+                parametrize.register_parametrization(module, "weight", _Mxfp4FakeQuant(block_size))
+                count += 1
+            elif _has_peft and isinstance(module, LoraLayer):
+                _patch_lora_layer_qat(module, block_size)
+                count += 1
             continue
-        if isinstance(module, nn.Linear):
-            parametrize.register_parametrization(module, "weight", _Mxfp4FakeQuant(block_size))
-            count += 1
-        elif _has_peft and isinstance(module, LoraLayer):
-            _patch_lora_layer_qat(module, block_size)
+
+        # Case 3: module holds expert weights as bare nn.Parameters
+        # (e.g. GptOssExperts with gate_up_proj, down_proj as [E, in, out] Parameters)
+        for param_name, param in list(module.named_parameters(recurse=False)):
+            if not any(frag in param_name for frag in _MXFP4_EXPERT_NAME_FRAGMENTS):
+                continue
+            if "bias" in param_name or "_scale" in param_name:
+                continue
+            # Stacked expert weights are [E, in, out] — transpose=True to quantize
+            # along in_features (last dim after transpose to [E, out, in])
+            parametrize.register_parametrization(module, param_name, _Mxfp4FakeQuant(block_size, transpose=True))
             count += 1
 
     logger.info(f"[QAT MXFP4] Registered fake-quantization on {count} expert weight layers.")

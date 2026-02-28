@@ -405,9 +405,11 @@ class SamplesGenerator:
             self._eval_dataloader_iter = iter(self.eval_dataloader)
 
         # Wake sleeping vLLM engines before dispatching.
+        # Wake both weights and KV cache — weights may still be asleep for
+        # step-0 eval (before any broadcast_to_vllm has run).  Waking
+        # already-awake weights is a no-op, so this is always safe.
         if self.args.vllm_enable_sleep:
-            # Only wake KV cache; weights are already awake from broadcast_to_vllm
-            batch_vllm_engine_call(self.vllm_engines, "wake_up", tags=["kv_cache"])
+            batch_vllm_engine_call(self.vllm_engines, "wake_up")
 
         experiences, prompts_consumed, exhausted = self._generate_vllm(
             dataloader_iter=self._eval_dataloader_iter,
@@ -499,9 +501,11 @@ class SamplesGenerator:
         self._step_prompts_consumed = 0
 
         # Wake sleeping vLLM engines before dispatching.
+        # Wake both weights and KV cache — weights may still be asleep for
+        # the first generation (before any broadcast_to_vllm has run).
+        # Waking already-awake weights is a no-op, so this is always safe.
         if self.args.vllm_enable_sleep:
-            # Only wake KV cache; weights are already awake from broadcast_to_vllm
-            batch_vllm_engine_call(self.vllm_engines, "wake_up", tags=["kv_cache"])
+            batch_vllm_engine_call(self.vllm_engines, "wake_up")
 
         experiences, prompts_consumed, exhausted = self._generate_vllm(
             dataloader_iter=self._dataloader_iter,

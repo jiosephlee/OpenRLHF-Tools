@@ -66,7 +66,7 @@ class WorkerWrap:
             elif data.numel() == 0:
                 print(f"  {name}: EMPTY shape={list(data.shape)}")
             else:
-                flat = data.float().flatten()
+                flat = data.detach().cpu().float().flatten()
                 print(
                     f"  {name}: shape={list(data.shape)} dtype={data.dtype} "
                     f"device={data.device} "
@@ -76,6 +76,7 @@ class WorkerWrap:
                     f"allzero={flat.eq(0).all().item()} "
                     f"hash={flat[:8].tolist()}"  # first 8 values as fingerprint
                 )
+                del flat
         print()
 
     def _maybe_quantize_for_vllm(self, name, weight):

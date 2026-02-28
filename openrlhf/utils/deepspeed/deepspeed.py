@@ -61,6 +61,10 @@ class DeepspeedStrategy(ABC):
         self.max_norm = max_norm
 
         self.adam_offload = getattr(args, "adam_offload", False)
+        self.adam_8bit = getattr(args, "adam_8bit", False)
+        if self.adam_8bit and self.adam_offload:
+            raise ValueError("--adam_8bit and --adam_offload are mutually exclusive. "
+                             "8-bit Adam keeps optimizer states on GPU; offload moves them to CPU.")
         self.zpg = getattr(args, "zpg", 1)
         self.use_ds_universal_ckpt = getattr(args, "use_ds_universal_ckpt", False)
         self.grad_accum_dtype = getattr(args, "grad_accum_dtype", None)
@@ -132,14 +136,21 @@ class DeepspeedStrategy(ABC):
     def ring_attn_group(self):
         return get_ring_attn_group()
 
+    def _create_adam(self, optim_params, **kwargs):
+        """Create the appropriate Adam optimizer based on strategy flags."""
+        if self.adam_8bit:
+            from bitsandbytes.optim import AdamW
+            return AdamW(optim_params, optim_bits=8, is_paged=False, **kwargs)
+        elif self.adam_offload:
+            return DeepSpeedCPUAdam(optim_params, **kwargs)
+        else:
+            return FusedAdam(optim_params, **kwargs)
+
     def create_optimizer(self, model, **kwargs) -> Optimizer:
         if isinstance(model, Actor):
             model = model.model
-        # Optimizer
-        AdamOptimizer = DeepSpeedCPUAdam if self.adam_offload else FusedAdam
         optim_params = get_optimizer_grouped_parameters(model, kwargs["weight_decay"])
-        optim = AdamOptimizer(optim_params, **kwargs)
-        return optim
+        return self._create_adam(optim_params, **kwargs)
 
     def backward(self, loss: torch.Tensor, model: nn.Module, optimizer: optim.Optimizer, **kwargs) -> None:
         if isinstance(model, Actor):
@@ -261,9 +272,8 @@ class DeepspeedStrategy(ABC):
             if scheduler is not None:
                 scheduler.optimizer = None  # break reference to old optimizer
             sharded_model = model.model if is_actor else model
-            AdamOptimizer = DeepSpeedCPUAdam if self.adam_offload else FusedAdam
             optim_params = get_optimizer_grouped_parameters(sharded_model, old_defaults.get("weight_decay", 0.0))
-            optim = AdamOptimizer(optim_params, **old_defaults)
+            optim = self._create_adam(optim_params, **old_defaults)
             if scheduler is not None:
                 scheduler.optimizer = optim  # rebind to new optimizer
 
@@ -325,6 +335,7 @@ class DeepspeedStrategy(ABC):
             use_ds_universal_ckpt=self.use_ds_universal_ckpt,
             deepcompile=self.deepcompile,
             tensor_parallel_size=self.ds_tensor_parallel_size,
+            adam_8bit=self.adam_8bit,
         )
         if self.use_dynamic_batch:
             ds_config["train_micro_batch_size_per_gpu"] = 1

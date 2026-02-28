@@ -16,13 +16,16 @@ def get_train_ds_config(
     use_ds_universal_ckpt=False,
     deepcompile=False,
     tensor_parallel_size=1,
+    adam_8bit=False,
 ):
     device = "cpu" if offload else "none"
+    # 8-bit Adam keeps optimizer on GPU — don't offload
+    optim_offload_device = "none" if adam_8bit else ("cpu" if adam_offload else "none")
     zero_opt_dict = {
         "stage": stage,
         "offload_param": {"device": device},
         "offload_optimizer": {
-            "device": "cpu" if adam_offload else "none",
+            "device": optim_offload_device,
             "pin_memory": True,
         },
         "sub_group_size": "auto",
@@ -42,7 +45,7 @@ def get_train_ds_config(
     if stage == 3:
         zero_opt_dict["reduce_scatter"] = True
 
-    return {
+    ds_config = {
         "steps_per_print": 100,
         "zero_optimization": zero_opt_dict,
         "bf16": {
@@ -65,6 +68,11 @@ def get_train_ds_config(
             "autotp_size": tensor_parallel_size,
         },
     }
+
+    if adam_8bit:
+        ds_config["zero_allow_untested_optimizer"] = True
+
+    return ds_config
 
 
 def get_eval_ds_config(

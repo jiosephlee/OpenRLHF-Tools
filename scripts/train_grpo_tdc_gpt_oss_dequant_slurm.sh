@@ -145,9 +145,9 @@ run_task() {
 
     ### MODE FLAGS ###
     if [ "$MODE" = "colocated" ]; then
-        MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep --adam_offload" #gpt-oss always needs adam_offload as it can't fit on 8 GPUs with colocated mode otherwise.
+        MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep --adam_8bit" #gpt-oss: 8-bit Adam keeps optimizer on GPU with ~2x less memory than fp32, avoiding CPU offload OOM.
     else
-        MODE_FLAGS="--async_train --async_queue_size 1 --adam_offload"
+        MODE_FLAGS="--async_train --async_queue_size 1 --adam_8bit"
     fi
 
     ### WARMUP LOGIC (gpt_oss always) ###

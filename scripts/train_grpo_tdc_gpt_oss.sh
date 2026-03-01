@@ -230,11 +230,15 @@ export OPENRLHF_DEBUG_NAN_GUARD=0
 export RAY_NODE_IP_ADDRESS=$(hostname -I | awk '{print $1}')
 ulimit -n 65535 2>/dev/null || true
 
-ray stop --force 2>/dev/null || true
+# Use the conda env's ray to avoid version mismatch with the training script's ray
+CONDA_RAY="$(which python) -m ray.scripts.scripts"
+echo "Using ray from: $(which python)"
+
+$CONDA_RAY stop --force 2>/dev/null || true
 rm -rf "$RAY_TMPDIR"/ray/session_* 2>/dev/null || true
 
 echo "Starting Ray head node at $RAY_NODE_IP_ADDRESS"
-ray start --head \
+$CONDA_RAY start --head \
     --node-ip-address "$RAY_NODE_IP_ADDRESS" \
     --num-gpus "$NUM_GPUS" \
     --temp-dir "$RAY_TMPDIR"
@@ -245,7 +249,7 @@ export RAY_ADDRESS="$RAY_NODE_IP_ADDRESS:6379"
 echo "Waiting for Ray..."
 RAY_READY=0
 for i in {1..90}; do
-    if ray status >/dev/null 2>&1; then
+    if $CONDA_RAY status >/dev/null 2>&1; then
         RAY_READY=1
         break
     fi
@@ -255,7 +259,7 @@ if [ "$RAY_READY" -ne 1 ]; then
     echo "Error: Ray never came up after 90 seconds." >&2
     exit 1
 fi
-ray status
+$CONDA_RAY status
 echo "Ray is ready."
 
 ### PRINT CONFIG ###

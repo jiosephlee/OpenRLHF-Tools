@@ -167,9 +167,11 @@ def train(args):
 
     # init actor/reference/reward model
     refs = []
-    refs.extend(actor_model.async_init_model_from_pretrained(strategy, args.pretrain, max_steps, vllm_engines))
+    actor_pretrain = args.nvfp4_dequantize_base_model if args.nvfp4_dequantize_base_model else args.pretrain
+
+    refs.extend(actor_model.async_init_model_from_pretrained(strategy, actor_pretrain, max_steps, vllm_engines))
     if ref_model is not None:
-        refs.extend(ref_model.async_init_model_from_pretrained(strategy, args.pretrain))
+        refs.extend(ref_model.async_init_model_from_pretrained(strategy, actor_pretrain))
     if reward_model is not None and args.reward_pretrain:
         refs.extend(reward_model.async_init_model_from_pretrained(strategy, args.reward_pretrain))
     ray.get(refs)
@@ -341,7 +343,12 @@ if __name__ == "__main__":
     parser.add_argument("--ema_beta", type=float, default=0.992, help="EMA beta coefficient")
     parser.add_argument("--zpg", type=int, default=1, help="ZeRO++ max partition size")
     parser.add_argument("--adam_offload", action="store_true", default=False, help="Offload Adam Optimizer")
-    parser.add_argument("--adam_8bit", action="store_true", default=False, help="Use bitsandbytes 8-bit Adam (keeps optimizer on GPU with ~2x less memory)")
+    parser.add_argument(
+        "--adam_8bit",
+        action="store_true",
+        default=False,
+        help="Use bitsandbytes 8-bit Adam (keeps optimizer on GPU with ~2x less memory)",
+    )
     parser.add_argument("--actor_init_on_gpu", action="store_true", default=False)
     parser.add_argument(
         "--attn_implementation",
@@ -383,6 +390,12 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="Use Mxfp4Config(dequantize=True) for MXFP4-packed GPT-OSS checkpoints. Forces eager attention.",
+    )
+    parser.add_argument(
+        "--nvfp4_dequantize_base_model",
+        type=str,
+        default=None,
+        help="Path to the BF16 base model for NVFP4 loading. OpenRLHF will load this unquantized BF16 model while vLLM handles the packed NVFP4 model natively.",
     )
     parser.add_argument(
         "--vllm_sync_fp4",
@@ -451,9 +464,21 @@ if __name__ == "__main__":
         "--n_samples_per_prompt", type=int, default=1, help="number of responses for each prompt in generation"
     )
     parser.add_argument("--save_value_network", action="store_true", default=False, help="Save critic model")
-    parser.add_argument("--push_to_hub", type=str, default=None, help="HF Hub repo ID to push model after training (e.g. 'username/my-model')")
-    parser.add_argument("--push_to_hub_private", action="store_true", default=False, help="Make the HF Hub repo private")
-    parser.add_argument("--delete_local_after_push", action="store_true", default=False, help="Delete local save_path after successful push to Hub")
+    parser.add_argument(
+        "--push_to_hub",
+        type=str,
+        default=None,
+        help="HF Hub repo ID to push model after training (e.g. 'username/my-model')",
+    )
+    parser.add_argument(
+        "--push_to_hub_private", action="store_true", default=False, help="Make the HF Hub repo private"
+    )
+    parser.add_argument(
+        "--delete_local_after_push",
+        action="store_true",
+        default=False,
+        help="Delete local save_path after successful push to Hub",
+    )
     parser.add_argument("--actor_learning_rate", type=float, default=1e-6)
     parser.add_argument("--critic_learning_rate", type=float, default=9e-6)
     parser.add_argument("--lr_warmup_ratio", type=float, default=0.03)
@@ -527,31 +552,21 @@ if __name__ == "__main__":
     parser.add_argument("--value_head_prefix", type=str, default="score")
     parser.add_argument("--ref_reward_offload", action="store_true", default=False)
     parser.add_argument("--agent_func_path", type=str, default=None, help="Agent script path")
-    parser.add_argument(
-        "--agent_max_steps",
-        type=int,
-        default=5,
-        help="Maximum number of agent turns per episode"
-    )
+    parser.add_argument("--agent_max_steps", type=int, default=5, help="Maximum number of agent turns per episode")
     parser.add_argument(
         "--vllm_stop_strings",
         type=str,
         nargs="+",
         default=None,
-        help="Stop strings for vLLM generation (e.g., '</tool_call>')"
+        help="Stop strings for vLLM generation (e.g., '</tool_call>')",
     )
-    parser.add_argument(
-        "--is_vlm",
-        action="store_true",
-        default=False,
-        help="Enable Vision-Language Model support"
-    )
+    parser.add_argument("--is_vlm", action="store_true", default=False, help="Enable Vision-Language Model support")
     parser.add_argument(
         "--chat_protocol",
         type=str,
         default="glm_flash",
         choices=["glm_flash", "intern_s1", "gpt_oss", "qwen3"],
-        help="Chat protocol for tool-calling format."
+        help="Chat protocol for tool-calling format.",
     )
 
     # Custom dataset
@@ -607,23 +622,46 @@ if __name__ == "__main__":
         "--dynamic_filtering_reward_range", nargs=2, default=(0, 1), type=float, help="Dynamic filtering rewards range"
     )
     # Smart replay (selective prompt repetition after primary pass)
-    parser.add_argument("--smart_replay", action="store_true", default=False,
-                        help="After each episode, replay filtered prompts the model can still learn from")
-    parser.add_argument("--constant_lr_with_warm_up", action="store_true", default=False,
-                        help="Force a constant LR with linear warmup (see --warmup_steps)")
-    parser.add_argument("--warmup_steps", type=int, default=20,
-                        help="Number of global warmup steps for constant_lr_with_warm_up (default: 20)")
-    parser.add_argument("--warm_steps_multiplier_for_correction", type=float, default=None,
-                        help="Multiplier applied to warmup steps for scheduler correction. "
-                             "Default: rollout_batch_size * n_samples_per_prompt / train_batch_size")
-    parser.add_argument("--max_replay_rounds", type=int, default=2,
-                        help="Max replay rounds per episode (default: 2)")
-    parser.add_argument("--curriculum_balanced", action="store_true", default=False,
-                        help="Evenly interleave samples from each dataset across training")
-    parser.add_argument("--multi_stage_dispatch", action="store_true", default=False,
-                        help="Enable single-stage deferred dispatch for vLLM generation. "
-                             "Dispatches 75%% upfront, holds 25%% as reserve, dispatches "
-                             "reserve in one batch when any engine drops to ≤4 pending.")
+    parser.add_argument(
+        "--smart_replay",
+        action="store_true",
+        default=False,
+        help="After each episode, replay filtered prompts the model can still learn from",
+    )
+    parser.add_argument(
+        "--constant_lr_with_warm_up",
+        action="store_true",
+        default=False,
+        help="Force a constant LR with linear warmup (see --warmup_steps)",
+    )
+    parser.add_argument(
+        "--warmup_steps",
+        type=int,
+        default=20,
+        help="Number of global warmup steps for constant_lr_with_warm_up (default: 20)",
+    )
+    parser.add_argument(
+        "--warm_steps_multiplier_for_correction",
+        type=float,
+        default=None,
+        help="Multiplier applied to warmup steps for scheduler correction. "
+        "Default: rollout_batch_size * n_samples_per_prompt / train_batch_size",
+    )
+    parser.add_argument("--max_replay_rounds", type=int, default=2, help="Max replay rounds per episode (default: 2)")
+    parser.add_argument(
+        "--curriculum_balanced",
+        action="store_true",
+        default=False,
+        help="Evenly interleave samples from each dataset across training",
+    )
+    parser.add_argument(
+        "--multi_stage_dispatch",
+        action="store_true",
+        default=False,
+        help="Enable single-stage deferred dispatch for vLLM generation. "
+        "Dispatches 75%% upfront, holds 25%% as reserve, dispatches "
+        "reserve in one batch when any engine drops to ≤4 pending.",
+    )
 
     # TensorBoard parameters
     parser.add_argument("--use_tensorboard", type=str, default=None, help="TensorBoard logging path")
@@ -720,15 +758,15 @@ if __name__ == "__main__":
         args.vllm_generate_batch_size = args.rollout_batch_size
 
     if args.dynamic_filtering:
-        assert (
-            args.dynamic_filtering_reward_range[0] < args.dynamic_filtering_reward_range[1]
-        ), "reward_clip_range[0] must be less than reward_clip_range[1]"
-        assert (
-            args.remote_rm_url or args.agent_func_path
-        ), "remote_rm_url or agent_func_path must be specified when using dynamic filtering"
-        assert (
-            args.n_samples_per_prompt > 1
-        ), "n_samples_per_prompt must be greater than 1 when using dynamic filtering"
+        assert args.dynamic_filtering_reward_range[0] < args.dynamic_filtering_reward_range[1], (
+            "reward_clip_range[0] must be less than reward_clip_range[1]"
+        )
+        assert args.remote_rm_url or args.agent_func_path, (
+            "remote_rm_url or agent_func_path must be specified when using dynamic filtering"
+        )
+        assert args.n_samples_per_prompt > 1, (
+            "n_samples_per_prompt must be greater than 1 when using dynamic filtering"
+        )
 
     if args.smart_replay:
         assert args.dynamic_filtering, "--smart_replay requires --dynamic_filtering"
@@ -738,7 +776,9 @@ if __name__ == "__main__":
         )
 
     if args.constant_lr_with_warm_up:
-        print(f"[SmartReplay/ConstantLR] Overriding LR scheduler to constant_with_warmup (warmup={args.warmup_steps} steps)")
+        print(
+            f"[SmartReplay/ConstantLR] Overriding LR scheduler to constant_with_warmup (warmup={args.warmup_steps} steps)"
+        )
         args.lr_scheduler = "constant_with_warmup"
         args.lr_warmup_ratio = 0.0
 

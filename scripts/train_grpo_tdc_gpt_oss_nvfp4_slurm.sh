@@ -10,8 +10,8 @@
 #
 # Key differences from MXFP4 script:
 #   - NO VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8 (irrelevant for NVFP4)
-#   - NO --mxfp4_dequantize (model is plain bf16, not MXFP4-packed)
-#   - NO --vllm_sync_fp4 (vLLM stores BF16 weights, no on-the-fly quantization needed)
+#   - NO --mxfp4_dequantize (instead, we use --nvfp4_dequantize_base_model)
+#   - YES --vllm_sync_fp4 nvfp4 (vLLM loads the packed model, so we must sync in NVFP4)
 #   - YES --qat_fp4 nvfp4 (NVFP4 fake-quantization during training via STE)
 #
 # Supports both colocated and distributed modes via MODE env var.
@@ -79,7 +79,7 @@ run_task() {
     rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ ~/.cache/vllm/torch_compile_cache/ 2>/dev/null || true
 
     ### ARGS (override via env before sbatch) ###
-    PRETRAIN_PATH="${PRETRAIN_PATH:-2imi9/gpt-oss-20B-NVFP4A16-BF16}"
+    PRETRAIN_PATH="${PRETRAIN_PATH:-jiosephlee/gpt-oss-20B-NVFP4-packed}"
     LEARNING_RATE="${LEARNING_RATE:-1e-6}"
     DEBUG_TRACES="${DEBUG_TRACES:-0}"
     NUM_GPUS=$SLURM_GPUS_ON_NODE
@@ -441,7 +441,9 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --use_dynamic_batch \
         --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
         --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \
+        --vllm_sync_fp4 nvfp4 \
         --qat_fp4 nvfp4 \
+        --nvfp4_dequantize_base_model 2imi9/gpt-oss-20B-NVFP4A16-BF16 \
         --constant_lr_with_warm_up \
         --skip_eval_step_zero \
         --warmup_steps $WARMUP_STEPS \

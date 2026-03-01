@@ -260,7 +260,8 @@ fi
 ray status
 echo "Ray is ready."
 
-export RAY_ADDRESS="auto"
+# Use explicit address to avoid "multiple active Ray instances" ambiguity
+export RAY_ADDRESS="$RAY_NODE_IP_ADDRESS:6379"
 
 ### PRINT CONFIG ###
 echo "========================================"

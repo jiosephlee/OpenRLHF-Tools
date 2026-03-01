@@ -242,10 +242,23 @@ ray start --head \
     --temp-dir "$RAY_TMPDIR"
 
 echo "Waiting for Ray..."
-for i in {1..60}; do
-    curl -fsS http://127.0.0.1:8265/api/version >/dev/null 2>&1 && break
+RAY_READY=0
+for i in {1..90}; do
+    if curl -fsS http://127.0.0.1:8265/api/version >/dev/null 2>&1; then
+        RAY_READY=1
+        break
+    fi
     sleep 1
 done
+if [ "$RAY_READY" -ne 1 ]; then
+    echo "Error: Ray dashboard never came up after 90 seconds." >&2
+    ray status 2>&1 || true
+    exit 1
+fi
+
+# Verify Ray cluster is healthy
+ray status
+echo "Ray is ready."
 
 export RAY_ADDRESS="auto"
 
@@ -388,6 +401,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --use_dynamic_batch \
     --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
     --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \
+    --mxfp4_dequantize \
     --vllm_sync_fp4 mxfp4 \
     --qat_fp4 mxfp4 \
     --constant_lr_with_warm_up \

@@ -230,15 +230,26 @@ echo "Starting Ray head node at $RAY_NODE_IP_ADDRESS"
 ray start --head \
     --node-ip-address "$RAY_NODE_IP_ADDRESS" \
     --num-gpus "$NUM_GPUS" \
-    --temp-dir "$RAY_TMPDIR" &
+    --temp-dir "$RAY_TMPDIR"
+
+# Use explicit address to avoid "multiple active Ray instances" ambiguity
+export RAY_ADDRESS="$RAY_NODE_IP_ADDRESS:6379"
 
 echo "Waiting for Ray..."
-for i in {1..60}; do
-    curl -fsS http://127.0.0.1:8265/api/version >/dev/null 2>&1 && break
+RAY_READY=0
+for i in {1..90}; do
+    if curl -fsS http://127.0.0.1:8265/api/version >/dev/null 2>&1; then
+        RAY_READY=1
+        break
+    fi
     sleep 1
 done
-
-export RAY_ADDRESS="auto"
+if [ "$RAY_READY" -ne 1 ]; then
+    echo "Error: Ray dashboard never came up after 90 seconds." >&2
+    ray status 2>&1 || true
+    exit 1
+fi
+echo "Ray is ready."
 
 ### PRINT CONFIG ###
 echo "========================================"

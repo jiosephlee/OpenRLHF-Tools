@@ -1,6 +1,18 @@
 #!/bin/bash
 #
-# GPT-OSS GRPO training — unified interactive script.
+# GPT-OSS GRPO training — unified interactive script (NVFP4 variant).
+#
+# Uses NVFP4 QAT (Quantization-Aware Training) during actor training.
+# The model is plain BF16; vLLM loads and serves it as BF16.
+# QAT closes the train/inference gap by fake-quantizing MoE expert weights
+# to NVFP4 precision (block_size=16, E4M3 scales, per-tensor global scale)
+# during forward passes via STE (Straight-Through Estimator).
+#
+# Key differences from MXFP4 script:
+#   - NO VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8 (irrelevant for NVFP4)
+#   - NO --mxfp4_dequantize (instead, we use --nvfp4_dequantize_base_model)
+#   - YES --vllm_sync_fp4 nvfp4 (vLLM loads the packed model, so we must sync in NVFP4)
+#   - YES --qat_fp4 nvfp4 (NVFP4 fake-quantization during training via STE)
 #
 # Supports both colocated and distributed modes via MODE env var.
 #
@@ -32,14 +44,15 @@ eval "$(conda shell.bash hook)"
 conda activate /vast/projects/myatskar/design-documents/conda_env/openrlhf # This conda env uses torch 2.9.1, and the corresponding flash-attn for cuda 13.1.0, but torch is compiled for cuda 12.8... torch doesn't have pip wheels for 13.1.0 yet; no problems with this for now except for Adam_offload.
 set -euo pipefail
 export DS_SKIP_CUDA_CHECK=1 # Adam_offload checks CUDA version and which version of torch is compiled for it; this is a workaround to skip the CUDA check.
-export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
+export VLLM_ENABLE_V1_MULTIPROCESSING=0
+export VLLM_CUDAGRAPH_CAPTURE_SIZES="1,2,4,8,16,32"
 
 # Prevent corrupted torch inductor cache from crashing vLLM compilation.
 # We nuke any leftover default-location cache from prior runs.
 rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ ~/.cache/vllm/torch_compile_cache/ 2>/dev/null || true
 
 ### ARGS ###
-PRETRAIN_PATH=${1:-"openai/gpt-oss-20b"}
+PRETRAIN_PATH=${1:-"jiosephlee/gpt-oss-20B-NVFP4-packed"}
 LEARNING_RATE=${2:-"1e-6"}
 NUM_GPUS=$SLURM_GPUS_ON_NODE
 DEBUG_TRACES=${3:-"0"}
@@ -183,14 +196,14 @@ N_TASKS=${#TASK_NAMES[@]}
 DATE_TAG=$(date +%m%d_%H%M)
 CHAT_PROTOCOL="gpt_oss"
 if [ "$MODE" = "colocated" ]; then
-    RUN_NAME="grpo-tdc-gptoss-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-colo-${DATE_TAG}"
-    WANDB_GROUP="TDC-GPTOss-colo-$TASK_LABEL"
+    RUN_NAME="grpo-tdc-gptoss-nvfp4-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-colo-${DATE_TAG}"
+    WANDB_GROUP="TDC-GPTOss-NVFP4-colo-$TASK_LABEL"
 else
-    RUN_NAME="grpo-tdc-gptoss-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-dist-${LAYOUT_TAG}-${DATE_TAG}"
-    WANDB_GROUP="TDC-GPTOss-dist-${LAYOUT_TAG}-$TASK_LABEL"
+    RUN_NAME="grpo-tdc-gptoss-nvfp4-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-dist-${LAYOUT_TAG}-${DATE_TAG}"
+    WANDB_GROUP="TDC-GPTOss-NVFP4-dist-${LAYOUT_TAG}-$TASK_LABEL"
 fi
 RUN_ID="${RUN_NAME}"
-HUB_NAME="grpo-tdc-gptoss-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
+HUB_NAME="grpo-tdc-gptoss-nvfp4-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
 RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}"
 mkdir -p "$RUNS_DIR"
 SAVE_PATH="$PROJECT_ROOT/saves/tdc/$RUN_NAME"
@@ -263,7 +276,7 @@ export RAY_ADDRESS="$RAY_NODE_IP_ADDRESS:6379"
 
 ### PRINT CONFIG ###
 echo "========================================"
-echo "TDC GRPO Training — GPT-OSS (MODE=$MODE)"
+echo "TDC GRPO Training — GPT-OSS NVFP4 (MODE=$MODE)"
 echo "========================================"
 echo "Tasks: ${TASK_NAMES[*]}"
 echo "Model: $PRETRAIN_PATH"
@@ -400,9 +413,9 @@ python -m openrlhf.cli.train_ppo_ray \
     --use_dynamic_batch \
     --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
     --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \
-    --mxfp4_dequantize \
-    --vllm_sync_fp4 mxfp4 \
-    --qat_fp4 mxfp4 \
+    --vllm_sync_fp4 nvfp4 \
+    --qat_fp4 nvfp4 \
+    --nvfp4_dequantize_base_model 2imi9/gpt-oss-20B-NVFP4A16-BF16 \
     --constant_lr_with_warm_up \
     --warmup_steps $WARMUP_STEPS \
     --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \

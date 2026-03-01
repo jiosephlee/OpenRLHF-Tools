@@ -26,7 +26,7 @@ def get_train_ds_config(
         "offload_param": {"device": device},
         "offload_optimizer": {
             "device": optim_offload_device,
-            "pin_memory": True,
+            "pin_memory": False,
         },
         "sub_group_size": "auto",
         "stage3_max_live_parameters": "auto",
@@ -94,7 +94,7 @@ def get_eval_ds_config(
         "stage3_prefetch_bucket_size": "auto",
         "offload_param": {
             "device": "cpu" if offload else "none",
-            "pin_memory": True,
+            "pin_memory": False,
         },
     }
     return {

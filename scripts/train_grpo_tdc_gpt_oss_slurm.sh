@@ -33,9 +33,9 @@
 #SBATCH --qos=normal
 #SBATCH --gpus=2
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=1024G
+#SBATCH --mem=768G
 #SBATCH --sockets-per-node=1
-#SBATCH --cpus-per-gpu=16
+#SBATCH --cpus-per-gpu=12
 #SBATCH --time=00-1:00:00
 
 ### PARCC PARAMETERS ###
@@ -62,7 +62,6 @@ export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/openrl
 ############################
 run_task() {
     set -euo pipefail
-    export MALLOC_TRIM_THRESHOLD_=0
     export DS_SKIP_CUDA_CHECK=1
     export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
 

@@ -30,7 +30,6 @@ module load cuda/12.8.1
 eval "$(conda shell.bash hook)"
 conda activate /vast/projects/myatskar/design-documents/conda_env/openrlhf # This conda env uses torch 2.9.1, and the corresponding flash-attn for cuda 13.1.0, but torch is compiled for cuda 12.8... torch doesn't have pip wheels for 13.1.0 yet; no problems with this for now except for Adam_offload.
 set -euo pipefail
-export MALLOC_TRIM_THRESHOLD_=0
 export DS_SKIP_CUDA_CHECK=1 # Adam_offload checks CUDA version and which version of torch is compiled for it; this is a workaround to skip the CUDA check.
 export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
 export VLLM_ENABLE_V1_MULTIPROCESSING=0

@@ -719,6 +719,10 @@ class PPOTrainer(BasePPOTrainer):
                 pbar.update(prompts_consumed)
                 del rollout_samples, status
                 gc.collect()
+                try:
+                    ctypes.CDLL("libc.so.6").malloc_trim(0)
+                except Exception:
+                    pass
 
             # Log episode stats for this replay round.
             if self.wandb_logger:
@@ -874,6 +878,10 @@ class PPOTrainer(BasePPOTrainer):
                 # prevent host-RAM growth across training steps.
                 del rollout_samples, status
                 gc.collect()
+                try:
+                    ctypes.CDLL("libc.so.6").malloc_trim(0)
+                except Exception:
+                    pass
 
             # --- Save discarded prompts for offline analysis ---
             self.samples_generator.save_discarded_indices(episode)

@@ -16,7 +16,6 @@
 
 set -euo pipefail
 export RAY_TMPDIR=/tmp/jojolee/ray
-export MALLOC_TRIM_THRESHOLD_=0
 ### ARGS ###
 PRETRAIN_PATH=${1:-"jiosephlee/Intern-S1-mini-lm"}
 LEARNING_RATE=${2:-"1e-6"}

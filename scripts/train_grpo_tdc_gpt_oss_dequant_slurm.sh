@@ -63,7 +63,6 @@ export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/open_r
 ############################
 run_task() {
     set -euo pipefail
-    export MALLOC_TRIM_THRESHOLD_=0
     export DS_SKIP_CUDA_CHECK=1
 
     # Prevent corrupted torch inductor cache from crashing vLLM compilation.

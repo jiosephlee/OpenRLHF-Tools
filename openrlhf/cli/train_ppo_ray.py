@@ -350,6 +350,12 @@ if __name__ == "__main__":
         help="Attention implementation (e.g., eager, flash_attention_2, flash_attention_3, kernels-community/vllm-flash-attn3)",
     )
     parser.add_argument("--use_liger_kernel", action="store_true", default=False, help="Enable Liger Kernel")
+    parser.add_argument(
+        "--use_liger_grpo_loss",
+        action="store_true",
+        default=False,
+        help="Use Liger fused lm_head+GRPO loss to reduce peak memory (requires liger-kernel>=0.7.0)",
+    )
     parser.add_argument("--grad_accum_dtype", type=str, default=None, help="Adam grad accum data type")
     parser.add_argument("--overlap_comm", action="store_true", default=False)
     parser.add_argument("--gradient_checkpointing_use_reentrant", action="store_true", default=False)
@@ -732,6 +738,18 @@ if __name__ == "__main__":
         args.n_samples_per_prompt * args.rollout_batch_size // args.micro_rollout_batch_size
         >= args.actor_num_nodes * args.actor_num_gpus_per_node // args.ring_attn_size // args.ds_tensor_parallel_size
     ), "The number of sample batches must be greater than or equal to the effective number of actor processes."
+
+    if args.use_liger_grpo_loss:
+        if args.entropy_loss_coef is not None:
+            raise ValueError(
+                "--use_liger_grpo_loss and --entropy_loss_coef are incompatible. "
+                "Liger fused loss cannot compute entropy (requires full logits)."
+            )
+        if args.zero_stage == 3:
+            raise ValueError(
+                "--use_liger_grpo_loss requires direct access to lm_head.weight, "
+                "which is incompatible with ZeRO-3. Use --zero_stage 2."
+            )
 
     if args.use_ms:
         from modelscope.utils.hf_util import patch_hub

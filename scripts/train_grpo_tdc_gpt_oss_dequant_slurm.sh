@@ -31,10 +31,10 @@
 #SBATCH --error=logs/grpo-tdc-gptoss-dq_%j.err
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
-#SBATCH --qos=normal
 #SBATCH --gpus=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=768G
+#SBATCH --account=myatskar-lab
 #SBATCH --sockets-per-node=1
 #SBATCH --cpus-per-gpu=16
 #SBATCH --time=00-1:00:00
@@ -80,6 +80,7 @@ run_task() {
     TOOL_VERSION="${TOOL_VERSION:-v4}"
     SMART_REPLAY="${SMART_REPLAY:-0}"
     MULTI_STAGE_DISPATCH="${MULTI_STAGE_DISPATCH:-0}"
+    LIGER_GRPO_LOSS="${LIGER_GRPO_LOSS:-0}"
     CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
     MAX_EPOCHS="${MAX_EPOCHS:-1}"
     EXTRA_ARGS="${EXTRA_ARGS:-}"
@@ -102,7 +103,7 @@ run_task() {
         VLLM_SYNC_BACKEND=nccl
         EVAL_STEPS="${EVAL_STEPS:-32}"
         TRAIN_MAX_TOKENS_PER_GPU=4096 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and reduce the speed of the training by reducing gradient accumulation steps.
-        ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 3" | bc | awk '{print int($1)}')
+        ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1" | bc | awk '{print int($1)}')
 
     elif [ "$MODE" = "distributed" ]; then
         ACTOR_GPUS="${ACTOR_GPUS:?"MODE=distributed requires ACTOR_GPUS"}"
@@ -320,6 +321,7 @@ run_task() {
     echo "Smart Replay: $SMART_REPLAY"
     echo "Curriculum Balanced: $CURRICULUM_BALANCED"
     echo "Multi Stage Dispatch: $MULTI_STAGE_DISPATCH"
+    echo "Liger GRPO Loss: $LIGER_GRPO_LOSS"
     echo "Tool Version: $TOOL_VERSION"
     echo "----------------------------------------"
     echo "Quantization: dequantize-only (no MXFP4 rollout, no QAT)"
@@ -360,6 +362,9 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
     fi
     if [ "$MULTI_STAGE_DISPATCH" = "1" ]; then
         OPTIONAL_FLAGS+=" --multi_stage_dispatch"
+    fi
+    if [ "$LIGER_GRPO_LOSS" = "1" ]; then
+        OPTIONAL_FLAGS+=" --use_liger_grpo_loss"
     fi
 
     ### TRAINING ###

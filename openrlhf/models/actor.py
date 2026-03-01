@@ -294,6 +294,60 @@ class Actor(nn.Module):
 
         return (action_log_probs, output) if return_output else action_log_probs
 
+    def forward_hidden_states(
+        self,
+        sequences: torch.LongTensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        ring_attn_group: Optional[dist.ProcessGroup] = None,
+        packed_seq_lens: Optional[list[int]] = None,
+    ) -> tuple:
+        """Forward pass returning last hidden state (before lm_head) for fused loss kernels.
+
+        Returns:
+            (hidden_states, aux_loss): hidden_states shape [B, T-1, D], aux_loss scalar or None.
+        """
+        batch, seqlen = sequences.size()
+        forward_attention_mask = attention_mask
+        if self.packing_samples:
+            sequences, position_ids, rolled_sequences, ring_attn_pad_len, indices = unpad_and_slice_tensor(
+                sequences, attention_mask, ring_attn_group
+            )
+            forward_attention_mask = None
+        else:
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 1)
+
+        # Get the transformer backbone (before lm_head).
+        # For PEFT: base_model.model is the CausalLM with LoRA injected.
+        # For plain: self.model is the CausalLM directly.
+        causal_lm = self.model
+        if hasattr(causal_lm, "base_model"):  # PEFT wrapper
+            causal_lm = causal_lm.base_model.model
+        backbone = causal_lm.model  # e.g., LlamaModel, MistralModel, Qwen2Model
+
+        output = backbone(sequences, attention_mask=forward_attention_mask, position_ids=position_ids)
+        last_hidden_state = output.last_hidden_state
+
+        if self.packing_samples:
+            last_hidden_state = gather_and_pad_tensor(
+                last_hidden_state, ring_attn_group, ring_attn_pad_len, indices, batch, seqlen
+            )
+
+        # Slice off last token (next-token prediction: predict token t+1 from hidden state t)
+        last_hidden_state = last_hidden_state[:, :-1, :]
+
+        # aux_loss (MoE load-balancing loss) — available when output_router_logits=True
+        aux_loss = getattr(output, "aux_loss", None)
+
+        return last_hidden_state, aux_loss
+
+    def get_lm_head(self) -> nn.Linear:
+        """Return the lm_head module, handling PEFT wrapping."""
+        model = self.model
+        if hasattr(model, "base_model"):  # PEFT wrapper
+            model = model.base_model.model
+        return model.lm_head
+
     def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs={"use_reentrant": False}):
         self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
 

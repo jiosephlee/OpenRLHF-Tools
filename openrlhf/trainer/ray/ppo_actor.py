@@ -161,6 +161,31 @@ class ActorPPOTrainer(ABC):
         # Mixtral 8x7b
         self.aux_loss = self.args.aux_loss_coef > 1e-8
 
+        # Liger fused lm_head + GRPO loss (opt-in)
+        self.use_liger_grpo_loss = getattr(self.args, "use_liger_grpo_loss", False)
+        if self.use_liger_grpo_loss:
+            assert self.args.zero_stage != 3, (
+                "--use_liger_grpo_loss requires direct access to lm_head.weight, "
+                "which is incompatible with ZeRO-3 parameter sharding. Use ZeRO-2."
+            )
+            assert self.args.entropy_loss_coef is None, (
+                "--use_liger_grpo_loss cannot compute entropy (requires full logits). "
+                "Remove --entropy_loss_coef when using Liger fused GRPO loss."
+            )
+            from liger_kernel.chunked_loss import LigerFusedLinearGRPOLoss
+
+            self.liger_grpo_loss = LigerFusedLinearGRPOLoss(
+                beta=self.args.init_kl_coef,
+                epsilon_low=self.args.eps_clip_low_high[0],
+                epsilon_high=self.args.eps_clip_low_high[1],
+                temperature=getattr(self.args, "temperature", 1.0),
+                use_ref_model=self.args.init_kl_coef > 0,
+            )
+            logger.info(
+                f"[Liger GRPO] Initialized fused lm_head+GRPO loss "
+                f"(beta={self.args.init_kl_coef}, eps=[{self.args.eps_clip_low_high[0]}, {self.args.eps_clip_low_high[1]}])"
+            )
+
         self.replay_buffer = NaiveReplayBuffer(
             micro_train_batch_size,
             buffer_limit,
@@ -336,68 +361,106 @@ class ActorPPOTrainer(ABC):
         advantages = experience.advantages
         base_action_log_probs = experience.base_action_log_probs
 
-        # actor loss
-        action_log_probs, output = self.actor(
-            sequences,
-            action_mask,
-            attention_mask=attention_mask,
-            return_output=True,
-            ring_attn_group=self.strategy.ring_attn_group,
-            packed_seq_lens=packed_seq_lens,
-            return_entropy=self.args.entropy_loss_coef is not None,
-        )
-
-        # loss function
-        actor_loss, clip_ratio, ppo_kl, vllm_kl = self.actor_loss_fn(
-            action_log_probs,
-            old_action_log_probs,
-            advantages,
-            action_mask=experience.action_mask,
-            rollout_log_probs=experience.rollout_log_probs,
-        )
-        if not torch.isfinite(actor_loss):
-            action_tokens = int(experience.action_mask.sum().item())
-            raise RuntimeError(
-                "Non-finite actor_loss detected. "
-                f"step={step}, action_tokens={action_tokens}, "
-                f"advantages_finite={bool(torch.isfinite(advantages).all())}, "
-                f"old_log_probs_finite={bool(torch.isfinite(old_action_log_probs).all())}, "
-                f"new_log_probs_finite={bool(torch.isfinite(action_log_probs).all())}, "
-                f"old_log_probs_excerpt={str(old_action_log_probs)[:100]} ... {str(old_action_log_probs)[-100:]}, "
-                f"new_log_probs_excerpt={str(action_log_probs)[:100]} ... {str(action_log_probs)[-100:]}"
+        if self.use_liger_grpo_loss:
+            # Fused lm_head + GRPO loss path — never materializes full [B, T, V] logits
+            hidden_states, aux_loss = self.actor.forward_hidden_states(
+                sequences,
+                attention_mask=attention_mask,
+                ring_attn_group=self.strategy.ring_attn_group,
+                packed_seq_lens=packed_seq_lens,
             )
-        experience.info["ppo_clip_ratio"] = clip_ratio.detach()
-        experience.info["ppo_kl"] = ppo_kl.detach()
-        if vllm_kl is not None:
-            experience.info["vllm_kl"] = vllm_kl.detach()
 
-        if self.args.use_kl_loss:
-            if self.args.init_kl_coef > 0:
-                kl = compute_approx_kl(
-                    action_log_probs,
-                    base_action_log_probs,
-                    kl_estimator=self.args.kl_estimator,
-                )
-                logprobs_diff = action_log_probs.float() - base_action_log_probs.float()
-            else:
-                kl = torch.zeros_like(action_log_probs)
-                logprobs_diff = torch.zeros_like(action_log_probs)
-            kl_loss = masked_mean(kl, experience.action_mask)
-            logprobs_diff = masked_mean(logprobs_diff, experience.action_mask)
-            experience.info["kl"] = kl_loss.detach()
-            experience.info["logprobs_diff"] = logprobs_diff.detach()
+            # Slice to action/completion region (match action_mask dimensions)
+            hidden_states = hidden_states[:, -action_mask.shape[1] :, :]
+            completion_ids = sequences[:, -action_mask.shape[1] :]
+
+            lm_head = self.actor.get_lm_head()
+            actor_loss, metrics = self.liger_grpo_loss(
+                _input=hidden_states,
+                lin_weight=lm_head.weight,
+                selected_token_ids=completion_ids,
+                attention_mask=action_mask,  # Liger uses this as loss mask
+                advantages=advantages,
+                bias=getattr(lm_head, "bias", None),
+                old_per_token_logps=old_action_log_probs,
+                ref_per_token_logps=base_action_log_probs if self.args.use_kl_loss and self.args.init_kl_coef > 0 else None,
+            )
+
+            clip_ratio = metrics[-1]
+            ppo_kl = metrics[0] if self.args.init_kl_coef > 0 else torch.tensor(0.0)
+
+            experience.info["ppo_clip_ratio"] = clip_ratio.detach()
+            experience.info["ppo_kl"] = ppo_kl.detach()
+
+            if self.args.use_kl_loss:
+                experience.info["kl"] = ppo_kl.detach()
+
+            loss = actor_loss
+            if aux_loss is not None and self.aux_loss:
+                loss = loss + aux_loss * self.args.aux_loss_coef
         else:
-            kl_loss = 0
+            # Standard forward + PolicyLoss path
+            action_log_probs, output = self.actor(
+                sequences,
+                action_mask,
+                attention_mask=attention_mask,
+                return_output=True,
+                ring_attn_group=self.strategy.ring_attn_group,
+                packed_seq_lens=packed_seq_lens,
+                return_entropy=self.args.entropy_loss_coef is not None,
+            )
 
-        loss = actor_loss + kl_loss * kl_ctl
-        # mixtral
-        if self.aux_loss:
-            loss += output.aux_loss * self.args.aux_loss_coef
-        # entropy loss
-        if self.args.entropy_loss_coef is not None:
-            entropy_loss = masked_mean(output.entropy[:, -experience.action_mask.shape[1] :], experience.action_mask)
-            if self.args.entropy_loss_coef != 0:
-                loss -= entropy_loss * self.args.entropy_loss_coef
+            # loss function
+            actor_loss, clip_ratio, ppo_kl, vllm_kl = self.actor_loss_fn(
+                action_log_probs,
+                old_action_log_probs,
+                advantages,
+                action_mask=experience.action_mask,
+                rollout_log_probs=experience.rollout_log_probs,
+            )
+            if not torch.isfinite(actor_loss):
+                action_tokens = int(experience.action_mask.sum().item())
+                raise RuntimeError(
+                    "Non-finite actor_loss detected. "
+                    f"step={step}, action_tokens={action_tokens}, "
+                    f"advantages_finite={bool(torch.isfinite(advantages).all())}, "
+                    f"old_log_probs_finite={bool(torch.isfinite(old_action_log_probs).all())}, "
+                    f"new_log_probs_finite={bool(torch.isfinite(action_log_probs).all())}, "
+                    f"old_log_probs_excerpt={str(old_action_log_probs)[:100]} ... {str(old_action_log_probs)[-100:]}, "
+                    f"new_log_probs_excerpt={str(action_log_probs)[:100]} ... {str(action_log_probs)[-100:]}"
+                )
+            experience.info["ppo_clip_ratio"] = clip_ratio.detach()
+            experience.info["ppo_kl"] = ppo_kl.detach()
+            if vllm_kl is not None:
+                experience.info["vllm_kl"] = vllm_kl.detach()
+
+            if self.args.use_kl_loss:
+                if self.args.init_kl_coef > 0:
+                    kl = compute_approx_kl(
+                        action_log_probs,
+                        base_action_log_probs,
+                        kl_estimator=self.args.kl_estimator,
+                    )
+                    logprobs_diff = action_log_probs.float() - base_action_log_probs.float()
+                else:
+                    kl = torch.zeros_like(action_log_probs)
+                    logprobs_diff = torch.zeros_like(action_log_probs)
+                kl_loss = masked_mean(kl, experience.action_mask)
+                logprobs_diff = masked_mean(logprobs_diff, experience.action_mask)
+                experience.info["kl"] = kl_loss.detach()
+                experience.info["logprobs_diff"] = logprobs_diff.detach()
+            else:
+                kl_loss = 0
+
+            loss = actor_loss + kl_loss * kl_ctl
+            # mixtral
+            if self.aux_loss:
+                loss += output.aux_loss * self.args.aux_loss_coef
+            # entropy loss
+            if self.args.entropy_loss_coef is not None:
+                entropy_loss = masked_mean(output.entropy[:, -experience.action_mask.shape[1] :], experience.action_mask)
+                if self.args.entropy_loss_coef != 0:
+                    loss -= entropy_loss * self.args.entropy_loss_coef
 
         if self.args.use_dynamic_batch:
             loss = loss * self.replay_buffer.dynamic_loss_scale[step]

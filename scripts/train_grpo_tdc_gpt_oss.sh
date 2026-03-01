@@ -70,7 +70,7 @@ if [ "$MODE" = "colocated" ]; then
     VLLM_GPU_MEM_UTIL=0.725
     VLLM_SYNC_BACKEND=nccl
     EVAL_STEPS="${EVAL_STEPS:-32}"
-    TRAIN_MAX_TOKENS_PER_GPU=6144 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
+    TRAIN_MAX_TOKENS_PER_GPU=2048 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
     ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 3" | bc | awk '{print int($1)}')
 
 elif [ "$MODE" = "distributed" ]; then

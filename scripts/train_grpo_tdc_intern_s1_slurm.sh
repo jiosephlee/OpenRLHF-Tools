@@ -14,6 +14,12 @@
 #   # Distributed:
 #   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
 #
+# With TIS off-policy correction (token-level clamped IS):
+#   TIS=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
+#
+# With GSPO loss (sequence-level IS ratio, replaces PPO clipping):
+#   GSPO=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
+#
 # With smart replay (halved effective rollout batch size):
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 SMART_REPLAY=1 COLO_EVAL_STEPS=32 EFFECTIVE_ROLLOUT_BATCH_SIZE=4 sbatch train_grpo_tdc_intern_s1_slurm.sh
 #   SMART_REPLAY=1 MULTI_STAGE_DISPATCH=1 COLO_EVAL_STEPS=24 sbatch train_grpo_tdc_intern_s1_slurm.sh
@@ -106,6 +112,7 @@ run_task() {
     TIS="${TIS:-0}"
     TIS_TYPE="${TIS_TYPE:-tis}"
     TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
+    GSPO="${GSPO:-0}"
     MAX_EPOCHS="${MAX_EPOCHS:-1}"
     EXTRA_ARGS="${EXTRA_ARGS:-}"
 
@@ -179,7 +186,8 @@ run_task() {
     WARM_STEPS_MULTIPLIER=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
 
     ### MULTI-TASK ###
-    TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
+    #TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
+    TASK_NAMES=(BBB_Martins)
     TASK_LABEL="Base"
 
     ### W&B ###
@@ -348,6 +356,7 @@ run_task() {
     echo "Curriculum Balanced: $CURRICULUM_BALANCED"
     echo "Liger GRPO Loss: $LIGER_GRPO_LOSS"
     echo "TIS: $TIS (type=$TIS_TYPE, thresholds=$TIS_THRESHOLDS)"
+    echo "GSPO: $GSPO"
     echo "Tool Version: $TOOL_VERSION"
     echo "----------------------------------------"
     echo "Runs Dir: $RUNS_DIR"
@@ -392,6 +401,9 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
     fi
     if [ "$TIS" = "1" ]; then
         OPTIONAL_FLAGS+=" --enable_vllm_is_correction --vllm_is_correction_type $TIS_TYPE --vllm_is_truncated_threshold $TIS_THRESHOLDS"
+    fi
+    if [ "$GSPO" = "1" ]; then
+        OPTIONAL_FLAGS+=" --policy_loss_type gspo"
     fi
 
     ### TRAINING ###

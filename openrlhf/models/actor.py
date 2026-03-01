@@ -330,12 +330,18 @@ class Actor(nn.Module):
             position_ids.masked_fill_(attention_mask == 0, 1)
 
         # Get the transformer backbone (before lm_head).
-        # For PEFT: base_model.model is the CausalLM with LoRA injected.
-        # For plain: self.model is the CausalLM directly.
+        # NOTE: cannot use hasattr(model, "base_model") — PreTrainedModel defines
+        # a base_model property (returns self.model), so it's True for ALL HF models.
+        # Must check for PeftModel explicitly (same approach as TRL's is_peft_model).
         causal_lm = self.model
-        if hasattr(causal_lm, "base_model"):  # PEFT wrapper
-            causal_lm = causal_lm.base_model.model
-        backbone = causal_lm.model  # e.g., LlamaModel, MistralModel, Qwen2Model
+        try:
+            from peft import PeftModel
+
+            if isinstance(causal_lm, PeftModel):
+                causal_lm = causal_lm.base_model.model  # PeftModel → LoraModel → CausalLM
+        except ImportError:
+            pass
+        backbone = causal_lm.model  # e.g., LlamaModel, MistralModel, Qwen3Model
 
         output = backbone(sequences, attention_mask=forward_attention_mask, position_ids=position_ids)
         last_hidden_state = output.last_hidden_state
@@ -356,8 +362,13 @@ class Actor(nn.Module):
     def get_lm_head(self) -> nn.Linear:
         """Return the lm_head module, handling PEFT wrapping."""
         model = self.model
-        if hasattr(model, "base_model"):  # PEFT wrapper
-            model = model.base_model.model
+        try:
+            from peft import PeftModel
+
+            if isinstance(model, PeftModel):
+                model = model.base_model.model  # PeftModel → LoraModel → CausalLM
+        except ImportError:
+            pass
         return model.lm_head
 
     def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs={"use_reentrant": False}):

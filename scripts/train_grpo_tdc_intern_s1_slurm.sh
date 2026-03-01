@@ -36,6 +36,10 @@
 #   SMART_REPLAY=1               # Enable smart replay with max_replay_rounds=5
 #   CURRICULUM_BALANCED=1        # Enable curriculum-balanced sampling
 #   MULTI_STAGE_DISPATCH=1       # Continuous-refill dispatch (best for 2-GPU setups)
+#   TIS=1                        # Enable Truncated Importance Sampling (off-policy correction)
+#   TIS_TYPE=tis                 # TIS variant: tis (default), icepop, seq-mask-tis
+#   TIS_THRESHOLDS="0.5 5.0"    # Low and high clamp thresholds (default: 0.5 5.0)
+#   GSPO=1                       # Use GSPO loss (sequence-level IS ratio) instead of PPO
 #   MAX_EPOCHS=2                 # Training epochs (default: 2)
 #   EXTRA_ARGS="..."             # Additional CLI flags
 #
@@ -99,6 +103,9 @@ run_task() {
     MULTI_STAGE_DISPATCH="${MULTI_STAGE_DISPATCH:-0}"
     LIGER_GRPO_LOSS="${LIGER_GRPO_LOSS:-0}"
     CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
+    TIS="${TIS:-0}"
+    TIS_TYPE="${TIS_TYPE:-tis}"
+    TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
     MAX_EPOCHS="${MAX_EPOCHS:-1}"
     EXTRA_ARGS="${EXTRA_ARGS:-}"
 
@@ -120,7 +127,7 @@ run_task() {
         MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))}" # This decides how many mini gradient updates are used per rollout; Rollout_batch_size * N_samples_per_prompt / Mini_gradient_steps = number of trajectories used for each gradient update.
         MICRO_TRAIN_BATCH_SIZE=4 # The larger the micro_train_batch_size, the more memory and less gradient accumulation steps for backwards pass.
         MICRO_ROLLOUT_BATCH_SIZE=8 # ^ but for forwards pass. These two parameters are overridden, however, by default since we use dynamic batching.
-        VLLM_GPU_MEM_UTIL=0.81
+        VLLM_GPU_MEM_UTIL=0.825
         VLLM_SYNC_BACKEND=nccl
         EVAL_STEPS="${EVAL_STEPS:-$COLO_EVAL_STEPS}"
     elif [ "$MODE" = "distributed" ]; then
@@ -172,7 +179,7 @@ run_task() {
     WARM_STEPS_MULTIPLIER=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
 
     ### MULTI-TASK ###
-    TASK_NAMES=(BBB_Martins)
+    TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
     TASK_LABEL="Base"
 
     ### W&B ###
@@ -340,6 +347,7 @@ run_task() {
     echo "Smart Replay: $SMART_REPLAY"
     echo "Curriculum Balanced: $CURRICULUM_BALANCED"
     echo "Liger GRPO Loss: $LIGER_GRPO_LOSS"
+    echo "TIS: $TIS (type=$TIS_TYPE, thresholds=$TIS_THRESHOLDS)"
     echo "Tool Version: $TOOL_VERSION"
     echo "----------------------------------------"
     echo "Runs Dir: $RUNS_DIR"
@@ -381,6 +389,9 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
     fi
     if [ "$LIGER_GRPO_LOSS" = "1" ]; then
         OPTIONAL_FLAGS+=" --use_liger_grpo_loss"
+    fi
+    if [ "$TIS" = "1" ]; then
+        OPTIONAL_FLAGS+=" --enable_vllm_is_correction --vllm_is_correction_type $TIS_TYPE --vllm_is_truncated_threshold $TIS_THRESHOLDS"
     fi
 
     ### TRAINING ###

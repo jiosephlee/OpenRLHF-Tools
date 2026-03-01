@@ -236,77 +236,52 @@ Enabled via `--qat_mxfp4` (requires `--mxfp4_dequantize`). Closes the train/infe
 
 ---
 
-## Active Debug: Post-Sync Gibberish
+### Bug 5: Uninitialized Padding Causes NaN/Inf After Weight Sync (Post-Sync Gibberish)
 
-> **Status**: 🔴 Model produces gibberish after 1st weight sync
-> **Last updated**: 2026-02-28
+> **Status**: 🟢 Fixed
+> **Root cause confirmed**: 2026-03-01 (see `docs/mxfp4-debug-analysis-round2.md`)
 
-### HF Dequantization Layout (Confirmed)
+**Symptom:** Model produces gibberish after the 1st weight sync. `debug_weight_snapshot` shows NaN/Inf in bias and scale tensors AFTER sync despite being clean BEFORE.
 
-From `transformers/integrations/mxfp4.py`, `_convert_moe_packed_tensors`:
+**Root Cause:** During layerwise reload, `materialize_meta_tensor()` creates tensors via `torch.empty_strided()` — **no zero initialization**. FusedMoE parameters have padding beyond the loaded region:
 
+| Tensor | vLLM shape | Loaded region | Padding |
+|--------|-----------|---------------|---------|
+| `w13_bias` | `[32, 6144]` | `[:, :5760]` | 32 × 384 = 12,288 |
+| `w2_bias` | `[32, 3072]` | `[:, :2880]` | 32 × 192 = 6,144 |
+
+After weight loading fills only the valid region, `Mxfp4MoEMethod.process_weights_after_loading` runs `swap_every_two_rows` + `get_w2_permute_indices_with_cache` on the **full** tensor, scattering NaN/Inf garbage from uninitialized padding into valid positions. The down_proj matmul then sums across all intermediate dimensions including padding — NaN in any position contaminates the entire output.
+
+**Why zeros are fine but NaN is catastrophic:** The FusedMoE kernel processes ALL dimensions including padding. Padding with zeros contributes nothing to dot products (0 × anything = 0). Padding with NaN propagates through matrix multiplies (NaN + anything = NaN).
+
+**Evidence:**
+
+| Tensor | BEFORE sync | AFTER sync |
+|--------|-------------|------------|
+| `w13_bias` | nan=0, inf=0 | ⚠ nan=24, inf=201 / 196,608 |
+| `w2_bias` | nan=0, inf=0 | ⚠ nan=2, inf=39 / 98,304 |
+| `w13_weight_scale` raw uint8 | max=126 (no float8 NaN bits) | max=255 (garbage bytes) |
+
+**Fix:** Zero-fill materialized tensors before loading weights in `_layerwise_process()`:
 ```python
-# blocks: [E, out_dim, G, B]  where out_dim=2*intermediate_size (interleaved gate/up)
-out = out.reshape(*prefix_shape, G, B * 2).view(*prefix_shape, G * B * 2)
-return out.transpose(1, 2).contiguous()  # → [E, hidden_size, 2*intermediate_size] = [E, in, out]
+# In layerwise.py, after materialize_layer(layer):
+for tensor in get_layer_tensors(layer).values():
+    if tensor.device.type != "meta":
+        tensor.data.zero_()
 ```
 
-**Result**: Actor's `gate_up_proj` = `[E, in, out]` in **bf16**. Interleaving preserved. No float8_e5m2 conversion.
+Safe because all valid data is overwritten by the cached weight loading step immediately after. Only padding (which must be zero) is affected.
 
-### Investigation Checklist
-
-**✅ Verified Correct**
-- [x] Name mapping — HF→mapper→`_load_weights_mxfp4` dispatches correctly
-- [x] Shape pipeline — `[32,2880,5760]`→transpose→quantize→`[32,5760,1440]`+scales `[32,5760,90]`
-- [x] Gate/up interleaving — preserved through dequant (`.transpose(1,2)` swaps in/out, not interleaving dim)
-- [x] Transpose direction — `[E,in,out]`→transpose→`[E,out,in]` matches checkpoint format
-- [x] HF dequant layout — `[E, hidden_size, 2*intermediate_size]` in bf16 confirmed from source
-
-**🔍 Under Investigation**
-- [ ] `process_weights_after_loading` copy-back — SM100 TRTLLM creates NEW Parameters with dtype changes. Waiting on debug logs.
-- [ ] Layerwise reload numel tracking — if biases not counted by `MetaCopyCounter`, processing defers. Waiting on logs.
-- [ ] Non-expert weight name mapping — all weights must map HF→vLLM or get zeros. Waiting on logs.
-- [ ] Bias sync names — does HF use `gate_up_proj_bias` (flat) matching `hf_to_vllm_mapper` entry?
-
-### Hypothesis Log
-
-| # | Hypothesis | Status | Evidence |
-|---|-----------|--------|----------|
-| H1 | Gate/up interleaving broken | ❌ Eliminated | HF source confirms `.transpose(1,2)` preserves interleaving |
-| H2 | `process_weights_after_loading` not running or copy-back failing | 🔍 Active | SM100 TRTLLM does `swap_every_two_rows` + shuffling + dtype changes. If not run → raw MXFP4 → gibberish |
-| H3 | Weight name mismatches → zeros | 🔍 Active | `initialize_layerwise_reload` moves params to meta. Unmapped weights = zeros |
-| H4 | Bias dtype mismatch in copy-back | 🔍 Active | Processing converts bias bf16→float32. Copy-back to bf16 kernel tensor may fail |
-
-### Debug Outputs Needed
-
-1. **`[DEBUG finalize_layerwise_reload] Stats:`** — `already_done` vs `delayed` vs `no_weights` vs `attention`
-2. **`[DEBUG _layerwise_process]`** — is `process_weights_after_loading` running for FusedMoE? Is `quant_method=Mxfp4MoEMethod`?
-3. **`debug_weight_snapshot` BEFORE/AFTER** — are weights changing? NaN? Zero?
-4. **Any errors/warnings** — dtype/shape mismatches in `copy_()`
-
-### Interpretation Guide
-
-| Observation | Likely Cause |
-|-------------|-------------|
-| Many `delayed` FusedMoE layers | `get_numel_loaded` not counting biases → delayed path (should still work) |
-| `no_weights` > 0 for non-trivial layers | Name mapping failure — weights sent but not received |
-| `NO quant_method` for FusedMoE | `process_weights_after_loading` not running → no swizzle → gibberish |
-| Weights unchanged BEFORE/AFTER | Sync didn't propagate |
-| Weights are NaN/zero AFTER | Corruption in `copy_()` or meta device leak |
+**Note on scale NaN:** Scale tensors use `float8_e4m3fn` dtype but store E8M0 exponents as raw bytes. E8M0 byte 127 (exponent=0, scale=1.0) maps to float8_e4m3fn NaN bit pattern. These are **harmless interpretation artifacts** — the MXFP4 kernel reads raw bytes, not float8 values.
 
 ---
 
-## Debugging Tips
+## Debug Tooling
 
-- **`[MXFP4 Quantize]` log:** Confirms quantization is happening. Check shapes:
-  ```
-  [MXFP4 Quantize] model.layers.0.mlp.experts.gate_up_proj: bf16 [32, 2880, 5760] →
-    uint8 packed [32, 5760, 1440], scales [32, 5760, 90]
-  ```
-- **`[WorkerWrap] initialize_weight_reload`:** Should appear before any weight updates.
-- **`[WorkerWrap] post_weight_sync: finalize_layerwise_reload complete`:** Should appear after all weights sync.
-- **Scale shape sanity check:** For input `[E, rows, cols]`, scales should be `[E, rows, cols // 32]`, NOT `[E, rows*cols//32, 1]`.
-- **Device context:** `device must be a cuda device` → missing `with torch.device(self.device):` around layerwise reload calls.
+`debug_weight_snapshot()` in `vllm_worker_wrap.py` captures weight statistics BEFORE/AFTER sync. Enabled automatically for FP4-quantized models. Features:
+- **Stats per tensor:** shape, dtype, mean/std/absmax, NaN/Inf detection, first-8-values hash
+- **Raw uint8 view:** For float8 tensors, shows raw byte interpretation to distinguish real corruption from E8M0 dtype artifacts
+- **NaN/Inf counting:** When corruption detected, prints `nan_count`, `inf_count`, `total` for diagnosis
 
 ---
 

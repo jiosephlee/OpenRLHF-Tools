@@ -33,7 +33,7 @@
 #SBATCH --qos=normal
 #SBATCH --gpus=2
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=768G
+#SBATCH --mem=1024G
 #SBATCH --sockets-per-node=1
 #SBATCH --cpus-per-gpu=16
 #SBATCH --time=00-1:00:00
@@ -145,9 +145,9 @@ run_task() {
 
     ### MODE FLAGS ###
     if [ "$MODE" = "colocated" ]; then
-        MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep --adam_8bit" #gpt-oss: 8-bit Adam keeps optimizer on GPU with ~2x less memory than fp32, avoiding CPU offload OOM.
+        MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep --adam_offload" #gpt-oss: adam_offload keeps optimizer on CPU, maximizing GPU VRAM for forward passes.
     else
-        MODE_FLAGS="--async_train --async_queue_size 1 --adam_8bit"
+        MODE_FLAGS="--async_train --async_queue_size 1 --adam_offload"
     fi
 
     ### WARMUP LOGIC (gpt_oss always) ###

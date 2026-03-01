@@ -70,34 +70,52 @@ def quantize_to_mxfp4(
 E2M1_VALUES = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0])
 
 
-def fake_quantize_mxfp4(weight: torch.Tensor, block_size: int = 32) -> torch.Tensor:
+def _fake_quantize_mxfp4_chunk(
+    w_flat: torch.Tensor, block_size: int, bounds: torch.Tensor, values: torch.Tensor
+) -> torch.Tensor:
+    """Quantize a flat (N, block_size) float32 tensor to fake-MXFP4. Returns bf16/fp16-sized result."""
+    amax = w_flat.abs().max(dim=-1, keepdim=True).values
+    descale = amax / E2M1_MAX
+    min_exp = torch.tensor(-127.0, device=w_flat.device)
+    e8m0_exp = torch.ceil(torch.maximum(torch.log2(descale), min_exp))
+    scale = torch.exp2(e8m0_exp)
+
+    w_normalized = w_flat / scale
+    sign = torch.sign(w_normalized)
+    ord_ = torch.bucketize(w_normalized.abs(), bounds)
+
+    return sign * values[ord_] * scale
+
+
+def fake_quantize_mxfp4(weight: torch.Tensor, block_size: int = 32, max_chunk_rows: int = 4096) -> torch.Tensor:
     """Differentiable MXFP4 fake-quantizer for QAT.
 
     Forward: returns MXFP4-dequantized approximation (same shape/dtype as input).
     Backward: straight-through estimator — gradient flows unchanged.
+
+    Processes in row-chunks of `max_chunk_rows` blocks to cap peak intermediate
+    memory during gradient-checkpoint recompute.
     """
     original_shape = weight.shape
     original_dtype = weight.dtype
 
-    # Work in float32 for numerical stability (mirrors quantize_to_mxfp4)
-    w_blocks = weight.float().reshape(-1, block_size)
-
-    # Per-block E8M0 scale (reuses same logic as quantize_to_mxfp4)
-    amax = w_blocks.abs().max(dim=-1, keepdim=True).values
-    descale = amax / E2M1_MAX
-    min_exp = torch.tensor(-127.0, device=weight.device)
-    e8m0_exp = torch.ceil(torch.maximum(torch.log2(descale), min_exp))
-    scale = torch.exp2(e8m0_exp)  # [num_blocks, 1]
-
-    # Normalize and round to nearest FP4 E2M1 magnitude (reuses E2M1_BOUNDS)
-    w_normalized = w_blocks / scale
-    sign = torch.sign(w_normalized)
+    total_rows = weight.numel() // block_size
     bounds = E2M1_BOUNDS.to(weight.device)
-    ord_ = torch.bucketize(w_normalized.abs(), bounds)
-
-    # Map ordinal -> fp4 magnitude -> dequantized value
     values = E2M1_VALUES.to(weight.device)
-    dequantized = (sign * values[ord_] * scale).reshape(original_shape).to(original_dtype)
+
+    if total_rows <= max_chunk_rows:
+        # Small tensor — process in one shot (no overhead)
+        w_blocks = weight.float().reshape(-1, block_size)
+        dequantized = _fake_quantize_mxfp4_chunk(w_blocks, block_size, bounds, values)
+        dequantized = dequantized.reshape(original_shape).to(original_dtype)
+    else:
+        # Large tensor — process in chunks to bound peak memory
+        w_blocks = weight.float().reshape(-1, block_size)
+        out = torch.empty_like(w_blocks)
+        for start in range(0, total_rows, max_chunk_rows):
+            end = min(start + max_chunk_rows, total_rows)
+            out[start:end] = _fake_quantize_mxfp4_chunk(w_blocks[start:end], block_size, bounds, values)
+        dequantized = out.reshape(original_shape).to(original_dtype)
 
     # STE: forward = dequantized value, backward = identity through weight
     return weight + (dequantized - weight).detach()

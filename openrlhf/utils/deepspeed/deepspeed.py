@@ -153,7 +153,17 @@ class DeepspeedStrategy(ABC):
         if isinstance(model, Actor):
             model = model.model
         optim_params = get_optimizer_grouped_parameters(model, kwargs["weight_decay"])
-        return self._create_adam(optim_params, **kwargs)
+        optimizer = self._create_adam(optim_params, **kwargs)
+
+        if self.adam_8bit:
+            import bitsandbytes
+
+            manager = bitsandbytes.optim.GlobalOptimManager.get_instance()
+            for module in model.modules():
+                if isinstance(module, nn.Embedding):
+                    manager.register_module_override(module, "weight", {"optim_bits": 32})
+
+        return optimizer
 
     def backward(self, loss: torch.Tensor, model: nn.Module, optimizer: optim.Optimizer, **kwargs) -> None:
         if isinstance(model, Actor):

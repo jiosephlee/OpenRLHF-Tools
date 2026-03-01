@@ -95,17 +95,11 @@ class GLMFlashProtocol(ChatProtocol):
         if tool_call:
             return {
                 "content": "",
-                "tool_calls": [{
-                    "name": tool_call["function_name"],
-                    "arguments": tool_call["arguments"]
-                }]
+                "tool_calls": [{"name": tool_call["function_name"], "arguments": tool_call["arguments"]}],
             }
         else:
             # No tool call - final answer
-            return {
-                "content": text,
-                "tool_calls": []
-            }
+            return {"content": text, "tool_calls": []}
 
     def render_tool_feedback(self, tool_results: List[Dict[str, str]]) -> str:
         """GLM Flash bridge: no explicit assistant close needed."""
@@ -126,9 +120,7 @@ class GLMFlashProtocol(ChatProtocol):
         # Regex parser (based on official vLLM patterns).
         # Note: vLLM's Glm47MoeModelToolParser.extract_tool_calls() now requires
         # a ChatCompletionRequest arg we don't have here, so we use regex directly.
-        func_detail_regex = re.compile(
-            r"<tool_call>(.*?)(<arg_key>.*?)?</tool_call>", re.DOTALL
-        )
+        func_detail_regex = re.compile(r"<tool_call>(.*?)(<arg_key>.*?)?</tool_call>", re.DOTALL)
         func_arg_regex = re.compile(
             r"<arg_key>(.*?)</arg_key>(?:\n|\s)*<arg_value>(.*?)</arg_value>",
             re.DOTALL,
@@ -147,10 +139,8 @@ class GLMFlashProtocol(ChatProtocol):
             for key, value in arg_matches:
                 arguments[key.strip()] = value.strip()
 
-        return {
-            "function_name": function_name,
-            "arguments": arguments
-        }
+        return {"function_name": function_name, "arguments": arguments}
+
 
 _VALID_JSON_ESC = set(['"', "\\", "/", "b", "f", "n", "r", "t", "u"])
 
@@ -251,15 +241,15 @@ class InternS1Protocol(ChatProtocol):
                 content_parts.append(text[pos:])
                 break
 
-            content_parts.append(text[pos:start_m.start()])
+            content_parts.append(text[pos : start_m.start()])
 
             end_m = self._END_RE.search(text, start_m.end())
             if end_m is None:
                 # Incomplete block — treat as plain text
-                content_parts.append(text[start_m.start():])
+                content_parts.append(text[start_m.start() :])
                 break
 
-            action = text[start_m.end():end_m.start()].strip()
+            action = text[start_m.end() : end_m.start()].strip()
             # Skip to first '{' in case of stray characters
             j = action.find("{")
             if j != -1:
@@ -272,15 +262,15 @@ class InternS1Protocol(ChatProtocol):
                     try:
                         action_dict = json.loads(_repair_invalid_json_escapes(action))
                     except Exception:
-                        content_parts.append(text[start_m.start():end_m.end()])
+                        content_parts.append(text[start_m.start() : end_m.end()])
                         pos = end_m.end()
                         continue
                 else:
-                    content_parts.append(text[start_m.start():end_m.end()])
+                    content_parts.append(text[start_m.start() : end_m.end()])
                     pos = end_m.end()
                     continue
             except Exception:
-                content_parts.append(text[start_m.start():end_m.end()])
+                content_parts.append(text[start_m.start() : end_m.end()])
                 pos = end_m.end()
                 continue
 
@@ -350,9 +340,7 @@ class GPTOSSProtocol(ChatProtocol):
     def _assistant_header_ids(self) -> List[int]:
         """Token IDs for ``<|start|>assistant`` (computed once, cached)."""
         if self._cached_header_ids is None:
-            self._cached_header_ids = self.tokenizer.encode(
-                "<|start|>assistant", add_special_tokens=False
-            )
+            self._cached_header_ids = self.tokenizer.encode("<|start|>assistant", add_special_tokens=False)
         return self._cached_header_ids
 
     def parse_assistant_text(self, text: str, token_ids: Optional[List[int]] = None) -> Dict[str, Any]:
@@ -379,24 +367,28 @@ class GPTOSSProtocol(ChatProtocol):
             # Fallback: prepend <|start|>assistant header that was part of
             # the prompt/feedback and retry.
             try:
-                parser = harmony_utils.parse_output_into_messages(
-                    self._assistant_header_ids + list(token_ids)
-                )
+                parser = harmony_utils.parse_output_into_messages(self._assistant_header_ids + list(token_ids))
             except Exception as fallback_err:
                 parse_method = "regex"
                 # Last resort: regex-based fallback on decoded special tokens.
-                full_decoded = self.tokenizer.decode(list(token_ids), skip_special_tokens=False)
-                logger.error(
-                    "GPT-OSS Harmony parse failed on BOTH paths.\n"
-                    "  primary_err: %s\n"
-                    "  fallback_err: %s\n"
-                    "  token_ids (%d total): %s\n"
-                    "  full decoded output:\n%s",
-                    primary_err, fallback_err,
-                    len(list(token_ids)), list(token_ids),
-                    full_decoded,
-                )
-                return self._regex_fallback_parse(token_ids, text, parse_method)
+                result = self._regex_fallback_parse(token_ids, text, parse_method)
+                if result.get("parse_failed"):
+                    full_decoded = self.tokenizer.decode(list(token_ids), skip_special_tokens=False)
+                    logger.error(
+                        "GPT-OSS Harmony parse failed on ALL paths.\n"
+                        "  primary_err: %s\n"
+                        "  fallback_err: %s\n"
+                        "  token_ids (%d total): %s\n"
+                        "  full decoded output:\n%s",
+                        primary_err,
+                        fallback_err,
+                        len(list(token_ids)),
+                        list(token_ids),
+                        full_decoded,
+                    )
+                else:
+                    logger.debug("GPT-OSS Harmony strict parse failed, but regex fallback succeeded.")
+                return result
 
         return self._extract_from_parser(parser, text, parse_method)
 
@@ -406,16 +398,18 @@ class GPTOSSProtocol(ChatProtocol):
 
     # Patterns for harmony special tokens rendered as text
     _RE_TOOL_CALL = re.compile(
-        r'(?:<\|channel\|>\w+\s*)?'        # optional channel before to=
-        r'to=functions\.(\S+?)'           # recipient: functions.TOOL_NAME
-        r'(?:\s*<\|channel\|>\w+)?'       # optional channel after to= (role-section format)
-        r'(?:\s*<\|constrain\|>[^<]*)*'   # zero or more constrain tags (id=1, json, etc.)
-        r'\s*<\|message\|>(.*?)'          # message body (args)
-        r'(?:<\|call\|>|<\|end\|>|$)',    # terminator
+        r"(?:<\|channel\|>\w+\s*)?"  # optional channel before to=
+        r"to=functions\.(\S+?)"  # recipient: functions.TOOL_NAME
+        r"(?:\s*<\|channel\|>\w+)?"  # optional channel after to= (role-section format)
+        r"(?:\s*<\|constrain\|>[^<]*)*"  # zero or more constrain tags (id=1, json, etc.)
+        r"\s*<\|message\|>(.*?)"  # message body (args)
+        r"(?:<\|call\|>|<\|end\|>|$)",  # terminator
         re.DOTALL,
     )
 
-    def _regex_fallback_parse(self, token_ids: List[int], raw_text: str, parse_method: str = "regex") -> Dict[str, Any]:
+    def _regex_fallback_parse(
+        self, token_ids: List[int], raw_text: str, parse_method: str = "regex"
+    ) -> Dict[str, Any]:
         """Regex-based fallback when the Harmony token-ID parser fails.
 
         Decodes the full token stream (with special tokens visible) and
@@ -518,8 +512,7 @@ class GPTOSSProtocol(ChatProtocol):
             tool_name = tr["name"]
             tool_content = tr["content"]
             feedback += (
-                f"<|start|>functions.{tool_name} to=assistant"
-                f"<|channel|>commentary<|message|>{tool_content}<|end|>"
+                f"<|start|>functions.{tool_name} to=assistant<|channel|>commentary<|message|>{tool_content}<|end|>"
             )
         # Generation prompt for the next assistant turn
         feedback += "<|start|>assistant"
@@ -533,22 +526,31 @@ class GPTOSSProtocol(ChatProtocol):
         tokenize round-trip for special tokens like ``<|start|>``, ``<|end|>``.
         """
         from openai_harmony import (
-            load_harmony_encoding, HarmonyEncodingName,
-            Role, Author, Message,
+            load_harmony_encoding,
+            HarmonyEncodingName,
+            Role,
+            Author,
+            Message,
         )
+
         encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
 
         token_ids: List[int] = []
         for tr in tool_results:
-            msg = Message.from_author_and_content(
-                Author.new(Role.TOOL, f"functions.{tr['name']}"),
-                tr["content"],
-            ).with_channel("commentary").with_recipient("assistant")
+            msg = (
+                Message.from_author_and_content(
+                    Author.new(Role.TOOL, f"functions.{tr['name']}"),
+                    tr["content"],
+                )
+                .with_channel("commentary")
+                .with_recipient("assistant")
+            )
             token_ids.extend(encoding.render(msg))
 
         # Append <|start|>assistant generation prompt
         token_ids.extend(self._assistant_header_ids)
         return token_ids
+
 
 # Export public API
 __all__ = ["ChatProtocol", "GLMFlashProtocol", "InternS1Protocol", "GPTOSSProtocol"]

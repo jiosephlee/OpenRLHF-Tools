@@ -425,6 +425,22 @@ class BasePPOTrainer(ABC):
         for sample in rollout_samples:
             sample.info = {k: v for k, v in sample.info.items() if not k.startswith("tool_count__")}
 
+        # QeRL Simulate Quantization: Inject Gaussian noise to Actor's RMSNorm layers during RLHF step
+        if getattr(self.args, "qat_fp4", None) == "gaussian_noise":
+            from openrlhf.utils.noise_scheduler import generate_gaussian_noise
+
+            # Schedule configuration for QeRL noise
+            # You can adjust these values, this matches a typical 120-step schedule.
+            # This will be run on the Ray actor model group locally
+            qerl_sigma_trend = [0.01] * 120  # Constant noise for emulation
+            refs = self.actor_model_group.async_run_method(
+                method_name="apply_gaussian_noise",
+                step=global_step,
+                total_step=self.args.num_episodes * len(self.prompts_dataloader),
+                sigma_trend=qerl_sigma_trend,
+            )
+            ray.get(refs)
+
         # Turn raw rollouts into PPO-ready trajectories with rewards.
         experiences = self.experience_maker.make_experience_batch(rollout_samples)
 

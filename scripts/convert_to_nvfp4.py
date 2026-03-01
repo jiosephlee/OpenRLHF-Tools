@@ -72,24 +72,18 @@ def _convert_nvfp4_modelopt(model, block_size=16):
             global_scale_list = []
 
             for expert in param:
-                quantized, scales, global_scale = NVFP4QTensor.quantize(
-                    expert, block_size=block_size
-                )
+                quantized, scales, global_scale = NVFP4QTensor.quantize(expert, block_size=block_size)
                 packed_list.append(quantized._quantized_data)
                 scale_list.append(scales)
                 global_scale_list.append(global_scale)
 
-            packed = torch.stack(packed_list)
-            scales = torch.stack(scale_list)
-            global_scales = torch.stack(global_scale_list)
+            packed = torch.stack(packed_list)  # [E, out, K//2]
+            scales = torch.stack(scale_list)  # [E, out, K//group_size]
+            global_scales = torch.stack(global_scale_list)  # [E]
 
-            shape = packed.shape
-            new_state_dict[f"{name}_blocks"] = packed.view(
-                shape[0], shape[1], -1, block_size // 2
-            ).cpu()
-            new_state_dict[f"{name}_scales"] = scales.view(
-                shape[0], shape[1], -1
-            ).cpu()
+            # Save as 3D — vLLM expects [E, out, K//2] (not 4D with block sub-dim)
+            new_state_dict[f"{name}_blocks"] = packed.cpu()
+            new_state_dict[f"{name}_scales"] = scales.cpu()
             new_state_dict[f"{name}_scales_2"] = global_scales.cpu()
 
             del param, packed, scales, global_scales
@@ -118,24 +112,18 @@ def _convert_nvfp4_builtin(model, block_size=16):
 
             for i in range(param_t.shape[0]):
                 expert = param_t[i].cuda() if not param_t.is_cuda else param_t[i]
-                packed, scales, global_scale = quantize_to_nvfp4(
-                    expert, block_size=block_size
-                )
+                packed, scales, global_scale = quantize_to_nvfp4(expert, block_size=block_size)
                 packed_list.append(packed.cpu())
                 scale_list.append(scales.cpu())
                 global_scale_list.append(global_scale.cpu())
 
-            packed = torch.stack(packed_list)
-            scales = torch.stack(scale_list)
-            global_scales = torch.stack(global_scale_list)
+            packed = torch.stack(packed_list)  # [E, out, K//2]
+            scales = torch.stack(scale_list)  # [E, out, K//group_size]
+            global_scales = torch.stack(global_scale_list)  # [E]
 
-            shape = packed.shape
-            new_state_dict[f"{name}_blocks"] = packed.view(
-                shape[0], shape[1], -1, block_size // 2
-            )
-            new_state_dict[f"{name}_scales"] = scales.view(
-                shape[0], shape[1], -1
-            )
+            # Save as 3D — vLLM expects [E, out, K//2] (not 4D with block sub-dim)
+            new_state_dict[f"{name}_blocks"] = packed
+            new_state_dict[f"{name}_scales"] = scales
             new_state_dict[f"{name}_scales_2"] = global_scales
 
             del param_t, packed, scales, global_scales
@@ -219,9 +207,7 @@ def upload_to_hub(local_path, repo_id, private=True):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Convert a BF16 GPT-OSS model to NVFP4 format for vLLM."
-    )
+    parser = argparse.ArgumentParser(description="Convert a BF16 GPT-OSS model to NVFP4 format for vLLM.")
     parser.add_argument(
         "--model_path",
         type=str,

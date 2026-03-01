@@ -383,7 +383,9 @@ class ActorPPOTrainer(ABC):
                 advantages=advantages,
                 bias=getattr(lm_head, "bias", None),
                 old_per_token_logps=old_action_log_probs,
-                ref_per_token_logps=base_action_log_probs if self.args.use_kl_loss and self.args.init_kl_coef > 0 else None,
+                ref_per_token_logps=base_action_log_probs
+                if self.args.use_kl_loss and self.args.init_kl_coef > 0
+                else None,
             )
 
             clip_ratio = metrics[-1]
@@ -458,7 +460,9 @@ class ActorPPOTrainer(ABC):
                 loss += output.aux_loss * self.args.aux_loss_coef
             # entropy loss
             if self.args.entropy_loss_coef is not None:
-                entropy_loss = masked_mean(output.entropy[:, -experience.action_mask.shape[1] :], experience.action_mask)
+                entropy_loss = masked_mean(
+                    output.entropy[:, -experience.action_mask.shape[1] :], experience.action_mask
+                )
                 if self.args.entropy_loss_coef != 0:
                     loss -= entropy_loss * self.args.entropy_loss_coef
 
@@ -810,6 +814,12 @@ class PolicyModelActor(BaseModelActor):
 
     def broadcast_to_vllm(self):
         self.trainer.broadcast_to_vllm()
+
+    def apply_gaussian_noise(self, step, total_step, sigma_trend):
+        """Inject Gaussian noise into Actor's RMSNorm layers (QeRL approach)."""
+        from openrlhf.utils.noise_scheduler import generate_gaussian_noise
+
+        generate_gaussian_noise(self.actor, step, total_step, sigma_trend)
 
     def get_checkpoint_states(self):
         return self.checkpoint_states

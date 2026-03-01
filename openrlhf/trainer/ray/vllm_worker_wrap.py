@@ -69,7 +69,9 @@ class WorkerWrap:
                     "layers.0.mlp.experts.w13_weight",
                     "layers.0.mlp.experts.w2_weight",
                     "layers.0.mlp.experts.w13_weight_scale",
+                    "layers.0.mlp.experts.w2_weight_scale",
                     "layers.0.mlp.experts.w13_bias",
+                    "layers.0.mlp.experts.w2_bias",
                     "layers.0.attn.qkv_proj.weight",
                     "embedding.weight",
                     "lm_head.weight",
@@ -85,15 +87,34 @@ class WorkerWrap:
                 print(f"  {name}: EMPTY shape={list(data.shape)}")
             else:
                 flat = data.detach().cpu().float().flatten()
+                has_nan = flat.isnan().any().item()
+                has_inf = flat.isinf().any().item()
                 print(
                     f"  {name}: shape={list(data.shape)} dtype={data.dtype} "
                     f"device={data.device} "
                     f"mean={flat.mean().item():.6f} std={flat.std().item():.6f} "
                     f"absmax={flat.abs().max().item():.6f} "
-                    f"nan={flat.isnan().any().item()} inf={flat.isinf().any().item()} "
+                    f"nan={has_nan} inf={has_inf} "
                     f"allzero={flat.eq(0).all().item()} "
                     f"hash={flat[:8].tolist()}"  # first 8 values as fingerprint
                 )
+                # If NaN or Inf detected, print counts for diagnosis
+                if has_nan or has_inf:
+                    print(
+                        f"    ⚠ nan_count={flat.isnan().sum().item()} "
+                        f"inf_count={flat.isinf().sum().item()} "
+                        f"total={flat.numel()}"
+                    )
+                # For float8 tensors, also show raw uint8 view to distinguish
+                # real corruption from E8M0 dtype-interpretation artifacts
+                if data.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+                    raw = data.view(torch.uint8).flatten()
+                    print(
+                        f"    (raw uint8: mean={raw.float().mean():.1f} "
+                        f"min={raw.min().item()} max={raw.max().item()} "
+                        f"hash={raw[:8].tolist()})"
+                    )
+                    del raw
                 del flat
         print()
 
@@ -152,14 +173,6 @@ class WorkerWrap:
             else name.replace("down_proj", "down_proj_scales")
         )
 
-        if not getattr(self, "_mxfp4_quantize_logged", False):
-            print(
-                f"[MXFP4 Quantize] {name}: bf16 {list(weight.shape)} → "
-                f"uint8 packed {list(packed_weight.shape)}, "
-                f"scales {list(packed_scales.shape)}"
-            )
-            self._mxfp4_quantize_logged = True
-
         yield name, packed_weight
         yield scale_name, packed_scales
 
@@ -214,15 +227,6 @@ class WorkerWrap:
             if is_gate_up
             else name.replace("down_proj", "down_proj_scales_2")
         )
-
-        if not getattr(self, "_nvfp4_quantize_logged", False):
-            print(
-                f"[NVFP4 Quantize] {name}: bf16 {list(weight.shape)} → "
-                f"uint8 packed {list(packed_weight.shape)}, "
-                f"scales {list(packed_scales.shape)}, "
-                f"global_scales {list(global_scales.shape)}"
-            )
-            self._nvfp4_quantize_logged = True
 
         yield name, packed_weight
         yield scale_name, packed_scales

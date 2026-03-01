@@ -412,12 +412,13 @@ if __name__ == "__main__":
         "--qat_fp4",
         type=str,
         default=None,
-        choices=["mxfp4", "nvfp4"],
+        choices=["mxfp4", "nvfp4", "gaussian_noise"],
         help=(
             "Enable FP4 QAT: during actor forward passes, expert weights are "
             "fake-quantized (bf16 -> nearest FP4 value -> bf16) via STE. "
             "'mxfp4': OCP MXFP4 format (also requires --mxfp4_dequantize). "
-            "'nvfp4': NVIDIA NVFP4 format."
+            "'nvfp4': NVIDIA NVFP4 format. "
+            "'gaussian_noise': Simulates quantization via injected normal noise."
         ),
     )
     parser.add_argument("--lora_rank", type=int, default=0)

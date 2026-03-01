@@ -84,13 +84,12 @@ class Actor(nn.Module):
 
             if mxfp4_dequantize:
                 assert Mxfp4Config is not None, (
-                    "Mxfp4Config requires transformers >= 4.52. "
-                    "Please upgrade: pip install -U transformers"
+                    "Mxfp4Config requires transformers >= 4.52. Please upgrade: pip install -U transformers"
                 )
                 quant_config = Mxfp4Config(dequantize=True)
-                # GPT-OSS models require eager attention
-                attn_impl = "eager"
-                logger.info("Using Mxfp4Config(dequantize=True) with eager attention for GPT-OSS model")
+                # Allow flash_attention_2 instead of forcing eager to avoid OOM
+                # attn_impl = "eager"
+                logger.info(f"Using Mxfp4Config(dequantize=True) with {attn_impl} for GPT-OSS model")
             elif load_in_4bit:
                 assert param_dtype == "bf16", "we only support bnb_4bit_compute_dtype = bf16"
                 quant_config = BitsAndBytesConfig(
@@ -139,7 +138,9 @@ class Actor(nn.Module):
                 if hasattr(self.model, "is_quantized"):
                     logger.info(f"[mxfp4_dequantize] model.is_quantized = {self.model.is_quantized}")
                 if hasattr(self.model.config, "quantization_config"):
-                    logger.info(f"[mxfp4_dequantize] model.config.quantization_config = {self.model.config.quantization_config}")
+                    logger.info(
+                        f"[mxfp4_dequantize] model.config.quantization_config = {self.model.config.quantization_config}"
+                    )
 
             # LoRA
             if lora_rank > 0:
@@ -172,12 +173,19 @@ class Actor(nn.Module):
                     "with Mxfp4Config(dequantize=True) so expert weights are in bf16."
                 )
                 from openrlhf.utils.mxfp4_quantize import register_mxfp4_qat_parametrization
+
                 n = register_mxfp4_qat_parametrization(self.model)
                 logger.info(f"[QAT MXFP4] Applied to {n} expert weight layers in actor.")
             elif qat_fp4 == "nvfp4":
                 from openrlhf.utils.nvfp4_quantize import register_nvfp4_qat_parametrization
+
                 n = register_nvfp4_qat_parametrization(self.model)
                 logger.info(f"[QAT NVFP4] Applied to {n} expert weight layers in actor.")
+            elif qat_fp4 == "gaussian_noise":
+                logger.info(
+                    "[QAT Gaussian Noise] No parametrize hooks applied. "
+                    "Gaussian noise will be injected into RMSNorm layers at each training step."
+                )
 
             # MoE - balancing loss
             model_config = self.model.config.to_dict()

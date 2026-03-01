@@ -17,22 +17,22 @@
 2. **Increase Actor GPUs:** Shard the actor across multiple GPUs (e.g., `ACTOR_GPUS=2`), cutting the per-process CPU memory requirement in half (to 80GB), which safely fits inside a 128GB allocation.
 3. **Increase CPU RAM Allocation:** If using `--adam_offload` with a 1-GPU actor is absolutely necessary, request significantly more memory from SLURM (e.g., `--mem=256G` or `--mem-per-gpu=256G`).
 
-## Raylet Killed (SIGKILL) or ActorUnavailableError (Socket Closed)
+## SIGKILL / OOM During Checkpoint Loading with Adam Offload
 **Symptoms:**
-- Raylet terminates unexpectedly randomly during the run or during vLLM engine initialization.
-- The error says "Possible reasons include: (1) SIGKILL by the user or system OOM killer" with Ray state-dump lines.
-- You see `ray.exceptions.ActorUnavailableError: The actor is temporarily unavailable: RpcError: RPC Error message: Socket closed`.
+- SLURM job receives a SIGKILL (or Ray actor crashes) specifically while trying to load a checkpoint (`load_checkpoint`), even when your node has plenty of physical RAM (e.g., 768GB).
+- This happens closely following initialization.
 
 **Root Cause:**
-- **Unknown, but highly correlated with System RAM exhaustion.** While it can sometimes be triggered by vLLM CUDAGraph allocations crashing silently, the most common trigger is the Linux Out-Of-Memory (OOM) killer assassinating the Ray background process or PyTorch workers when the job exceeds its SLURM `--mem` limit.
-- Peak memory usage spikes aggressively during model loading, Ray object store spilling, and DeepSpeed CPU offloading.
+- When `--adam_offload` is used, DeepSpeed allocates pinned CPU memory for the optimizer states. For a 20B model on 1 GPU, this is roughly 160GB of pinned RAM.
+- When loading a checkpoint, `torch.load` reads the optimizer state dictionary from disk into *normal pageable CPU RAM* before it is copied into DeepSpeed's pre-allocated pinned buffers.
+- This creates a massive memory spike: `160GB (pinned) + 160GB (load buffer) = 320GB` peak memory requirement for a brief moment.
+- Even if your node has 768GB RAM, **SLURM cgroups strictly enforce your requested limit**. If your `#SBATCH` memory request is `--mem=256G`, the OOM-killer will terminate your process the second `torch.load` pushes it over the 256GB limit.
 
 **Solutions:**
-1. **Increase System RAM (Most Effective):** Bump your SLURM memory request significantly (e.g., from `--mem=256G` to `--mem=512G` or higher). This solves the vast majority of silent Raylet SIGKILLs.
-2. **`--reduce_cuda_graph`:** If the crash happens strictly during initialization, you can reduce CUDAGraph capture sizes to save init-time VRAM/RAM.
-3. **`--enforce_eager`:** Disables torch.compile and CUDAGraph entirely.
+1. **Dramatically Increase System RAM:** Bump your SLURM memory request significantly to cover this doubling spike (e.g., to `--mem=450G` or `--mem=512G`).
+2. **Increase Actor GPUs:** Shard the actor across multiple GPUs (e.g., `ACTOR_GPUS=2`). This slices both the pinned memory and the `torch.load` buffer size in half per process (80GB + 80GB = 160GB peak per process), keeping it safely within tighter SLURM allocations.
+3. **Switch to 8-bit Adam (`--adam_8bit`):** This keeps optimizer states on the GPU instead of offloading to CPU. Note: While it eliminates the CPU RAM spike, it is still being evaluated for training overhead/speed and increases VRAM requirements.
 
-**Note:** Environment variables like `VLLM_CUDAGRAPH_CAPTURE_SIZES` are **not recognized** by all vLLM builds. Use the `--reduce_cuda_graph` CLI flag instead, which passes a `CompilationConfig` directly through the Python API.
 
 ## FlashInfer JIT Cache Errors (`libcudart.so` / `Sparsity` / Ninja Build Failed)
 **Symptoms:**

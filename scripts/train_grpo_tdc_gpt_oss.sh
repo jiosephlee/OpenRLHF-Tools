@@ -23,6 +23,7 @@
 #   TOOL_VERSION=v4              # Tool schema version (default: v4)
 #   SMART_REPLAY=1               # Enable smart replay with max_replay_rounds=2
 #   CURRICULUM_BALANCED=1        # Enable curriculum-balanced sampling
+#   MULTI_STAGE_DISPATCH=1       # Continuous-refill dispatch (best for 2-GPU setups)
 #   MAX_EPOCHS=2                 # Training epochs (default: 2)
 #   EXTRA_ARGS="..."             # Additional CLI flags
 #
@@ -35,6 +36,10 @@ export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
 export VLLM_ENABLE_V1_MULTIPROCESSING=0
 export VLLM_CUDAGRAPH_CAPTURE_SIZES="1,2,4,8,16,32"
 
+# Prevent corrupted torch inductor cache from crashing vLLM compilation.
+# We nuke any leftover default-location cache from prior runs.
+rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ ~/.cache/vllm/torch_compile_cache/ 2>/dev/null || true
+
 ### ARGS ###
 PRETRAIN_PATH=${1:-"openai/gpt-oss-20b"}
 LEARNING_RATE=${2:-"1e-6"}
@@ -45,6 +50,7 @@ DEBUG_TRACES=${3:-"0"}
 MODE="${MODE:-colocated}"
 TOOL_VERSION="${TOOL_VERSION:-v4}"
 SMART_REPLAY="${SMART_REPLAY:-0}"
+MULTI_STAGE_DISPATCH="${MULTI_STAGE_DISPATCH:-0}"
 CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
 MAX_EPOCHS="${MAX_EPOCHS:-1}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
@@ -63,11 +69,11 @@ if [ "$MODE" = "colocated" ]; then
     MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-8}" # This decides how many mini gradient updates are used per rollout; Rollout_batch_size * N_samples_per_prompt / Mini_gradient_steps = number of trajectories used for each gradient update.
     MICRO_TRAIN_BATCH_SIZE=1 # The larger the micro_train_batch_size, the more memory and less gradient accumulation steps for backwards pass.
     MICRO_ROLLOUT_BATCH_SIZE=2 # ^ but for forwards pass. These two parameters are overridden, however, by default since we use dynamic batching.
-    VLLM_GPU_MEM_UTIL=0.7
+    VLLM_GPU_MEM_UTIL=0.725
     VLLM_SYNC_BACKEND=nccl
     EVAL_STEPS="${EVAL_STEPS:-32}"
     TRAIN_MAX_TOKENS_PER_GPU=6144 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
-    ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.75" | bc | awk '{print int($1)}')
+    ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 3" | bc | awk '{print int($1)}')
 
 elif [ "$MODE" = "distributed" ]; then
     ACTOR_GPUS="${ACTOR_GPUS:?"MODE=distributed requires ACTOR_GPUS"}"
@@ -80,8 +86,8 @@ elif [ "$MODE" = "distributed" ]; then
     VLLM_SYNC_BACKEND=gloo
     COLO_ROLLOUT=32; COLO_EVAL=32
     EVAL_STEPS="${EVAL_STEPS:-$(( COLO_EVAL * COLO_ROLLOUT / ROLLOUT_BATCH_SIZE ))}" # To match the evaluation frequency of the colocated mode.
-    TRAIN_MAX_TOKENS_PER_GPU=12288
-    ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.75" | bc | awk '{print int($1)}')
+    TRAIN_MAX_TOKENS_PER_GPU=8192
+    ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')
 else
     echo "Error: MODE must be 'colocated' or 'distributed', got '$MODE'" >&2
     exit 1
@@ -110,7 +116,7 @@ fi
 
 ### MODE FLAGS ###
 if [ "$MODE" = "colocated" ]; then
-    MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep --adam_offload" #gpt-oss always needs adam_offload as it can't fit on 8 GPUs with colocated mode otherwise.
+    MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep --adam_offload" #gpt-oss: adam_offload keeps optimizer on CPU, maximizing GPU VRAM for forward passes.
 else
     MODE_FLAGS="--async_train --async_queue_size 1 --adam_offload"
 fi
@@ -213,6 +219,7 @@ mkdir -p "$TRITON_CACHE_DIR"
 
 export VLLM_NO_USAGE_STATS=1
 export VLLM_DISABLE_TELEMETRY=1
+export VLLM_ALLOW_INSECURE_SERIALIZATION=1  # vLLM v1 msgspec can't serialize torch.dtype; fall back to pickle
 
 export OPENRLHF_MODEL_PATH="$PRETRAIN_PATH"
 export OPENRLHF_CHAT_PROTOCOL="$CHAT_PROTOCOL"
@@ -273,6 +280,7 @@ echo "Warmup Steps: $WARMUP_STEPS (multiplier: $WARM_STEPS_MULTIPLIER)"
 echo "----------------------------------------"
 echo "Smart Replay: $SMART_REPLAY"
 echo "Curriculum Balanced: $CURRICULUM_BALANCED"
+echo "Multi Stage Dispatch: $MULTI_STAGE_DISPATCH"
 echo "Tool Version: $TOOL_VERSION"
 echo "----------------------------------------"
 echo "Runs Dir: $RUNS_DIR"
@@ -309,6 +317,9 @@ fi
 if [ "$CURRICULUM_BALANCED" = "1" ]; then
     OPTIONAL_FLAGS+=" --curriculum_balanced"
 fi
+if [ "$MULTI_STAGE_DISPATCH" = "1" ]; then
+    OPTIONAL_FLAGS+=" --multi_stage_dispatch"
+fi
 
 ### TRAINING ###
 RUN_LOG="$RUNS_DIR/run.log"
@@ -332,8 +343,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --kl_estimator k1 \
     --eps_clip_low_high 0.2 0.272 \
     --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
-    --save_steps 100 \
     --save_hf_ckpt \
+    --disable_ds_ckpt \
     --logging_steps 1 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
     --micro_train_batch_size $MICRO_TRAIN_BATCH_SIZE \
@@ -377,8 +388,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --use_dynamic_batch \
     --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
     --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \
-    --mxfp4_dequantize \
-    --vllm_sync_mxfp4 \
+    --vllm_sync_fp4 mxfp4 \
+    --qat_fp4 \
     --constant_lr_with_warm_up \
     --warmup_steps $WARMUP_STEPS \
     --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \

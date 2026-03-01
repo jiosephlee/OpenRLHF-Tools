@@ -669,9 +669,7 @@ class PolicyModelActor(BaseModelActor):
             temperature=strategy.args.temperature,
             use_liger_kernel=strategy.args.use_liger_kernel,
             mxfp4_dequantize=getattr(strategy.args, "mxfp4_dequantize", False),
-            qat_mxfp4=getattr(strategy.args, "qat_mxfp4", False),
-            qat_fp4=getattr(strategy.args, "qat_fp4", False),
-            vllm_sync_fp4=getattr(strategy.args, "vllm_sync_fp4", None),
+            qat_fp4=getattr(strategy.args, "qat_fp4", None),
         )
         strategy.print(actor)
 

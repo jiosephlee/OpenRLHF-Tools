@@ -299,7 +299,6 @@ def create_vllm_engines(
     reduce_cuda_graph: bool = False,
     kv_cache_dtype: str = "auto",
     max_num_batched_tokens: Optional[int] = None,
-    vllm_quantization: Optional[str] = None,
 ):
     """Spin up a set of vLLM Ray actors with consistent placement."""
     vllm_engines = []
@@ -345,9 +344,6 @@ def create_vllm_engines(
             "enable_sleep_mode": vllm_enable_sleep,
             "kv_cache_dtype": kv_cache_dtype,
         }
-
-        if vllm_quantization is not None:
-            actor_kwargs["quantization"] = vllm_quantization
 
         if max_num_batched_tokens is not None:
             actor_kwargs["max_num_batched_tokens"] = max_num_batched_tokens

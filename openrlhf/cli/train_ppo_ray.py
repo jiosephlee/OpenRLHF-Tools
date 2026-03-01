@@ -76,7 +76,6 @@ def train(args):
             reduce_cuda_graph=args.reduce_cuda_graph,
             kv_cache_dtype=args.kv_cache_dtype,
             max_num_batched_tokens=args.max_num_batched_tokens,
-            vllm_quantization=args.vllm_quantization,
         )
 
     actor_model = RayActorGroup(
@@ -398,27 +397,16 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--qat_fp4",
-        action="store_true",
-        default=False,
+        type=str,
+        default=None,
+        choices=["mxfp4", "nvfp4"],
         help=(
             "Enable FP4 QAT: during actor forward passes, expert weights are "
             "fake-quantized (bf16 -> nearest FP4 value -> bf16) via STE. "
-            "Uses the format from --vllm_sync_fp4 (mxfp4 or nvfp4). "
-            "For mxfp4, also requires --mxfp4_dequantize."
+            "'mxfp4': OCP MXFP4 format (also requires --mxfp4_dequantize). "
+            "'nvfp4': NVIDIA NVFP4 format."
         ),
     )
-    parser.add_argument(
-        "--vllm_quantization",
-        type=str,
-        default=None,
-        help=(
-            "Quantization method to pass to vLLM engine (e.g., 'modelopt_fp4' for NVFP4). "
-            "If not set, vLLM auto-detects from the model's quantization_config."
-        ),
-    )
-    # Backward compat aliases (deprecated, use --vllm_sync_fp4 and --qat_fp4)
-    parser.add_argument("--vllm_sync_mxfp4", action="store_true", default=False, help="Deprecated: use --vllm_sync_fp4 mxfp4")
-    parser.add_argument("--qat_mxfp4", action="store_true", default=False, help="Deprecated: use --qat_fp4")
     parser.add_argument("--lora_rank", type=int, default=0)
     parser.add_argument("--lora_alpha", type=int, default=16)
     parser.add_argument("--target_modules", type=str, nargs="*", default="all-linear")
@@ -648,13 +636,12 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Resolve backward-compat FP4 aliases
-    if args.vllm_sync_mxfp4 and args.vllm_sync_fp4 is None:
-        args.vllm_sync_fp4 = "mxfp4"
-    if args.qat_mxfp4 and not args.qat_fp4:
-        args.qat_fp4 = True
-        if args.vllm_sync_fp4 is None:
-            args.vllm_sync_fp4 = "mxfp4"
+    # Validate MXFP4 QAT requires --mxfp4_dequantize
+    if args.qat_fp4 == "mxfp4" and not args.mxfp4_dequantize:
+        raise ValueError(
+            "--qat_fp4 mxfp4 requires --mxfp4_dequantize. The model must be loaded "
+            "with Mxfp4Config(dequantize=True) so expert weights are in bf16."
+        )
 
     # Validate arguments
     if args.eps_clip_low_high is None:

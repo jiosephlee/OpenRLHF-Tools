@@ -239,7 +239,7 @@ echo "Starting Ray head node at $RAY_NODE_IP_ADDRESS"
 ray start --head \
     --node-ip-address "$RAY_NODE_IP_ADDRESS" \
     --num-gpus "$NUM_GPUS" \
-    --temp-dir "$RAY_TMPDIR" &
+    --temp-dir "$RAY_TMPDIR"
 
 echo "Waiting for Ray..."
 for i in {1..60}; do
@@ -389,7 +389,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
     --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \
     --vllm_sync_fp4 mxfp4 \
-    --qat_fp4 \
+    --qat_fp4 mxfp4 \
     --constant_lr_with_warm_up \
     --warmup_steps $WARMUP_STEPS \
     --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \

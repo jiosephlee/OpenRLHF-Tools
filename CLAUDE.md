@@ -103,7 +103,7 @@ Closes the train/inference distribution gap when vLLM serves with MXFP4-quantize
 - `_patch_lora_layer_qat()`: patches `LoraLayer.forward` to fake-quantize the *merged* weight (`base + lora_B @ lora_A * scaling`) — matches vLLM inference behavior
 - `register_mxfp4_qat_parametrization()`: walks model, registers parametrization or patches LoRA layers
 - Weight sync unaffected: `named_parameters()` yields `.parametrizations.weight.original` (true bf16)
-- Enabled via `--qat_mxfp4` (requires `--mxfp4_dequantize`)
+- Enabled via `--qat_fp4 mxfp4` (requires `--mxfp4_dequantize`) or `--qat_fp4 nvfp4`
 
 ### 16. Ceiling Fix for Dynamic Batch Splitting
 **File:** `openrlhf/trainer/ppo_utils/experience_maker.py`
@@ -209,7 +209,7 @@ Debug flags:
 | `openrlhf/utils/logging_utils.py` | eval/global_step W&B axis |
 | `openrlhf/cli/batch_inference.py` | Transformers v4/v5 compat |
 | `openrlhf/cli/interactive_chat.py` | Transformers v4/v5 compat |
-| `openrlhf/cli/train_ppo_ray.py` | New CLI args for tools, eval, checkpointing, `--qat_mxfp4` |
+| `openrlhf/cli/train_ppo_ray.py` | New CLI args for tools, eval, checkpointing, `--qat_fp4` |
 | `openrlhf/utils/agent.py` | Pass hf_tokenizer through to agent instance |
 
 ---

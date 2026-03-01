@@ -2,15 +2,17 @@
 #
 # SLURM batch version of the GPT-OSS GRPO training script (NVFP4 variant).
 #
-# Uses NVFP4 quantization (NVIDIA FP4: block_size=16, E4M3 scales, per-tensor global scale)
-# instead of MXFP4 (OCP: block_size=32, E8M0 scales).
+# Uses NVFP4 QAT (Quantization-Aware Training) during actor training.
+# The model is plain BF16; vLLM loads and serves it as BF16.
+# QAT closes the train/inference gap by fake-quantizing MoE expert weights
+# to NVFP4 precision (block_size=16, E4M3 scales, per-tensor global scale)
+# during forward passes via STE (Straight-Through Estimator).
 #
 # Key differences from MXFP4 script:
 #   - NO VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8 (irrelevant for NVFP4)
 #   - NO --mxfp4_dequantize (model is plain bf16, not MXFP4-packed)
-#   - YES --vllm_quantization modelopt_fp4 (tells vLLM to use NVFP4 kernels)
-#   - YES --vllm_sync_fp4 nvfp4 (on-the-fly bf16->NVFP4 quantization during weight sync)
-#   - YES --qat_fp4 (NVFP4 fake-quantization during training via STE)
+#   - NO --vllm_sync_fp4 (vLLM stores BF16 weights, no on-the-fly quantization needed)
+#   - YES --qat_fp4 nvfp4 (NVFP4 fake-quantization during training via STE)
 #
 # Supports both colocated and distributed modes via MODE env var.
 #
@@ -87,6 +89,7 @@ run_task() {
     TOOL_VERSION="${TOOL_VERSION:-v4}"
     SMART_REPLAY="${SMART_REPLAY:-0}"
     MULTI_STAGE_DISPATCH="${MULTI_STAGE_DISPATCH:-0}"
+    LIGER_GRPO_LOSS="${LIGER_GRPO_LOSS:-0}"
     CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
     MAX_EPOCHS="${MAX_EPOCHS:-1}"
     EXTRA_ARGS="${EXTRA_ARGS:-}"
@@ -302,7 +305,7 @@ run_task() {
     echo "Tasks: ${TASK_NAMES[*]}"
     echo "Model: $PRETRAIN_PATH"
     echo "Chat Protocol: $CHAT_PROTOCOL"
-    echo "Quantization: NVFP4 (modelopt_fp4)"
+    echo "Quantization: NVFP4 QAT (training only, vLLM serves BF16)"
     echo "Learning Rate: $LEARNING_RATE"
     echo "Run ID: $RUN_ID"
     echo "----------------------------------------"
@@ -328,6 +331,7 @@ run_task() {
     echo "Smart Replay: $SMART_REPLAY"
     echo "Curriculum Balanced: $CURRICULUM_BALANCED"
     echo "Multi Stage Dispatch: $MULTI_STAGE_DISPATCH"
+    echo "Liger GRPO Loss: $LIGER_GRPO_LOSS"
     echo "Tool Version: $TOOL_VERSION"
     echo "----------------------------------------"
     echo "Runs Dir: $RUNS_DIR"
@@ -366,6 +370,9 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
     fi
     if [ "$MULTI_STAGE_DISPATCH" = "1" ]; then
         OPTIONAL_FLAGS+=" --multi_stage_dispatch"
+    fi
+    if [ "$LIGER_GRPO_LOSS" = "1" ]; then
+        OPTIONAL_FLAGS+=" --use_liger_grpo_loss"
     fi
 
     ### TRAINING ###
@@ -434,9 +441,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --use_dynamic_batch \
         --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
         --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \
-        --vllm_quantization modelopt_fp4 \
-        --vllm_sync_fp4 nvfp4 \
-        --qat_fp4 \
+        --qat_fp4 nvfp4 \
         --constant_lr_with_warm_up \
         --skip_eval_step_zero \
         --warmup_steps $WARMUP_STEPS \

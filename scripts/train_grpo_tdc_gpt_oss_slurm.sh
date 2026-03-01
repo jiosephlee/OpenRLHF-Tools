@@ -80,6 +80,7 @@ run_task() {
     TOOL_VERSION="${TOOL_VERSION:-v4}"
     SMART_REPLAY="${SMART_REPLAY:-0}"
     MULTI_STAGE_DISPATCH="${MULTI_STAGE_DISPATCH:-0}"
+    LIGER_GRPO_LOSS="${LIGER_GRPO_LOSS:-0}"
     CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
     MAX_EPOCHS="${MAX_EPOCHS:-1}"
     EXTRA_ARGS="${EXTRA_ARGS:-}"
@@ -320,6 +321,7 @@ run_task() {
     echo "Smart Replay: $SMART_REPLAY"
     echo "Curriculum Balanced: $CURRICULUM_BALANCED"
     echo "Multi Stage Dispatch: $MULTI_STAGE_DISPATCH"
+    echo "Liger GRPO Loss: $LIGER_GRPO_LOSS"
     echo "Tool Version: $TOOL_VERSION"
     echo "----------------------------------------"
     echo "Runs Dir: $RUNS_DIR"
@@ -358,6 +360,9 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
     fi
     if [ "$MULTI_STAGE_DISPATCH" = "1" ]; then
         OPTIONAL_FLAGS+=" --multi_stage_dispatch"
+    fi
+    if [ "$LIGER_GRPO_LOSS" = "1" ]; then
+        OPTIONAL_FLAGS+=" --use_liger_grpo_loss"
     fi
 
     ### TRAINING ###
@@ -427,8 +432,8 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
         --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \
         --mxfp4_dequantize \
-        --vllm_sync_mxfp4 \
-        --qat_mxfp4 \
+        --vllm_sync_fp4 mxfp4 \
+        --qat_fp4 mxfp4 \
         --constant_lr_with_warm_up \
         --skip_eval_step_zero \
         --warmup_steps $WARMUP_STEPS \

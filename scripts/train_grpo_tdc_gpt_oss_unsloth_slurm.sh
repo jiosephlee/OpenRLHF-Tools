@@ -78,6 +78,7 @@ run_task() {
     TOOL_VERSION="${TOOL_VERSION:-v4}"
     SMART_REPLAY="${SMART_REPLAY:-0}"
     MULTI_STAGE_DISPATCH="${MULTI_STAGE_DISPATCH:-0}"
+    LIGER_GRPO_LOSS="${LIGER_GRPO_LOSS:-0}"
     CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
     MAX_EPOCHS="${MAX_EPOCHS:-1}"
     EXTRA_ARGS="${EXTRA_ARGS:-}"
@@ -318,6 +319,7 @@ run_task() {
     echo "Smart Replay: $SMART_REPLAY"
     echo "Curriculum Balanced: $CURRICULUM_BALANCED"
     echo "Multi Stage Dispatch: $MULTI_STAGE_DISPATCH"
+    echo "Liger GRPO Loss: $LIGER_GRPO_LOSS"
     echo "Tool Version: $TOOL_VERSION"
     echo "----------------------------------------"
     echo "Runs Dir: $RUNS_DIR"
@@ -356,6 +358,9 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
     fi
     if [ "$MULTI_STAGE_DISPATCH" = "1" ]; then
         OPTIONAL_FLAGS+=" --multi_stage_dispatch"
+    fi
+    if [ "$LIGER_GRPO_LOSS" = "1" ]; then
+        OPTIONAL_FLAGS+=" --use_liger_grpo_loss"
     fi
 
     ### TRAINING ###

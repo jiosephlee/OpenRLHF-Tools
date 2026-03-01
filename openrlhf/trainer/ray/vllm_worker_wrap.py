@@ -30,12 +30,14 @@ class WorkerWrap:
         )
 
     @property
-    def _is_mxfp4_quantized(self):
-        """Check if the model uses MXFP4 quantization."""
+    def _is_fp4_quantized(self):
+        """Check if the model uses FP4 quantization (MXFP4 or NVFP4)."""
         qconfig = getattr(self.model_config, "quantization_config", None)
+        valid_methods = ("mxfp4", "modelopt_fp4", "nvfp4", "compressed-tensors")
         if isinstance(qconfig, dict):
-            return qconfig.get("quant_method") == "mxfp4"
-        return getattr(self.model_config, "quantization", None) == "mxfp4"
+            return qconfig.get("quant_method") in valid_methods
+        quant = getattr(self.model_config, "quantization", None)
+        return quant in valid_methods
 
     def debug_weight_snapshot(self, label=""):
         """Print a fingerprint of key model weights for debugging weight sync.
@@ -45,9 +47,9 @@ class WorkerWrap:
         - Weights that became NaN/Inf (corruption)
         - Weights that are all zeros (failed to load)
 
-        Only runs for MXFP4-quantized models (where weight sync is non-trivial).
+        Only runs for FP4-quantized models (where weight sync is non-trivial).
         """
-        if not self._is_mxfp4_quantized:
+        if not self._is_fp4_quantized:
             return
 
         import torch
@@ -60,16 +62,19 @@ class WorkerWrap:
         snapshot_names = []
         for name, param in model.named_parameters():
             # Sample: first layer's layernorm, first expert weight, embedding, lm_head
-            if any(k in name for k in [
-                "layers.0.input_layernorm.weight",
-                "layers.0.mlp.experts.w13_weight",
-                "layers.0.mlp.experts.w2_weight",
-                "layers.0.mlp.experts.w13_weight_scale",
-                "layers.0.mlp.experts.w13_bias",
-                "layers.0.attn.qkv_proj.weight",
-                "embedding.weight",
-                "lm_head.weight",
-            ]):
+            if any(
+                k in name
+                for k in [
+                    "layers.0.input_layernorm.weight",
+                    "layers.0.mlp.experts.w13_weight",
+                    "layers.0.mlp.experts.w2_weight",
+                    "layers.0.mlp.experts.w13_weight_scale",
+                    "layers.0.mlp.experts.w13_bias",
+                    "layers.0.attn.qkv_proj.weight",
+                    "embedding.weight",
+                    "lm_head.weight",
+                ]
+            ):
                 snapshot_names.append((name, param))
 
         for name, param in snapshot_names:
@@ -115,11 +120,7 @@ class WorkerWrap:
         # Identify MoE expert weight names (HF convention)
         is_gate_up = "gate_up_proj" in name
         is_down = "down_proj" in name
-        is_expert_weight = (
-            (is_gate_up or is_down)
-            and "_scale" not in name
-            and "bias" not in name
-        )
+        is_expert_weight = (is_gate_up or is_down) and "_scale" not in name and "bias" not in name
 
         if not is_expert_weight or weight.dtype not in (torch.bfloat16, torch.float16):
             yield name, weight
@@ -145,7 +146,11 @@ class WorkerWrap:
         # Use HF naming convention — vLLM's hf_to_vllm_mapper handles the rest:
         #   gate_up_proj → w13_weight, gate_up_proj_scales → w13_weight_scale
         #   down_proj → w2_weight, down_proj_scales → w2_weight_scale
-        scale_name = name.replace("gate_up_proj", "gate_up_proj_scales") if is_gate_up else name.replace("down_proj", "down_proj_scales")
+        scale_name = (
+            name.replace("gate_up_proj", "gate_up_proj_scales")
+            if is_gate_up
+            else name.replace("down_proj", "down_proj_scales")
+        )
 
         if not getattr(self, "_mxfp4_quantize_logged", False):
             print(
@@ -158,7 +163,81 @@ class WorkerWrap:
         yield name, packed_weight
         yield scale_name, packed_scales
 
-    def update_weight(self, name, dtype, shape, empty_cache=False, mxfp4_quantize_on_the_fly=False):
+    def _maybe_quantize_nvfp4_for_vllm(self, name, weight):
+        """If NVFP4 is active and this is a MoE expert weight, quantize bf16 → uint8.
+
+        Yields (name, tensor) pairs suitable for load_weights():
+          - For expert weights: yields packed uint8, E4M3 scales, and FP32 global scale
+          - For everything else: yields the original (name, weight) unchanged
+
+        The Actor stores expert weights as [E, in_features, out_features] in bf16.
+        The checkpoint expects [E, out_features, in_features] packed as uint8.
+        """
+        import torch
+
+        is_gate_up = "gate_up_proj" in name
+        is_down = "down_proj" in name
+        is_expert_weight = (is_gate_up or is_down) and "_scale" not in name and "bias" not in name
+
+        if not is_expert_weight or weight.dtype not in (torch.bfloat16, torch.float16):
+            yield name, weight
+            return
+
+        from openrlhf.utils.nvfp4_quantize import quantize_to_nvfp4
+
+        # Transpose: Actor [E, in, out] → checkpoint [E, out, in]
+        weight_t = weight.transpose(-1, -2).contiguous()
+
+        num_experts = weight_t.shape[0]
+        packed_list = []
+        scale_list = []
+        global_scale_list = []
+        for i in range(num_experts):
+            packed, scales, global_scale = quantize_to_nvfp4(weight_t[i], block_size=16)
+            packed_list.append(packed)
+            scale_list.append(scales)
+            global_scale_list.append(global_scale)
+
+        packed_weight = torch.stack(packed_list)
+        packed_scales = torch.stack(scale_list)
+        # global_scale is per-expert: [num_experts] or [num_experts, 1] depending on vLLM layout
+        global_scales = torch.stack(global_scale_list)
+
+        # Use HF naming convention — vLLM's hf_to_vllm_mapper handles the rest
+        scale_name = (
+            name.replace("gate_up_proj", "gate_up_proj_scales")
+            if is_gate_up
+            else name.replace("down_proj", "down_proj_scales")
+        )
+        global_scale_name = (
+            name.replace("gate_up_proj", "gate_up_proj_scales_2")
+            if is_gate_up
+            else name.replace("down_proj", "down_proj_scales_2")
+        )
+
+        if not getattr(self, "_nvfp4_quantize_logged", False):
+            print(
+                f"[NVFP4 Quantize] {name}: bf16 {list(weight.shape)} → "
+                f"uint8 packed {list(packed_weight.shape)}, "
+                f"scales {list(packed_scales.shape)}, "
+                f"global_scales {list(global_scales.shape)}"
+            )
+            self._nvfp4_quantize_logged = True
+
+        yield name, packed_weight
+        yield scale_name, packed_scales
+        yield global_scale_name, global_scales
+
+    def _dispatch_fp4_quantize(self, name, weight, fp4_format):
+        """Dispatch to the appropriate FP4 quantization based on format string."""
+        if fp4_format == "mxfp4":
+            yield from self._maybe_quantize_for_vllm(name, weight)
+        elif fp4_format == "nvfp4":
+            yield from self._maybe_quantize_nvfp4_for_vllm(name, weight)
+        else:
+            yield name, weight
+
+    def update_weight(self, name, dtype, shape, empty_cache=False, fp4_quantize_format=None):
         import torch
 
         """Broadcast weight to all vllm workers from source rank 0 (actor model)"""
@@ -174,8 +253,8 @@ class WorkerWrap:
         else:
             self._model_update_group.broadcast(weight, src=0, stream=torch.cuda.current_stream())
 
-        if mxfp4_quantize_on_the_fly:
-            for w_name, w_tensor in self._maybe_quantize_for_vllm(name, weight):
+        if fp4_quantize_format:
+            for w_name, w_tensor in self._dispatch_fp4_quantize(name, weight, fp4_quantize_format):
                 self.model_runner.model.load_weights(weights=[(w_name, w_tensor)])
         else:
             self.model_runner.model.load_weights(weights=[(name, weight)])
@@ -185,7 +264,9 @@ class WorkerWrap:
         # if empty_cache:
         #     torch.cuda.empty_cache()
 
-    def update_weight_cuda_ipc(self, name, dtype, shape, ipc_handles=None, empty_cache=False, mxfp4_quantize_on_the_fly=False):
+    def update_weight_cuda_ipc(
+        self, name, dtype, shape, ipc_handles=None, empty_cache=False, fp4_quantize_format=None
+    ):
         import torch
         from openrlhf.trainer.ray.utils import get_physical_gpu_id
 
@@ -203,8 +284,8 @@ class WorkerWrap:
         list_args[6] = device_id
         weight = func(*list_args)
 
-        if mxfp4_quantize_on_the_fly:
-            for w_name, w_tensor in self._maybe_quantize_for_vllm(name, weight):
+        if fp4_quantize_format:
+            for w_name, w_tensor in self._dispatch_fp4_quantize(name, weight, fp4_quantize_format):
                 self.model_runner.model.load_weights(weights=[(w_name, w_tensor)])
         else:
             self.model_runner.model.load_weights(weights=[(name, weight)])

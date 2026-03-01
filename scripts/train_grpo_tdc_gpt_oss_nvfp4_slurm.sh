@@ -1,39 +1,30 @@
 #!/bin/bash
 #
-# SLURM batch version of the Intern-S1 GRPO training script.
+# SLURM batch version of the GPT-OSS GRPO training script (NVFP4 variant).
+#
+# Uses NVFP4 quantization (NVIDIA FP4: block_size=16, E4M3 scales, per-tensor global scale)
+# instead of MXFP4 (OCP: block_size=32, E8M0 scales).
+#
+# Key differences from MXFP4 script:
+#   - NO VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8 (irrelevant for NVFP4)
+#   - NO --mxfp4_dequantize (model is plain bf16, not MXFP4-packed)
+#   - YES --vllm_quantization modelopt_fp4 (tells vLLM to use NVFP4 kernels)
+#   - YES --vllm_sync_fp4 nvfp4 (on-the-fly bf16->NVFP4 quantization during weight sync)
+#   - YES --qat_fp4 (NVFP4 fake-quantization during training via STE)
 #
 # Supports both colocated and distributed modes via MODE env var.
 #
-# Uses the Intern-S1 JSON tool-calling format:
-#   <|action_start|><|plugin|>{"name": "...", "parameters": {...}}<|action_end|>
-#
 # Usage:
 #   # Colocated (default):
-#   sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
+#   sbatch scripts/train_grpo_tdc_gpt_oss_nvfp4_slurm.sh
 #
 #   # Distributed:
-#   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
+#   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 sbatch scripts/train_grpo_tdc_gpt_oss_nvfp4_slurm.sh
 #
-# With smart replay (halved effective rollout batch size):
-#   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 SMART_REPLAY=1 COLO_EVAL_STEPS=32 EFFECTIVE_ROLLOUT_BATCH_SIZE=4 sbatch train_grpo_tdc_intern_s1_slurm.sh
-#   SMART_REPLAY=1 MULTI_STAGE_DISPATCH=1 COLO_EVAL_STEPS=24 sbatch train_grpo_tdc_intern_s1_slurm.sh
-# With curriculum balanced:
-#   CURRICULUM_BALANCED=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
-#
-# With both:
-#   SMART_REPLAY=1 CURRICULUM_BALANCED=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
-#  SMART_REPLAY=1 COLO_EVAL_STEPS=16 MULTI_STAGE_DISPATCH=1 EFFECTIVE_ROLLOUT_BATCH_SIZE=4
 # Feature flags (set via env before sbatch):
-#   MODE=colocated|distributed           # Default: colocated
-#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8       # Rollout batch size in distributed/async mode.
-#   EFFECTIVE_MINI_GRADIENT_STEPS=2     # Mini gradient steps in distributed/async mode.
-#   ASYNC_ADVANTAGE=4                   # Scale factor: colocated uses ASYNC_ADVANTAGE × EFFECTIVE_* for both
-#                                        # ROLLOUT and MINI, keeping ROLLOUT/MINI ratio constant across modes.
-#                                        # Reflects that colocated is synchronous and can afford more rollouts
-#                                        # before each update without the 1-step off-policy lag of async.
-#   COLO_EVAL_STEPS=32                  # Eval frequency (global steps) for colocated; distributed scales by ASYNC_ADVANTAGE.
-#   TOOL_VERSION=v4                      # Tool schema version (default: v4)
-#   SMART_REPLAY=1               # Enable smart replay with max_replay_rounds=5
+#   MODE=colocated|distributed   # Default: colocated
+#   TOOL_VERSION=v4              # Tool schema version (default: v4)
+#   SMART_REPLAY=1               # Enable smart replay with max_replay_rounds=2
 #   CURRICULUM_BALANCED=1        # Enable curriculum-balanced sampling
 #   MULTI_STAGE_DISPATCH=1       # Continuous-refill dispatch (best for 2-GPU setups)
 #   MAX_EPOCHS=2                 # Training epochs (default: 2)
@@ -41,18 +32,18 @@
 #
 
 ### SLURM PARAMETERS ###
-#SBATCH --job-name=grpo-tdc-s1
-#SBATCH --output=logs/grpo-tdc-s1_%j.out
-#SBATCH --error=logs/grpo-tdc-s1_%j.err
+#SBATCH --job-name=grpo-tdc-gptoss-nvfp4
+#SBATCH --output=logs/grpo-tdc-gptoss-nvfp4_%j.out
+#SBATCH --error=logs/grpo-tdc-gptoss-nvfp4_%j.err
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
-#SBATCH --gpus=4
+#SBATCH --qos=normal
+#SBATCH --gpus=2
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=1024G
-#SBATCH --cpus-per-gpu=24
-#SBATCH --time=0-24:00:00
+#SBATCH --mem=768G
 #SBATCH --sockets-per-node=1
-#SBATCH --account=myatskar-lab
+#SBATCH --cpus-per-gpu=12
+#SBATCH --time=00-1:00:00
 
 ### PARCC PARAMETERS ###
 export OMP_NUM_THREADS=16
@@ -68,10 +59,10 @@ export NCCL_ASYNC_ERROR_HANDLING=1
 export NCCL_BLOCKING_WAIT=1
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
-### BEGIN BATCH SCRIPT ###
+### ENVIRONMENT SETUP ###
 module load MAMBA
-module load cuda/13.1.0
-export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern"
+module load cuda/12.8.1
+export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/openrlhf"
 
 ############################
 #        TASK SCRIPT       #
@@ -79,21 +70,20 @@ export CONDA_ENV_PATH="/vast/projects/myatskar/design-documents/conda_env/open_r
 run_task() {
     set -euo pipefail
     export DS_SKIP_CUDA_CHECK=1
+    # NOTE: No VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8 — that flag is MXFP4-only.
+    # NVFP4 uses its own kernel backend (select_nvfp4_moe_backend) automatically.
+
     # Prevent corrupted torch inductor cache from crashing vLLM compilation.
-    # We nuke any leftover default-location cache from prior runs.
     rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ ~/.cache/vllm/torch_compile_cache/ 2>/dev/null || true
 
     ### ARGS (override via env before sbatch) ###
-    PRETRAIN_PATH="${PRETRAIN_PATH:-jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05}"
+    PRETRAIN_PATH="${PRETRAIN_PATH:-2imi9/gpt-oss-20B-NVFP4A16-BF16}"
     LEARNING_RATE="${LEARNING_RATE:-1e-6}"
     DEBUG_TRACES="${DEBUG_TRACES:-0}"
     NUM_GPUS=$SLURM_GPUS_ON_NODE
 
     ### FEATURE FLAGS ###
     MODE="${MODE:-colocated}"
-    EFFECTIVE_ROLLOUT_BATCH_SIZE="${EFFECTIVE_ROLLOUT_BATCH_SIZE:-8}"
-    EFFECTIVE_MINI_GRADIENT_STEPS="${EFFECTIVE_MINI_GRADIENT_STEPS:-2}"
-    ASYNC_ADVANTAGE="${ASYNC_ADVANTAGE:-4}"
     TOOL_VERSION="${TOOL_VERSION:-v4}"
     SMART_REPLAY="${SMART_REPLAY:-0}"
     MULTI_STAGE_DISPATCH="${MULTI_STAGE_DISPATCH:-0}"
@@ -104,34 +94,36 @@ run_task() {
     ### UNIFIED CONSTANTS ###
     AGENT_MAX_STEPS=30
     ZERO_STAGE=2
-    PROMPT_MAX_LEN=12288 # Any responses longer than this will be truncated.
-    N_SAMPLES_PER_PROMPT=12
-    TRAIN_MAX_TOKENS_PER_GPU=32768 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
-    ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.75" | bc | awk '{print int($1)}')
-
-    COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-32}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
+    PROMPT_MAX_LEN=8192
+    N_SAMPLES_PER_PROMPT=8
 
     ### MODE-DEPENDENT DEFAULTS ###
     if [ "$MODE" = "colocated" ]; then
         ACTOR_GPUS="${ACTOR_GPUS:-$NUM_GPUS}"
         VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
-        ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-$(( EFFECTIVE_ROLLOUT_BATCH_SIZE * ASYNC_ADVANTAGE ))}" # This decides how many prompts are used for each rollout.
-        MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))}" # This decides how many mini gradient updates are used per rollout; Rollout_batch_size * N_samples_per_prompt / Mini_gradient_steps = number of trajectories used for each gradient update.
-        MICRO_TRAIN_BATCH_SIZE=4 # The larger the micro_train_batch_size, the more memory and less gradient accumulation steps for backwards pass.
-        MICRO_ROLLOUT_BATCH_SIZE=8 # ^ but for forwards pass. These two parameters are overridden, however, by default since we use dynamic batching.
-        VLLM_GPU_MEM_UTIL=0.81
+        ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-32}"
+        MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-8}"
+        MICRO_TRAIN_BATCH_SIZE=1
+        MICRO_ROLLOUT_BATCH_SIZE=2
+        VLLM_GPU_MEM_UTIL=0.725
         VLLM_SYNC_BACKEND=nccl
-        EVAL_STEPS="${EVAL_STEPS:-$COLO_EVAL_STEPS}"
+        EVAL_STEPS="${EVAL_STEPS:-32}"
+        TRAIN_MAX_TOKENS_PER_GPU=6144
+        ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 3" | bc | awk '{print int($1)}')
+
     elif [ "$MODE" = "distributed" ]; then
         ACTOR_GPUS="${ACTOR_GPUS:?"MODE=distributed requires ACTOR_GPUS"}"
         VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:?"MODE=distributed requires VLLM_NUM_ENGINES"}"
-        ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-$EFFECTIVE_ROLLOUT_BATCH_SIZE}" # Distributed uses the effective value directly; smaller than colocated to be more on-policy (only 1-step async lag).
-        MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-$EFFECTIVE_MINI_GRADIENT_STEPS}" # Fewer mini gradient steps to match; ROLLOUT/MINI ratio is identical to colocated, same total gradient steps.
+        ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-8}"
+        MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-2}"
         MICRO_TRAIN_BATCH_SIZE=1
         MICRO_ROLLOUT_BATCH_SIZE=2
-        VLLM_GPU_MEM_UTIL=0.975
+        VLLM_GPU_MEM_UTIL=0.96
         VLLM_SYNC_BACKEND=gloo
-        EVAL_STEPS="${EVAL_STEPS:-$(( COLO_EVAL_STEPS * ASYNC_ADVANTAGE ))}" # Distributed takes ASYNC_ADVANTAGE more global steps per colocated step, so scale eval frequency accordingly.
+        COLO_ROLLOUT=32; COLO_EVAL=32
+        EVAL_STEPS="${EVAL_STEPS:-$(( COLO_EVAL * COLO_ROLLOUT / ROLLOUT_BATCH_SIZE ))}"
+        TRAIN_MAX_TOKENS_PER_GPU=8192
+        ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')
     else
         echo "Error: MODE must be 'colocated' or 'distributed', got '$MODE'" >&2
         exit 1
@@ -139,6 +131,12 @@ run_task() {
 
     ### BATCH SIZE DERIVATION ###
     TRAIN_BATCH_SIZE=$(( ROLLOUT_BATCH_SIZE * N_SAMPLES_PER_PROMPT / MINI_GRADIENT_STEPS ))
+
+    # Assert ratio invariant
+    COLO_ROLLOUT=32; COLO_MINI=8; DIST_ROLLOUT=8; DIST_MINI=2
+    if [ $(( COLO_ROLLOUT * DIST_MINI )) -ne $(( DIST_ROLLOUT * COLO_MINI )) ]; then
+        echo "Error: rollout/mini_gradient_steps ratio mismatch" >&2; exit 1
+    fi
 
     ### GPU CHECK (distributed only) ###
     if [ "$MODE" = "distributed" ]; then
@@ -151,24 +149,20 @@ run_task() {
         LAYOUT_TAG="${ACTOR_GPUS}a${VLLM_GPUS}v"
     fi
 
-    ### AUTOTP (when distributed and ACTOR_GPUS > 1) ###
-    AUTOTP_FLAGS=""
-    if [ "$MODE" = "distributed" ] && [ "$ACTOR_GPUS" -gt 1 ]; then
-        AUTOTP_FLAGS="--ring_attn_size 1 --ring_head_stride 8 --ds_tensor_parallel_size $ACTOR_GPUS"
-    fi
-
     ### MODE FLAGS ###
     if [ "$MODE" = "colocated" ]; then
-        MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep"
+        MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep --adam_offload"
     else
         MODE_FLAGS="--async_train --async_queue_size 1 --adam_offload"
     fi
 
     ### WARMUP LOGIC ###
     WARMUP_STEPS=20
-    # Given the ratio invariant, WARM_STEPS_MULTIPLIER = MINI * (EFFECTIVE_ROLLOUT * ASYNC_ADVANTAGE) / ROLLOUT
-    # = EFFECTIVE_MINI * ASYNC_ADVANTAGE in both modes.
-    WARM_STEPS_MULTIPLIER=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
+    WARM_STEPS_MULTIPLIER=$(( MINI_GRADIENT_STEPS * COLO_ROLLOUT / ROLLOUT_BATCH_SIZE ))
+    if [ "$WARM_STEPS_MULTIPLIER" -ne 8 ]; then
+        echo "Error: WARM_STEPS_MULTIPLIER should amount to 8 currently regardless of mode." >&2
+        exit 1
+    fi
 
     ### MULTI-TASK ###
     TASK_NAMES=(BBB_Martins)
@@ -191,7 +185,7 @@ run_task() {
     fi
 
     ### DATA ###
-    DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format"
+    DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_gpt_oss"
     mkdir -p "$PROJECT_ROOT/logs"
 
     TRAIN_PARTS=()
@@ -210,16 +204,16 @@ run_task() {
     ### RUN CONFIG ###
     N_TASKS=${#TASK_NAMES[@]}
     DATE_TAG=$(date +%m%d_%H%M)
-    CHAT_PROTOCOL="intern_s1"
+    CHAT_PROTOCOL="gpt_oss"
     if [ "$MODE" = "colocated" ]; then
-        RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
-        WANDB_GROUP="TDC-InternS1-colo-$TASK_LABEL"
+        RUN_NAME="grpo-tdc-gptoss-nvfp4-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-colo-${DATE_TAG}"
+        WANDB_GROUP="TDC-GPTOss-NVFP4-colo-$TASK_LABEL"
     else
-        RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-dist-${LAYOUT_TAG}-${DATE_TAG}"
-        WANDB_GROUP="TDC-InternS1-dist-${LAYOUT_TAG}-$TASK_LABEL"
+        RUN_NAME="grpo-tdc-gptoss-nvfp4-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-dist-${LAYOUT_TAG}-${DATE_TAG}"
+        WANDB_GROUP="TDC-GPTOss-NVFP4-dist-${LAYOUT_TAG}-$TASK_LABEL"
     fi
     RUN_ID="${RUN_NAME}"
-    HUB_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
+    HUB_NAME="grpo-tdc-gptoss-nvfp4-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
     RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}"
     mkdir -p "$RUNS_DIR"
     SAVE_PATH="$PROJECT_ROOT/saves/tdc/$RUN_NAME"
@@ -262,18 +256,15 @@ run_task() {
         find "$real/logs" -type f -size +0c 2>/dev/null | head -n 20 || true
         echo "Top non-empty logs (dest):"
         find "$PERSIST_RAY_DIR/session_latest/logs" -type f -size +0c 2>/dev/null | head -n 20 || true
-
-        rm -rf "/tmp/triton_${USER}_${SLURM_JOB_ID}" "/tmp/torchinductor_${USER}_${SLURM_JOB_ID}" 2>/dev/null || true
     }
     trap copy_ray_logs EXIT
 
     ### ENVIRONMENT VARIABLES ###
-    export TRITON_CACHE_DIR="/tmp/triton_${USER}_${SLURM_JOB_ID}"
-    export TORCHINDUCTOR_CACHE_DIR="/tmp/torchinductor_${USER}_${SLURM_JOB_ID}"
-    mkdir -p "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR"
+    export TRITON_CACHE_DIR="/tmp/triton_${USER}"
+    mkdir -p "$TRITON_CACHE_DIR"
 
     export VLLM_NO_USAGE_STATS=1
-    export VLLM_DISABLE_TELEMETRY=1
+    export VLLM_ALLOW_INSECURE_SERIALIZATION=1
 
     export OPENRLHF_MODEL_PATH="$PRETRAIN_PATH"
     export OPENRLHF_CHAT_PROTOCOL="$CHAT_PROTOCOL"
@@ -305,12 +296,13 @@ run_task() {
 
     ### PRINT CONFIG ###
     echo "========================================"
-    echo "TDC GRPO Training — Intern-S1-mini (MODE=$MODE, SLURM BATCH)"
+    echo "TDC GRPO Training — GPT-OSS NVFP4 (MODE=$MODE, SLURM BATCH)"
     echo "========================================"
     echo "SLURM Job ID: $SLURM_JOB_ID"
     echo "Tasks: ${TASK_NAMES[*]}"
     echo "Model: $PRETRAIN_PATH"
     echo "Chat Protocol: $CHAT_PROTOCOL"
+    echo "Quantization: NVFP4 (modelopt_fp4)"
     echo "Learning Rate: $LEARNING_RATE"
     echo "Run ID: $RUN_ID"
     echo "----------------------------------------"
@@ -326,9 +318,6 @@ run_task() {
     echo "TRAIN_BATCH_SIZE: $TRAIN_BATCH_SIZE"
     echo "VLLM_NUM_ENGINES: $VLLM_NUM_ENGINES"
     echo "EVAL_STEPS: $EVAL_STEPS"
-    if [ -n "$AUTOTP_FLAGS" ]; then
-        echo "AutoTP: $AUTOTP_FLAGS"
-    fi
     echo "----------------------------------------"
     echo "Agent Max Steps: $AGENT_MAX_STEPS"
     echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
@@ -338,6 +327,7 @@ run_task() {
     echo "----------------------------------------"
     echo "Smart Replay: $SMART_REPLAY"
     echo "Curriculum Balanced: $CURRICULUM_BALANCED"
+    echo "Multi Stage Dispatch: $MULTI_STAGE_DISPATCH"
     echo "Tool Version: $TOOL_VERSION"
     echo "----------------------------------------"
     echo "Runs Dir: $RUNS_DIR"
@@ -391,6 +381,9 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --actor_num_gpus_per_node $ACTOR_GPUS \
         --vllm_num_engines $VLLM_NUM_ENGINES \
         --vllm_tensor_parallel_size 1 \
+        --reduce_cuda_graph \
+        --kv_cache_dtype fp8 \
+        --max_num_batched_tokens 8192 \
         --vllm_gpu_memory_utilization $VLLM_GPU_MEM_UTIL \
         --advantage_estimator $ADVANTAGE_ESTIMATOR \
         --init_kl_coef 0 \
@@ -409,7 +402,6 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --prompt_max_len $PROMPT_MAX_LEN \
         --generate_max_len 2048 \
         --max_samples 1000000 \
-        --enable_prefix_caching \
         --zero_stage $ZERO_STAGE \
         --param_dtype bf16 \
         --actor_learning_rate $LEARNING_RATE \
@@ -430,7 +422,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --temperature $TEMPERATURE \
         --agent_func_path "$AGENT_FUNC_PATH" \
         --agent_max_steps $AGENT_MAX_STEPS \
-        --vllm_stop_strings "<|action_end|>" "<|im_end|>" \
+        --vllm_stop_strings "<|return|>" "<|call|>" \
         --chat_protocol "$CHAT_PROTOCOL" \
         --use_wandb 1 \
         --wandb_project "$WANDB_PROJECT" \
@@ -439,15 +431,17 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --save_path "$SAVE_PATH" \
         --push_to_hub "$HUB_REPO_ID" \
         --delete_local_after_push \
-        --use_liger_kernel \
         --use_dynamic_batch \
         --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
         --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \
+        --vllm_quantization modelopt_fp4 \
+        --vllm_sync_fp4 nvfp4 \
+        --qat_fp4 \
         --constant_lr_with_warm_up \
+        --skip_eval_step_zero \
         --warmup_steps $WARMUP_STEPS \
         --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
         $MODE_FLAGS \
-        $AUTOTP_FLAGS \
         $OPTIONAL_FLAGS \
         $EXTRA_ARGS
 

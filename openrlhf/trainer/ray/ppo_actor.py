@@ -537,14 +537,14 @@ class ActorPPOTrainer(ABC):
                     if (self.strategy.args.zero_stage == 3 and hasattr(param, "ds_shape"))
                     else param.shape
                 )
-                mxfp4_flag = getattr(self.strategy.args, "vllm_sync_mxfp4", False)
+                fp4_format = getattr(self.strategy.args, "vllm_sync_fp4", None)
                 refs = [
                     engine.update_weight.remote(
                         name,
                         dtype=param.dtype,
                         shape=shape,
                         empty_cache=count == num_params,
-                        mxfp4_quantize_on_the_fly=mxfp4_flag,
+                        fp4_quantize_format=fp4_format,
                     )
                     for engine in self.vllm_engines
                 ]
@@ -577,7 +577,7 @@ class ActorPPOTrainer(ABC):
                     if (self.strategy.args.zero_stage == 3 and hasattr(param, "ds_shape"))
                     else param.shape
                 )
-                mxfp4_flag = getattr(self.strategy.args, "vllm_sync_mxfp4", False)
+                fp4_format = getattr(self.strategy.args, "vllm_sync_fp4", None)
                 refs = [
                     engine.update_weight_cuda_ipc.remote(
                         name,
@@ -585,7 +585,7 @@ class ActorPPOTrainer(ABC):
                         shape=shape,
                         ipc_handles=ipc_handles,
                         empty_cache=count == num_params,
-                        mxfp4_quantize_on_the_fly=mxfp4_flag,
+                        fp4_quantize_format=fp4_format,
                     )
                     for engine in self.vllm_engines
                 ]
@@ -594,7 +594,7 @@ class ActorPPOTrainer(ABC):
 
         # Initialize layerwise reload on vLLM workers before syncing weights.
         # This prepares the model for deferred per-layer processing.
-        if getattr(self.strategy.args, "vllm_sync_mxfp4", False) and torch.distributed.get_rank() == 0:
+        if getattr(self.strategy.args, "vllm_sync_fp4", None) and torch.distributed.get_rank() == 0:
             init_refs = [engine.initialize_weight_reload.remote() for engine in self.vllm_engines]
             ray.get(init_refs)
 
@@ -630,7 +630,7 @@ class ActorPPOTrainer(ABC):
 
         # After all weights are synced, trigger post-load processing
         # (MXFP4 swizzling, kernel prep, etc.) via vLLM's canonical API.
-        if getattr(self.strategy.args, "vllm_sync_mxfp4", False) and torch.distributed.get_rank() == 0:
+        if getattr(self.strategy.args, "vllm_sync_fp4", None) and torch.distributed.get_rank() == 0:
             post_sync_refs = [engine.post_weight_sync.remote() for engine in self.vllm_engines]
             ray.get(post_sync_refs)
 
@@ -670,6 +670,8 @@ class PolicyModelActor(BaseModelActor):
             use_liger_kernel=strategy.args.use_liger_kernel,
             mxfp4_dequantize=getattr(strategy.args, "mxfp4_dequantize", False),
             qat_mxfp4=getattr(strategy.args, "qat_mxfp4", False),
+            qat_fp4=getattr(strategy.args, "qat_fp4", False),
+            vllm_sync_fp4=getattr(strategy.args, "vllm_sync_fp4", None),
         )
         strategy.print(actor)
 

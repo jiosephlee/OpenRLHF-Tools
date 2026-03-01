@@ -76,6 +76,7 @@ def train(args):
             reduce_cuda_graph=args.reduce_cuda_graph,
             kv_cache_dtype=args.kv_cache_dtype,
             max_num_batched_tokens=args.max_num_batched_tokens,
+            vllm_quantization=args.vllm_quantization,
         )
 
     actor_model = RayActorGroup(
@@ -382,24 +383,42 @@ if __name__ == "__main__":
         "--mxfp4_dequantize",
         action="store_true",
         default=False,
-        help="Use Mxfp4Config(dequantize=True) for GPT-OSS models. Forces eager attention.",
+        help="Use Mxfp4Config(dequantize=True) for MXFP4-packed GPT-OSS checkpoints. Forces eager attention.",
     )
     parser.add_argument(
-        "--vllm_sync_mxfp4",
-        action="store_true",
-        default=False,
-        help="Quantize bf16 actor weights to MXFP4 on the fly during vLLM weight synchronization.",
+        "--vllm_sync_fp4",
+        type=str,
+        default=None,
+        choices=["mxfp4", "nvfp4"],
+        help=(
+            "Quantize bf16 actor weights to FP4 on the fly during vLLM weight sync. "
+            "'mxfp4': OCP MXFP4 (block=32, E8M0 scales). "
+            "'nvfp4': NVIDIA NVFP4 (block=16, E4M3 scales, per-tensor global scale)."
+        ),
     )
     parser.add_argument(
-        "--qat_mxfp4",
+        "--qat_fp4",
         action="store_true",
         default=False,
         help=(
-            "Enable MXFP4 QAT: during actor forward passes, expert weights are "
-            "fake-quantized (bf16 -> nearest MXFP4 value -> bf16) via STE. "
-            "Requires --mxfp4_dequantize."
+            "Enable FP4 QAT: during actor forward passes, expert weights are "
+            "fake-quantized (bf16 -> nearest FP4 value -> bf16) via STE. "
+            "Uses the format from --vllm_sync_fp4 (mxfp4 or nvfp4). "
+            "For mxfp4, also requires --mxfp4_dequantize."
         ),
     )
+    parser.add_argument(
+        "--vllm_quantization",
+        type=str,
+        default=None,
+        help=(
+            "Quantization method to pass to vLLM engine (e.g., 'modelopt_fp4' for NVFP4). "
+            "If not set, vLLM auto-detects from the model's quantization_config."
+        ),
+    )
+    # Backward compat aliases (deprecated, use --vllm_sync_fp4 and --qat_fp4)
+    parser.add_argument("--vllm_sync_mxfp4", action="store_true", default=False, help="Deprecated: use --vllm_sync_fp4 mxfp4")
+    parser.add_argument("--qat_mxfp4", action="store_true", default=False, help="Deprecated: use --qat_fp4")
     parser.add_argument("--lora_rank", type=int, default=0)
     parser.add_argument("--lora_alpha", type=int, default=16)
     parser.add_argument("--target_modules", type=str, nargs="*", default="all-linear")
@@ -628,6 +647,14 @@ if __name__ == "__main__":
     parser.add_argument("--use_ms", action="store_true", default=False)
 
     args = parser.parse_args()
+
+    # Resolve backward-compat FP4 aliases
+    if args.vllm_sync_mxfp4 and args.vllm_sync_fp4 is None:
+        args.vllm_sync_fp4 = "mxfp4"
+    if args.qat_mxfp4 and not args.qat_fp4:
+        args.qat_fp4 = True
+        if args.vllm_sync_fp4 is None:
+            args.vllm_sync_fp4 = "mxfp4"
 
     # Validate arguments
     if args.eps_clip_low_high is None:

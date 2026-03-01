@@ -150,16 +150,16 @@ class LLMRayActor:
             args=(master_address, master_port, rank_offset, world_size, group_name, backend, use_ray),
         )
 
-    async def update_weight(self, name, dtype, shape, empty_cache=False, mxfp4_quantize_on_the_fly=False):
+    async def update_weight(self, name, dtype, shape, empty_cache=False, fp4_quantize_format=None):
         return await self.llm.collective_rpc(
             "update_weight",
-            args=(name, dtype, shape, empty_cache, mxfp4_quantize_on_the_fly),
+            args=(name, dtype, shape, empty_cache, fp4_quantize_format),
         )
 
-    async def update_weight_cuda_ipc(self, name, dtype, shape, ipc_handles, empty_cache=False, mxfp4_quantize_on_the_fly=False):
+    async def update_weight_cuda_ipc(self, name, dtype, shape, ipc_handles, empty_cache=False, fp4_quantize_format=None):
         return await self.llm.collective_rpc(
             "update_weight_cuda_ipc",
-            args=(name, dtype, shape, ipc_handles, empty_cache, mxfp4_quantize_on_the_fly),
+            args=(name, dtype, shape, ipc_handles, empty_cache, fp4_quantize_format),
         )
 
     async def initialize_weight_reload(self):
@@ -299,6 +299,7 @@ def create_vllm_engines(
     reduce_cuda_graph: bool = False,
     kv_cache_dtype: str = "auto",
     max_num_batched_tokens: Optional[int] = None,
+    vllm_quantization: Optional[str] = None,
 ):
     """Spin up a set of vLLM Ray actors with consistent placement."""
     vllm_engines = []
@@ -344,6 +345,9 @@ def create_vllm_engines(
             "enable_sleep_mode": vllm_enable_sleep,
             "kv_cache_dtype": kv_cache_dtype,
         }
+
+        if vllm_quantization is not None:
+            actor_kwargs["quantization"] = vllm_quantization
 
         if max_num_batched_tokens is not None:
             actor_kwargs["max_num_batched_tokens"] = max_num_batched_tokens

@@ -5,7 +5,6 @@
 # Supports all quantization modes via env vars:
 #   QUANT_METHOD=mxfp4 (default) — MXFP4 QAT + FlashInfer MoE kernel
 #   QUANT_METHOD=nvfp4            — NVFP4 QAT + NVIDIA kernel backend
-#   DEQUANT=hf                    — Dequantize MXFP4 checkpoint via HF transformers
 #   DEQUANT=unsloth               — Load pre-converted BF16 model (no quant flags)
 #
 # When DEQUANT is set, QUANT_METHOD is ignored.
@@ -22,9 +21,6 @@
 #   # NVFP4 QAT:
 #   QUANT_METHOD=nvfp4 sbatch scripts/train_grpo_tdc_gpt_oss_slurm.sh
 #
-#   # HF dequantize only:
-#   DEQUANT=hf sbatch scripts/train_grpo_tdc_gpt_oss_slurm.sh
-#
 #   # Unsloth BF16:
 #   DEQUANT=unsloth sbatch scripts/train_grpo_tdc_gpt_oss_slurm.sh
 #
@@ -34,7 +30,7 @@
 # Feature flags (set via env before sbatch):
 #   MODE=colocated|distributed           # Default: colocated
 #   QUANT_METHOD=mxfp4|nvfp4             # FP4 format (default: mxfp4, ignored when DEQUANT set)
-#   DEQUANT=hf|unsloth                   # Skip quantization, run in BF16
+#   DEQUANT=unsloth                       # Skip quantization, run in BF16
 #   EFFECTIVE_ROLLOUT_BATCH_SIZE=8       # Rollout batch size in distributed/async mode
 #   EFFECTIVE_MINI_GRADIENT_STEPS=2      # Mini gradient steps in distributed/async mode
 #   ASYNC_ADVANTAGE=4                    # Scale factor: colocated uses ASYNC_ADVANTAGE * EFFECTIVE_* for both
@@ -92,10 +88,10 @@ DEQUANT="${DEQUANT:-}"
 if [ -n "$DEQUANT" ]; then
     # BF16 dequantized mode — no FP4 sync/QAT
     case "$DEQUANT" in
-        hf|unsloth)
+        unsloth)
             ;;
         *)
-            echo "Error: DEQUANT must be 'hf' or 'unsloth', got '$DEQUANT'" >&2
+            echo "Error: DEQUANT must be 'unsloth', got '$DEQUANT'" >&2
             exit 1
             ;;
     esac
@@ -134,11 +130,6 @@ run_task() {
 
     if [ -n "$DEQUANT" ]; then
         case "$DEQUANT" in
-            hf)
-                PRETRAIN_PATH="${PRETRAIN_PATH:-openai/gpt-oss-20b}"
-                QUANT_FLAGS="--mxfp4_dequantize"
-                QUANT_LABEL="dequant-hf"
-                ;;
             unsloth)
                 PRETRAIN_PATH="${PRETRAIN_PATH:-unsloth/gpt-oss-20b-BF16}"
                 QUANT_FLAGS=""
@@ -150,7 +141,7 @@ run_task() {
             mxfp4)
                 PRETRAIN_PATH="${PRETRAIN_PATH:-openai/gpt-oss-20b}"
                 QUANT_FLAGS="--mxfp4_dequantize --vllm_sync_fp4 mxfp4"
-                export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
+                # export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
                 QUANT_LABEL="mxfp4"
                 ;;
             nvfp4)

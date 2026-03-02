@@ -56,11 +56,13 @@
 #SBATCH --error=logs/grpo-tdc-s1_%j.err
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
-#SBATCH --gpus=8
+#SBATCH --gpus=4
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=1536G
-#SBATCH --cpus-per-gpu=18
-#SBATCH --time=0-8:00:00
+#SBATCH --gres-flags=enforce-binding
+#SBATCH --mem=1024G
+#SBATCH --cpus-per-gpu=16
+#SBATCH --sockets-per-node=1
+#SBATCH --time=0-24:00:00
 #SBATCH --account=myatskar-lab
 
 ### PARCC PARAMETERS ###

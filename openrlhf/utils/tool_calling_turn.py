@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import re
+import time
 import torch
 from typing import Any, Callable, Dict, Optional
 
@@ -96,7 +97,11 @@ class ToolCallingTurn(AgentInstanceBase):
             results = await asyncio.gather(*[self._execute_tool(tc) for tc in tool_calls])
             tool_msgs = []
             extra_logs = base_logs.copy()
-            for tc, result in zip(tool_calls, results):
+            # Timing stats: each result carries its own duration
+            durations = [r[1] for r in results]
+            extra_logs["tool_time_total"] = sum(durations)
+            extra_logs["tool_time_max_call"] = max(durations)
+            for tc, (result, dur) in zip(tool_calls, results):
                 tool_name = tc.get("name", "")
                 tool_msgs.append({"name": tool_name, "content": result})
                 if tool_name:
@@ -129,28 +134,31 @@ class ToolCallingTurn(AgentInstanceBase):
     # Private helpers
     # ------------------------------------------------------------------
 
-    async def _execute_tool(self, tool_call: Dict[str, Any]) -> str:
+    async def _execute_tool(self, tool_call: Dict[str, Any]) -> tuple:
+        """Execute a tool call and return (result_json, duration_seconds)."""
         tool_name = tool_call.get("name", "")
         arguments = tool_call.get("arguments", {})
 
+        t0 = time.monotonic()
         if tool_name not in self.tools:
-            return json.dumps({
+            result = json.dumps({
                 "error": f"Unknown tool: {tool_name}",
                 "available_tools": list(self.tools.keys()),
             })
-        try:
-            result = self.tools[tool_name](**arguments)
-            return json.dumps({
-                "result": result,
-                "function_name": tool_name,
-                "arguments": arguments,
-            })
-        except Exception as e:
-            return json.dumps({
-                "error": str(e),
-                "function_name": tool_name,
-                "arguments": arguments,
-            })
+        else:
+            try:
+                result = json.dumps({
+                    "result": self.tools[tool_name](**arguments),
+                    "function_name": tool_name,
+                    "arguments": arguments,
+                })
+            except Exception as e:
+                result = json.dumps({
+                    "error": str(e),
+                    "function_name": tool_name,
+                    "arguments": arguments,
+                })
+        return result, time.monotonic() - t0
 
     _ANSWER_RE = re.compile(r"Answer\s*:\s*\(?\s*([A-Za-z])\s*\)?")
     _PAREN_ANSWER_RE = re.compile(r"\(\s*([A-Za-z])\s*\)")

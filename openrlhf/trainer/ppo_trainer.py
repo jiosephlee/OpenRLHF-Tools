@@ -414,6 +414,8 @@ class BasePPOTrainer(ABC):
         except Exception:
             pass
 
+        self._empty_all_model_caches()
+
     def train_step(self, rollout_samples, global_step: int) -> Tuple[Dict, int]:
         # Strip tool_count__* keys from rollout samples before they enter the
         # training pipeline.  These per-tool counters are sparse (each sample
@@ -541,6 +543,21 @@ class BasePPOTrainer(ABC):
 
         # NOTE: We keep vLLM in weights-only state after weight sync.
         # KV cache will be woken up before generation in SamplesGenerator.
+
+    def _empty_all_model_caches(self) -> None:
+        """Force PyTorch caching allocator to release memory back to CUDA/OS
+        before the next vLLM wake_up cycle. gc.collect() on the controller
+        triggers destruction of tensors on PyTorch workers, putting memory
+        into the PyTorch cache but not the OS natively.
+        """
+        refs = self.actor_model_group.async_run_method(method_name="empty_cache")
+        if getattr(self, "critic_model_group", None) is not None:
+            refs.extend(self.critic_model_group.async_run_method(method_name="empty_cache"))
+        if getattr(self, "reference_model_group", None) is not None:
+            refs.extend(self.reference_model_group.async_run_method(method_name="empty_cache"))
+        if getattr(self, "reward_model_group", None) is not None:
+            refs.extend(self.reward_model_group.async_run_method(method_name="empty_cache"))
+        ray.get(refs)
 
     def save_logs_and_checkpoints(self, global_step: int, logs_dict=None, client_states=None) -> None:
         logs_dict = logs_dict or {}
@@ -740,6 +757,8 @@ class PPOTrainer(BasePPOTrainer):
                 except Exception:
                     pass
 
+                self._empty_all_model_caches()
+
             # Log episode stats for this replay round.
             if self.wandb_logger:
                 self.wandb_logger.log_episode(
@@ -898,6 +917,8 @@ class PPOTrainer(BasePPOTrainer):
                     ctypes.CDLL("libc.so.6").malloc_trim(0)
                 except Exception:
                     pass
+
+                self._empty_all_model_caches()
 
             # --- Save discarded prompts for offline analysis ---
             self.samples_generator.save_discarded_indices(episode)

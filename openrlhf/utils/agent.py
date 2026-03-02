@@ -113,11 +113,15 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
             final_scores = step_result.get("scores", total_reward)
             environment_feedback_text = step_result["environment_feedback"]
             done = step_result["done"]
-            # Accumulate extra_logs across turns (sum numeric values)
+            # Accumulate extra_logs across turns (sum numeric values,
+            # except keys ending in _max_call which use max).
             step_extra = step_result.get("extra_logs", {})
             for k, v in step_extra.items():
                 if isinstance(v, (int, float)):
-                    extra_logs[k] = extra_logs.get(k, 0) + v
+                    if k.endswith("_max_call"):
+                        extra_logs[k] = max(extra_logs.get(k, 0), v)
+                    else:
+                        extra_logs[k] = extra_logs.get(k, 0) + v
                 else:
                     extra_logs[k] = v
             if _DEBUG_TRACES and log_trajectory:
@@ -164,6 +168,12 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
 
             if done:
                 break
+
+        # Compute per-call average from totals (sum-based accumulation
+        # of per-turn averages would be meaningless).
+        total_calls = extra_logs.get("tool_call_count", 0)
+        if total_calls > 0 and "tool_time_total" in extra_logs:
+            extra_logs["tool_time_avg"] = extra_logs["tool_time_total"] / total_calls
 
         # Store the final response when agent execution is complete
         final_response = {

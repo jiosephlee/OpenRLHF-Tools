@@ -17,6 +17,29 @@ from openrlhf.trainer.ray.ppo_critic import CriticModelActor
 from openrlhf.utils import get_strategy
 
 
+def _strip_quantization_config(pretrain_path: str) -> None:
+    """Remove quantization_config from config.json in-place.
+
+    Dequantized checkpoints have BF16 weights but stale quantization_config
+    metadata, which causes vLLM to misroute to _load_weights_mxfp4.
+    """
+    config_path = os.path.join(pretrain_path, "config.json")
+    if not os.path.isfile(config_path):
+        return
+
+    with open(config_path, "r") as f:
+        config = json.load(f)
+
+    if "quantization_config" not in config:
+        return
+
+    del config["quantization_config"]
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
+
+    print(f"[mxfp4_dequantize] Stripped quantization_config from {config_path}")
+
+
 def train(args):
     # initialize ray if not initialized
     if not ray.is_initialized():
@@ -39,6 +62,12 @@ def train(args):
         bundles = [{"GPU": 1, "CPU": 1} for _ in range(args.actor_num_nodes * args.actor_num_gpus_per_node)]
         pg = placement_group(bundles, strategy="PACK")
         ray.get(pg.ready())
+
+    # When using HF dequantization (--mxfp4_dequantize), the checkpoint's
+    # config.json still has quantization_config which causes vLLM to route
+    # to _load_weights_mxfp4 instead of the normal BF16 loader. Strip it.
+    if getattr(args, "mxfp4_dequantize", False) and not getattr(args, "vllm_sync_fp4", None):
+        _strip_quantization_config(args.pretrain)
 
     # init vLLM engine for text generation
     vllm_engines = None

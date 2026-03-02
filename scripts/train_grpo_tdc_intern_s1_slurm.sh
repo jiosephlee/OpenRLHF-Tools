@@ -114,6 +114,7 @@ run_task() {
     TIS_TYPE="${TIS_TYPE:-tis}"
     TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
     GSPO="${GSPO:-0}"
+    REDUCE_OPTIMIZER="${REDUCE_OPTIMIZER:-adam_offload}"
     MAX_EPOCHS="${MAX_EPOCHS:-1}"
     EXTRA_ARGS="${EXTRA_ARGS:-}"
 
@@ -123,7 +124,7 @@ run_task() {
     PROMPT_MAX_LEN=12288 # Any responses longer than this will be truncated.
     N_SAMPLES_PER_PROMPT=12
     TRAIN_MAX_TOKENS_PER_GPU=32768 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
-    ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.75" | bc | awk '{print int($1)}')
+    ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')
 
     COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-32}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
 
@@ -173,7 +174,7 @@ run_task() {
     if [ "$MODE" = "colocated" ]; then
         MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep"
     else
-        MODE_FLAGS="--async_train --async_queue_size 1 --adam_offload"
+        MODE_FLAGS="--async_train --async_queue_size 1 --$REDUCE_OPTIMIZER"
     fi
 
     ### WARMUP LOGIC ###

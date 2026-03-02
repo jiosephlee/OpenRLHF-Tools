@@ -17,10 +17,10 @@
 #
 # Usage:
 #   # MXFP4 QAT (default):
-#   bash scripts/train_grpo_tdc_gpt_oss.sh
+#   LIGER_GRPO_LOSS=1 TRAIN_MAX_TOKENS_PER_GPU=1024 REDUCE_OPTIMIZER=adam_8bit bash train_grpo_tdc_gpt_oss.sh
 #
 #   # NVFP4 QAT:
-#   QUANT_METHOD=nvfp4 bash scripts/train_grpo_tdc_gpt_oss.sh
+#   TRAIN_MAX_TOKENS_PER_GPU=1024 QUANT_METHOD=nvfp4 bash train_grpo_tdc_gpt_oss.sh
 #
 #   # HF dequantize only:
 #   DEQUANT=hf bash scripts/train_grpo_tdc_gpt_oss.sh
@@ -30,7 +30,7 @@
 #
 #   # Distributed:
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 bash scripts/train_grpo_tdc_gpt_oss.sh
-#
+#       
 # Feature flags (all env-configurable):
 #   MODE=colocated|distributed           # Default: colocated
 #   QUANT_METHOD=mxfp4|nvfp4             # FP4 format (default: mxfp4, ignored when DEQUANT set)
@@ -51,6 +51,7 @@
 #   TIS_TYPE=tis                         # TIS variant: tis (default), icepop, seq-mask-tis
 #   TIS_THRESHOLDS="0.5 5.0"            # Low and high clamp thresholds (default: 0.5 5.0)
 #   GSPO=1                               # Use GSPO loss (sequence-level IS ratio) instead of PPO
+#   REDUCE_OPTIMIZER=adam_offload        # Optimizer: adam_offload (default) or adam_8bit
 #   MAX_EPOCHS=2                         # Training epochs (default: 1)
 #   EXTRA_ARGS="..."                     # Additional CLI flags
 #
@@ -132,6 +133,7 @@ TIS="${TIS:-0}"
 TIS_TYPE="${TIS_TYPE:-tis}"
 TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
 GSPO="${GSPO:-0}"
+REDUCE_OPTIMIZER="${REDUCE_OPTIMIZER:-adam_offload}"
 MAX_EPOCHS="${MAX_EPOCHS:-1}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
@@ -141,7 +143,7 @@ ZERO_STAGE=2
 PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-8192}"
 N_SAMPLES_PER_PROMPT=12
 TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-4096}"
-ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1" | bc | awk '{print int($1)}')}"
+ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')}"
 
 COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-32}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
 
@@ -183,9 +185,9 @@ fi
 
 ### MODE FLAGS ###
 if [ "$MODE" = "colocated" ]; then
-    MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep --adam_offload"
+    MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep --$REDUCE_OPTIMIZER"
 else
-    MODE_FLAGS="--async_train --async_queue_size 1 --adam_offload"
+    MODE_FLAGS="--async_train --async_queue_size 1 --$REDUCE_OPTIMIZER"
 fi
 
 ### WARMUP LOGIC ###

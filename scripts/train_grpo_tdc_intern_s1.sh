@@ -34,6 +34,7 @@
 #   TIS_TYPE=tis                         # TIS variant: tis (default), icepop, seq-mask-tis
 #   TIS_THRESHOLDS="0.5 5.0"            # Low and high clamp thresholds (default: 0.5 5.0)
 #   GSPO=1                               # Use GSPO loss (sequence-level IS ratio) instead of PPO
+#   REDUCE_OPTIMIZER=adam_offload        # Optimizer: adam_offload (default) or adam_8bit
 #   MAX_EPOCHS=2                         # Training epochs (default: 1)
 #   EXTRA_ARGS="..."                     # Additional CLI flags
 #
@@ -67,6 +68,7 @@ TIS="${TIS:-0}"
 TIS_TYPE="${TIS_TYPE:-tis}"
 TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
 GSPO="${GSPO:-0}"
+REDUCE_OPTIMIZER="${REDUCE_OPTIMIZER:-adam_offload}"
 MAX_EPOCHS="${MAX_EPOCHS:-1}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
@@ -126,7 +128,7 @@ fi
 if [ "$MODE" = "colocated" ]; then
     MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep"
 else
-    MODE_FLAGS="--async_train --async_queue_size 1 --adam_offload"
+    MODE_FLAGS="--async_train --async_queue_size 1 --$REDUCE_OPTIMIZER"
 fi
 
 ### WARMUP LOGIC ###

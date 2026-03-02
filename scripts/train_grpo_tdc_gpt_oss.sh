@@ -143,7 +143,7 @@ EXTRA_ARGS="${EXTRA_ARGS:-}"
 AGENT_MAX_STEPS=30
 ZERO_STAGE=2
 PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-8192}"
-N_SAMPLES_PER_PROMPT=12
+N_SAMPLES_PER_PROMPT=8
 TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-4096}"
 ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')}"
 
@@ -432,7 +432,7 @@ if [ -n "$QAT" ]; then
 fi
 
 ### TRAINING ###
-RUN_LOG="$RUNS_DIR/run.log"
+RUN_LOG="$RUNS_DIR/run_${QUANT_LABEL}.log"
 echo "Logging to: $RUN_LOG"
 python -m openrlhf.cli.train_ppo_ray \
     --pretrain "$PRETRAIN_PATH" \

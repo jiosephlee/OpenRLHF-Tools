@@ -51,6 +51,7 @@
 #   TIS_TYPE=tis                         # TIS variant: tis (default), icepop, seq-mask-tis
 #   TIS_THRESHOLDS="0.5 5.0"            # Low and high clamp thresholds (default: 0.5 5.0)
 #   GSPO=1                               # Use GSPO loss (sequence-level IS ratio) instead of PPO
+#   QAT=fp4_fake_quantize|gaussian_noise  # QAT method (default: off). fp4_fake_quantize derives format from QUANT_METHOD
 #   REDUCE_OPTIMIZER=adam_offload        # Optimizer: adam_offload (default) or adam_8bit
 #   MAX_EPOCHS=2                         # Training epochs (default: 1)
 #   EXTRA_ARGS="..."                     # Additional CLI flags
@@ -148,14 +149,14 @@ run_task() {
         case "$QUANT_METHOD" in
             mxfp4)
                 PRETRAIN_PATH="${PRETRAIN_PATH:-openai/gpt-oss-20b}"
-                QUANT_FLAGS="--mxfp4_dequantize --vllm_sync_fp4 mxfp4 --qat fp4_fake_quantize"
+                QUANT_FLAGS="--mxfp4_dequantize --vllm_sync_fp4 mxfp4"
                 export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
                 QUANT_LABEL="mxfp4"
                 ;;
             nvfp4)
                 PRETRAIN_PATH="${PRETRAIN_PATH:-jiosephlee/gpt-oss-20B-NVFP4-packed}"
                 NVFP4_BASE="${NVFP4_BASE:-2imi9/gpt-oss-20B-NVFP4A16-BF16}"
-                QUANT_FLAGS="--vllm_sync_fp4 nvfp4 --qat fp4_fake_quantize --nvfp4_dequantize_base_model $NVFP4_BASE"
+                QUANT_FLAGS="--vllm_sync_fp4 nvfp4 --nvfp4_dequantize_base_model $NVFP4_BASE"
                 QUANT_LABEL="nvfp4"
                 ;;
         esac
@@ -184,6 +185,7 @@ run_task() {
     TIS_TYPE="${TIS_TYPE:-tis}"
     TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
     GSPO="${GSPO:-0}"
+    QAT="${QAT:-}"
     REDUCE_OPTIMIZER="${REDUCE_OPTIMIZER:-adam_offload}"
     MAX_EPOCHS="${MAX_EPOCHS:-1}"
     EXTRA_ARGS="${EXTRA_ARGS:-}"
@@ -192,7 +194,7 @@ run_task() {
     AGENT_MAX_STEPS=30
     ZERO_STAGE=2
     PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-8192}"
-    N_SAMPLES_PER_PROMPT=12
+    N_SAMPLES_PER_PROMPT=8
     TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-4096}"
     ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')}"
 
@@ -487,9 +489,18 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
     if [ "$GSPO" = "1" ]; then
         OPTIONAL_FLAGS+=" --policy_loss_type gspo"
     fi
+    if [ -n "$QAT" ]; then
+        OPTIONAL_FLAGS+=" --qat $QAT"
+    fi
+
+    ### RENAME SLURM LOGS ###
+    if [ -n "${SLURM_JOB_ID:-}" ]; then
+        ln -sf "grpo-tdc-gptoss_${SLURM_JOB_ID}.out" "logs/grpo-tdc-gptoss_${QUANT_LABEL}_${SLURM_JOB_ID}.out" || true
+        ln -sf "grpo-tdc-gptoss_${SLURM_JOB_ID}.err" "logs/grpo-tdc-gptoss_${QUANT_LABEL}_${SLURM_JOB_ID}.err" || true
+    fi
 
     ### TRAINING ###
-    RUN_LOG="$RUNS_DIR/run.log"
+    RUN_LOG="$RUNS_DIR/run_${QUANT_LABEL}.log"
     echo "Logging to: $RUN_LOG"
     python -m openrlhf.cli.train_ppo_ray \
         --pretrain "$PRETRAIN_PATH" \

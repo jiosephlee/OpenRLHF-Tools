@@ -15,7 +15,7 @@
 #   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
 #
 # With TIS off-policy correction (token-level clamped IS):
-#   TIS=1 MULTI_STAGE_DISPATCH=1 SMART_REPLAY=1 MAX_REPLAY_ROUNDS=2 sbatch train_grpo_tdc_intern_s1_slurm.sh
+#   TIS=1 MULTI_STAGE_DISPATCH=1 SMART_REPLAY=1 MAX_REPLAY_ROUNDS=3 sbatch train_grpo_tdc_intern_s1_slurm.sh
 #
 # With GSPO loss (sequence-level IS ratio, replaces PPO clipping):
 #   GSPO=1 MULTI_STAGE_DISPATCH=1 SMART_REPLAY=1 MAX_REPLAY_ROUNDS=2 sbatch train_grpo_tdc_intern_s1_slurm.sh
@@ -122,7 +122,7 @@ run_task() {
     ZERO_STAGE=2
     PROMPT_MAX_LEN=12288 # Any responses longer than this will be truncated.
     N_SAMPLES_PER_PROMPT=12
-    TRAIN_MAX_TOKENS_PER_GPU=38912 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
+    TRAIN_MAX_TOKENS_PER_GPU=49152 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
     ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')
 
     COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-32}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.

@@ -16,7 +16,7 @@
 #
 # Usage:
 #   # MXFP4 QAT (default):
-#   MULTI_STAGE_DISPATCH=1 VLLM_GPU_MEM_UTIL=0.65 TRAIN_MAX_TOKENS_PER_GPU=32768 sbatch train_grpo_tdc_gpt_oss_slurm.sh
+#   MULTI_STAGE_DISPATCH=1 VLLM_GPU_MEM_UTIL=0.7 TRAIN_MAX_TOKENS_PER_GPU=40960 sbatch train_grpo_tdc_gpt_oss_slurm.sh
 #
 #   # NVFP4 QAT:
 #   QUANT_METHOD=nvfp4 sbatch scripts/train_grpo_tdc_gpt_oss_slurm.sh
@@ -61,12 +61,13 @@
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
 #SBATCH --qos=normal
-#SBATCH --gpus=4
+#SBATCH --gpus=2
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=1280G
+#SBATCH --mem=768G
+#SBATCH --gres-flags=enforce-binding
 #SBATCH --sockets-per-node=1
 #SBATCH --cpus-per-gpu=16
-#SBATCH --time=00-12:00:00
+#SBATCH --time=00-36:00:00
 
 ### PARCC PARAMETERS ###
 export OMP_NUM_THREADS=16
@@ -540,6 +541,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --apply_chat_template \
         --tdc_tools "$TDC_TOOLS_JSON" \
         --tool_version "$TOOL_VERSION" \
+        --enable_prefix_caching \
         --gradient_checkpointing \
         --packing_samples \
         --vllm_sync_backend $VLLM_SYNC_BACKEND \

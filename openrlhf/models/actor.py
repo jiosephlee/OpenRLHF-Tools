@@ -60,7 +60,8 @@ class Actor(nn.Module):
         temperature=1.0,
         use_liger_kernel=False,
         mxfp4_dequantize=False,
-        qat_fp4=None,
+        qat=None,
+        qat_fp4_format=None,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -167,21 +168,26 @@ class Actor(nn.Module):
                                 module = module.to(torch.bfloat16)
 
             # QAT: fake-quantize MoE expert weights during training forward passes (STE)
-            if qat_fp4 == "mxfp4":
-                assert mxfp4_dequantize, (
-                    "MXFP4 QAT requires --mxfp4_dequantize. The model must be loaded "
-                    "with Mxfp4Config(dequantize=True) so expert weights are in bf16."
-                )
-                from openrlhf.utils.mxfp4_quantize import register_mxfp4_qat_parametrization
+            if qat == "fp4_fake_quantize":
+                if qat_fp4_format == "mxfp4":
+                    assert mxfp4_dequantize, (
+                        "MXFP4 QAT requires --mxfp4_dequantize. The model must be loaded "
+                        "with Mxfp4Config(dequantize=True) so expert weights are in bf16."
+                    )
+                    from openrlhf.utils.mxfp4_quantize import register_mxfp4_qat_parametrization
 
-                n = register_mxfp4_qat_parametrization(self.model)
-                logger.info(f"[QAT MXFP4] Applied to {n} expert weight layers in actor.")
-            elif qat_fp4 == "nvfp4":
-                from openrlhf.utils.nvfp4_quantize import register_nvfp4_qat_parametrization
+                    n = register_mxfp4_qat_parametrization(self.model)
+                    logger.info(f"[QAT fp4_fake_quantize/mxfp4] Applied to {n} expert weight layers in actor.")
+                elif qat_fp4_format == "nvfp4":
+                    from openrlhf.utils.nvfp4_quantize import register_nvfp4_qat_parametrization
 
-                n = register_nvfp4_qat_parametrization(self.model)
-                logger.info(f"[QAT NVFP4] Applied to {n} expert weight layers in actor.")
-            elif qat_fp4 == "gaussian_noise":
+                    n = register_nvfp4_qat_parametrization(self.model)
+                    logger.info(f"[QAT fp4_fake_quantize/nvfp4] Applied to {n} expert weight layers in actor.")
+                else:
+                    raise ValueError(
+                        f"--qat fp4_fake_quantize requires --vllm_sync_fp4 (mxfp4 or nvfp4), got '{qat_fp4_format}'"
+                    )
+            elif qat == "gaussian_noise":
                 logger.info(
                     "[QAT Gaussian Noise] No parametrize hooks applied. "
                     "Gaussian noise will be injected into RMSNorm layers at each training step."

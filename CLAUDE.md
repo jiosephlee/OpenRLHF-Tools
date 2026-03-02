@@ -72,11 +72,14 @@ New CLI args: `--push_to_hub`, `--push_to_hub_private`, `--delete_local_after_pu
 Saves one decoded rollout trace per step to `runs/<run_name>/traces/`. Annotates each record with prompt/action/observation sections decoded from token IDs using action ranges.
 
 ### 9. Memory Optimization & ZeRO-2 Fixes
-- **Liger Kernels**: Experimental support to reduce vRAM OOM issues.
-- **DeepSpeed ZeRO-2**: Updated config to use ZeRO stage 2 with `adam_offload` to fix `CPUAdam` assertion errors, since stage 0 doesn't support parameters offloaded to CPU.
+- **Liger Kernels**: Experimental support to reduce vRAM OOM issues. We also implemented Liger GRPO loss (currently experimental/WIP) along with Liger PEFT detection fixes.
+- **DeepSpeed ZeRO-2 & Optimizers**: Testing `adam_offload` vs `8bit_adam`:
+  - `adam_offload` avoids CUDA OOM but faces unpredictable SIGKILLs (usually mitigated if sufficient system RAM/GPUs are available).
+  - `8bit_adam` is technically faster but requires smaller batch sizes and has potential compatibility issues on B200s.
 
 ### 10. Unified Bash Scripts & 1a1v Setup
-- Refactored shell scripts into a simplified unified bash staging system.
+- Refactored shell scripts into a simplified unified bash staging system. Recently heavily revamped to sync `unsloth`, `intern-s1`, and `gpt-oss` scripts. Added TIS and GSPO feature flags.
+- Fixed multiple Ray cluster setup bugs in both interactive and bash scripts.
 - Added `1a1v` distributed training setup (1 actor + 1 vLLM) for a 2-GPU footprint, improving rapid iteration and debugging compared to full 1a3v multi-node sweeps.
 
 ### 11. Parallel Tool Calls & GPT-OSS
@@ -88,22 +91,19 @@ Saves one decoded rollout trace per step to `runs/<run_name>/traces/`. Annotates
 
 In colocate mode, vLLM's `sleep()` releases weights but doesn't return the memory to the CUDA driver. The Actor process then OOMs during backward passes because `torch.cuda.memory.caching_allocator` still holds the pages. Fix: call `torch.cuda.empty_cache()` in both `sleep()` and `gc_collect()` so freed GPU memory is actually returned to the driver and available to the Actor.
 
-### 14. On-the-Fly MXFP4 Quantization for Weight Sync
+### 14. On-the-Fly FP4 Quantization for Weight Sync
 **Files:** `openrlhf/trainer/ray/vllm_worker_wrap.py`, `openrlhf/utils/mxfp4_quantize.py`
 
-When the Actor trains in bf16 but vLLM serves with MXFP4-quantized weights (e.g. GPT-OSS MoE), the weight sync must quantize on the fly. `quantize_to_mxfp4()` reimplements NVIDIA ModelOpt's E8M0-scaled FP4 E2M1 packing (transpose, per-expert block scaling, uint8 nibble packing). After writing packed weights + scales into vLLM's parameter storage, `reprocess_mxfp4_weights()` calls `process_weights_after_loading()` on dirty layers to re-run FlashInfer's swizzle/interleave pass.
+When the Actor trains in bf16 but vLLM serves with FP4-quantized weights (e.g. GPT-OSS MoE), the weight sync must quantize on the fly. `quantize_to_mxfp4()` reimplements NVIDIA ModelOpt's E8M0-scaled FP4 E2M1 packing (transpose, per-expert block scaling, uint8 nibble packing). After writing packed weights + scales into vLLM's parameter storage, `reprocess_mxfp4_weights()` calls `process_weights_after_loading()` on dirty layers to re-run FlashInfer's swizzle/interleave pass. Recently, we fixed MXFP4 sync bugs and added support for NVFP4 formats (WIP on the vLLM end).
 
-### 15. MXFP4 Quantization-Aware Training (QAT)
+### 15. FP4 Quantization-Aware Training (QAT)
 **Files:** `openrlhf/utils/mxfp4_quantize.py`, `openrlhf/models/actor.py`, `openrlhf/trainer/ray/ppo_actor.py`, `openrlhf/cli/train_ppo_ray.py`
 
-Closes the train/inference distribution gap when vLLM serves with MXFP4-quantized MoE expert weights but the actor trains in bf16. During actor forward passes, expert weights are fake-quantized (bf16 → nearest MXFP4 value → bf16) via Straight-Through Estimator. Only MoE expert projections are targeted (same name filter as `vllm_worker_wrap`: `"experts"` in path AND one of `gate_up_proj`/`down_proj`/`w13_weight`/`w2_weight`).
+Closes the train/inference distribution gap when vLLM serves with FP4-quantized MoE expert weights but the actor trains in bf16. We transitioned from traditional fake quantization to Gaussian noise injection (as proposed in QeRL) because fake quantization was too slow and consumed too much VRAM.
 
-- `fake_quantize_mxfp4()`: STE fake-quantizer using `weight + (dequantized - weight).detach()`
-- `_Mxfp4FakeQuant`: `nn.Module` parametrization for plain `nn.Linear` expert layers
-- `_patch_lora_layer_qat()`: patches `LoraLayer.forward` to fake-quantize the *merged* weight (`base + lora_B @ lora_A * scaling`) — matches vLLM inference behavior
-- `register_mxfp4_qat_parametrization()`: walks model, registers parametrization or patches LoRA layers
-- Weight sync unaffected: `named_parameters()` yields `.parametrizations.weight.original` (true bf16)
-- Enabled via `--qat_fp4 mxfp4` (requires `--mxfp4_dequantize`) or `--qat_fp4 nvfp4`
+- Only MoE expert projections are targeted (same name filter as `vllm_worker_wrap`: `"experts"` in path AND one of `gate_up_proj`/`down_proj`/`w13_weight`/`w2_weight`).
+- Weight sync unaffected: `named_parameters()` yields true bf16.
+- Enabled via `--qat_fp4 gaussian_noise` (along with `--mxfp4_dequantize_base_model` / `--nvfp4_dequantize_base_model`).
 
 ### 16. Ceiling Fix for Dynamic Batch Splitting
 **File:** `openrlhf/trainer/ppo_utils/experience_maker.py`
@@ -214,5 +214,5 @@ Debug flags:
 
 ---
 
-**Last Updated:** 2026-02-27
+**Last Updated:** 2026-03-01
 **Base Version:** OpenRLHF (latest main branch)

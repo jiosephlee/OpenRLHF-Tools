@@ -148,14 +148,14 @@ run_task() {
         case "$QUANT_METHOD" in
             mxfp4)
                 PRETRAIN_PATH="${PRETRAIN_PATH:-openai/gpt-oss-20b}"
-                QUANT_FLAGS="--mxfp4_dequantize --vllm_sync_fp4 mxfp4 --qat_fp4 mxfp4"
+                QUANT_FLAGS="--mxfp4_dequantize --vllm_sync_fp4 mxfp4 --qat fp4_fake_quantize"
                 export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
                 QUANT_LABEL="mxfp4"
                 ;;
             nvfp4)
                 PRETRAIN_PATH="${PRETRAIN_PATH:-jiosephlee/gpt-oss-20B-NVFP4-packed}"
                 NVFP4_BASE="${NVFP4_BASE:-2imi9/gpt-oss-20B-NVFP4A16-BF16}"
-                QUANT_FLAGS="--vllm_sync_fp4 nvfp4 --qat_fp4 nvfp4 --nvfp4_dequantize_base_model $NVFP4_BASE"
+                QUANT_FLAGS="--vllm_sync_fp4 nvfp4 --qat fp4_fake_quantize --nvfp4_dequantize_base_model $NVFP4_BASE"
                 QUANT_LABEL="nvfp4"
                 ;;
         esac

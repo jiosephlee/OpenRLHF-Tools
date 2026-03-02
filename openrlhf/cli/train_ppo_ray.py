@@ -409,16 +409,16 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
-        "--qat_fp4",
+        "--qat",
         type=str,
         default=None,
-        choices=["mxfp4", "nvfp4", "gaussian_noise"],
+        choices=["fp4_fake_quantize", "gaussian_noise"],
         help=(
-            "Enable FP4 QAT: during actor forward passes, expert weights are "
-            "fake-quantized (bf16 -> nearest FP4 value -> bf16) via STE. "
-            "'mxfp4': OCP MXFP4 format (also requires --mxfp4_dequantize). "
-            "'nvfp4': NVIDIA NVFP4 format. "
-            "'gaussian_noise': Simulates quantization via injected normal noise."
+            "Enable Quantization-Aware Training (QAT) during actor forward passes. "
+            "'fp4_fake_quantize': fake-quantize expert weights (bf16 -> nearest FP4 -> bf16) via STE; "
+            "the concrete FP4 format (mxfp4/nvfp4) is derived from --vllm_sync_fp4. "
+            "'gaussian_noise': Simulates quantization via injected Gaussian noise (QeRL approach). "
+            "Default: None (no QAT)."
         ),
     )
     parser.add_argument("--lora_rank", type=int, default=0)
@@ -675,12 +675,21 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Validate MXFP4 QAT requires --mxfp4_dequantize
-    if args.qat_fp4 == "mxfp4" and not args.mxfp4_dequantize:
-        raise ValueError(
-            "--qat_fp4 mxfp4 requires --mxfp4_dequantize. The model must be loaded "
-            "with Mxfp4Config(dequantize=True) so expert weights are in bf16."
-        )
+    # Derive QAT FP4 format from --vllm_sync_fp4 when --qat fp4_fake_quantize is used
+    if args.qat == "fp4_fake_quantize":
+        if not args.vllm_sync_fp4:
+            raise ValueError(
+                "--qat fp4_fake_quantize requires --vllm_sync_fp4 to be set (mxfp4 or nvfp4) "
+                "so the FP4 format for fake quantization is known."
+            )
+        args.qat_fp4_format = args.vllm_sync_fp4
+        if args.qat_fp4_format == "mxfp4" and not args.mxfp4_dequantize:
+            raise ValueError(
+                "--qat fp4_fake_quantize with mxfp4 requires --mxfp4_dequantize. The model must be "
+                "loaded with Mxfp4Config(dequantize=True) so expert weights are in bf16."
+            )
+    else:
+        args.qat_fp4_format = None
 
     # Validate arguments
     if args.eps_clip_low_high is None:

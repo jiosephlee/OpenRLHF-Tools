@@ -426,7 +426,7 @@ class BasePPOTrainer(ABC):
             sample.info = {k: v for k, v in sample.info.items() if not k.startswith("tool_count__")}
 
         # QeRL Simulate Quantization: Inject Gaussian noise to Actor's RMSNorm layers during RLHF step
-        if getattr(self.args, "qat_fp4", None) == "gaussian_noise":
+        if getattr(self.args, "qat", None) == "gaussian_noise":
             from openrlhf.utils.noise_scheduler import generate_gaussian_noise
 
             # Schedule configuration for QeRL noise

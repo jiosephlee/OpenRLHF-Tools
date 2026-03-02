@@ -51,6 +51,7 @@
 #   TIS_TYPE=tis                         # TIS variant: tis (default), icepop, seq-mask-tis
 #   TIS_THRESHOLDS="0.5 5.0"            # Low and high clamp thresholds (default: 0.5 5.0)
 #   GSPO=1                               # Use GSPO loss (sequence-level IS ratio) instead of PPO
+#   QAT=fp4_fake_quantize|gaussian_noise  # QAT method (default: off). fp4_fake_quantize derives format from QUANT_METHOD
 #   REDUCE_OPTIMIZER=adam_offload        # Optimizer: adam_offload (default) or adam_8bit
 #   MAX_EPOCHS=2                         # Training epochs (default: 1)
 #   EXTRA_ARGS="..."                     # Additional CLI flags
@@ -83,14 +84,14 @@ else
     case "$QUANT_METHOD" in
         mxfp4)
             PRETRAIN_PATH="${PRETRAIN_PATH:-openai/gpt-oss-20b}"
-            QUANT_FLAGS="--mxfp4_dequantize --vllm_sync_fp4 mxfp4 --qat_fp4 mxfp4"
+            QUANT_FLAGS="--mxfp4_dequantize --vllm_sync_fp4 mxfp4"
             export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
             QUANT_LABEL="mxfp4"
             ;;
         nvfp4)
             PRETRAIN_PATH="${PRETRAIN_PATH:-jiosephlee/gpt-oss-20B-NVFP4-packed}"
             NVFP4_BASE="${NVFP4_BASE:-2imi9/gpt-oss-20B-NVFP4A16-BF16}"
-            QUANT_FLAGS="--vllm_sync_fp4 nvfp4 --qat_fp4 nvfp4 --nvfp4_dequantize_base_model $NVFP4_BASE"
+            QUANT_FLAGS="--vllm_sync_fp4 nvfp4 --nvfp4_dequantize_base_model $NVFP4_BASE"
             QUANT_LABEL="nvfp4"
             ;;
         *)
@@ -133,6 +134,7 @@ TIS="${TIS:-0}"
 TIS_TYPE="${TIS_TYPE:-tis}"
 TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
 GSPO="${GSPO:-0}"
+QAT="${QAT:-}"
 REDUCE_OPTIMIZER="${REDUCE_OPTIMIZER:-adam_offload}"
 MAX_EPOCHS="${MAX_EPOCHS:-1}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
@@ -424,6 +426,9 @@ if [ "$TIS" = "1" ]; then
 fi
 if [ "$GSPO" = "1" ]; then
     OPTIONAL_FLAGS+=" --policy_loss_type gspo"
+fi
+if [ -n "$QAT" ]; then
+    OPTIONAL_FLAGS+=" --qat $QAT"
 fi
 
 ### TRAINING ###

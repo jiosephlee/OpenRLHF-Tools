@@ -264,9 +264,8 @@ class WorkerWrap:
             self.model_runner.model.load_weights(weights=[(name, weight)])
 
         del weight
-        # TODO: should we empty cache if all weights have updated?
-        # if empty_cache:
-        #     torch.cuda.empty_cache()
+        if empty_cache:
+            torch.cuda.empty_cache()
 
     def update_weight_cuda_ipc(
         self, name, dtype, shape, ipc_handles=None, empty_cache=False, fp4_quantize_format=None
@@ -293,6 +292,11 @@ class WorkerWrap:
                 self.model_runner.model.load_weights(weights=[(w_name, w_tensor)])
         else:
             self.model_runner.model.load_weights(weights=[(name, weight)])
+
+        del weight
+
+        if empty_cache:
+            torch.cuda.empty_cache()
 
         torch.cuda.synchronize()
 
@@ -325,4 +329,10 @@ class WorkerWrap:
             finalize_layerwise_reload(self.model_runner.model, self.model_config)
         torch.cuda.synchronize()
         self.debug_weight_snapshot("AFTER weight sync (post-finalize_layerwise_reload)")
+
+        import gc
+
+        gc.collect()
+        torch.cuda.empty_cache()
+
         print("[WorkerWrap] post_weight_sync: finalize_layerwise_reload complete")

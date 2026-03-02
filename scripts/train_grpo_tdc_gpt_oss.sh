@@ -16,8 +16,9 @@
 #   <|start|>assistant to=functions.<name><|channel|>commentary json<|message|>...
 #
 # Usage:
+#   VLLM_GPU_MEM_UTIL=0.6
 #   # MXFP4 QAT (default):
-#   LIGER_GRPO_LOSS=1 TRAIN_MAX_TOKENS_PER_GPU=16384 REDUCE_OPTIMIZER=adam_8bit bash train_grpo_tdc_gpt_oss.sh
+#   LIGER_GRPO_LOSS=1 TRAIN_MAX_TOKENS_PER_GPU=8192 REDUCE_OPTIMIZER=adam_8bit bash train_grpo_tdc_gpt_oss.sh
 #
 #   # NVFP4 QAT:
 #   TRAIN_MAX_TOKENS_PER_GPU=1024 QUANT_METHOD=nvfp4 bash train_grpo_tdc_gpt_oss.sh
@@ -89,8 +90,8 @@ else
             QUANT_LABEL="mxfp4"
             ;;
         nvfp4)
-            PRETRAIN_PATH="${PRETRAIN_PATH:-jiosephlee/gpt-oss-20B-NVFP4-packed}"
-            NVFP4_BASE="${NVFP4_BASE:-2imi9/gpt-oss-20B-NVFP4A16-BF16}"
+            PRETRAIN_PATH="${PRETRAIN_PATH:-jiosephlee/gpt-oss-20B-NVFP4-packed-clean}"
+            NVFP4_BASE="${NVFP4_BASE:-unsloth/gpt-oss-20b-BF16}"
             QUANT_FLAGS="--vllm_sync_fp4 nvfp4 --nvfp4_dequantize_base_model $NVFP4_BASE"
             QUANT_LABEL="nvfp4"
             ;;

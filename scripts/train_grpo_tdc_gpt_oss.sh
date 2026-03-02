@@ -49,6 +49,7 @@
 #   TIS_THRESHOLDS="0.5 5.0"            # Low and high clamp thresholds (default: 0.5 5.0)
 #   GSPO=1                               # Use GSPO loss (sequence-level IS ratio) instead of PPO
 #   QAT=fp4_fake_quantize|gaussian_noise  # QAT method (default: off). fp4_fake_quantize derives format from QUANT_METHOD
+#   KV_CACHE_DTYPE=fp8                   # KV cache dtype for vLLM (default: off, i.e. vLLM default auto)
 #   REDUCE_OPTIMIZER=adam_offload        # Optimizer: adam_offload (default) or adam_8bit
 #   MAX_EPOCHS=2                         # Training epochs (default: 1)
 #   EXTRA_ARGS="..."                     # Additional CLI flags
@@ -126,6 +127,7 @@ TIS_TYPE="${TIS_TYPE:-tis}"
 TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
 GSPO="${GSPO:-0}"
 QAT="${QAT:-}"
+KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-}"
 REDUCE_OPTIMIZER="${REDUCE_OPTIMIZER:-adam_offload}"
 MAX_EPOCHS="${MAX_EPOCHS:-1}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
@@ -370,6 +372,7 @@ echo "Multi Stage Dispatch: $MULTI_STAGE_DISPATCH"
 echo "Liger GRPO Loss: $LIGER_GRPO_LOSS"
 echo "TIS: $TIS (type=$TIS_TYPE, thresholds=$TIS_THRESHOLDS)"
 echo "GSPO: $GSPO"
+echo "KV Cache Dtype: ${KV_CACHE_DTYPE:-auto}"
 echo "Tool Version: $TOOL_VERSION"
 echo "----------------------------------------"
 echo "Runs Dir: $RUNS_DIR"
@@ -421,6 +424,9 @@ fi
 if [ -n "$QAT" ]; then
     OPTIONAL_FLAGS+=" --qat $QAT"
 fi
+if [ -n "$KV_CACHE_DTYPE" ]; then
+    OPTIONAL_FLAGS+=" --kv_cache_dtype $KV_CACHE_DTYPE"
+fi
 
 ### TRAINING ###
 RUN_LOG="$RUNS_DIR/run_${QUANT_LABEL}.log"
@@ -436,7 +442,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size 1 \
     --reduce_cuda_graph \
-    --kv_cache_dtype fp8 \
     --max_num_batched_tokens 8192 \
     --vllm_gpu_memory_utilization $VLLM_GPU_MEM_UTIL \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \

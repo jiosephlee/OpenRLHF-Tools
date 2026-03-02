@@ -15,10 +15,10 @@
 #   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
 #
 # With TIS off-policy correction (token-level clamped IS):
-#   TIS=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
+#   TIS=1 SMART_REPLAY=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
 #
 # With GSPO loss (sequence-level IS ratio, replaces PPO clipping):
-#   GSPO=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
+#   GSPO=1 MULTI_STAGE_DISPATCH=1 SMART_REPLAY=1 MAX_REPLAY_ROUNDS=2 sbatch train_grpo_tdc_intern_s1_slurm.sh
 #
 # With smart replay (halved effective rollout batch size):
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 SMART_REPLAY=1 COLO_EVAL_STEPS=32 EFFECTIVE_ROLLOUT_BATCH_SIZE=4 sbatch train_grpo_tdc_intern_s1_slurm.sh
@@ -39,7 +39,7 @@
 #                                        # before each update without the 1-step off-policy lag of async.
 #   COLO_EVAL_STEPS=32                  # Eval frequency (global steps) for colocated; distributed scales by ASYNC_ADVANTAGE.
 #   TOOL_VERSION=v4                      # Tool schema version (default: v4)
-#   SMART_REPLAY=1               # Enable smart replay with max_replay_rounds=5
+#   SMART_REPLAY=1               # Enable smart replay with max_replay_rounds=2
 #   CURRICULUM_BALANCED=1        # Enable curriculum-balanced sampling
 #   MULTI_STAGE_DISPATCH=1       # Continuous-refill dispatch (best for 2-GPU setups)
 #   TIS=1                        # Enable Truncated Importance Sampling (off-policy correction)
@@ -59,8 +59,8 @@
 #SBATCH --gpus=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=1024G
-#SBATCH --cpus-per-gpu=24
-#SBATCH --time=0-24:00:00
+#SBATCH --cpus-per-gpu=18
+#SBATCH --time=0-8:00:00
 #SBATCH --sockets-per-node=1
 #SBATCH --account=myatskar-lab
 

@@ -16,7 +16,7 @@
 #
 # Usage:
 #   # MXFP4 QAT (default):
-#   sbatch scripts/train_grpo_tdc_gpt_oss_slurm.sh
+#   MULTI_STAGE_DISPATCH=1 VLLM_GPU_MEM_UTIL=0.7 TRAIN_MAX_TOKENS_PER_GPU=32768 sbatch train_grpo_tdc_gpt_oss_slurm.sh
 #
 #   # NVFP4 QAT:
 #   QUANT_METHOD=nvfp4 sbatch scripts/train_grpo_tdc_gpt_oss_slurm.sh
@@ -48,6 +48,7 @@
 #   TIS_THRESHOLDS="0.5 5.0"            # Low and high clamp thresholds (default: 0.5 5.0)
 #   GSPO=1                               # Use GSPO loss (sequence-level IS ratio) instead of PPO
 #   QAT=fp4_fake_quantize|gaussian_noise  # QAT method (default: off). fp4_fake_quantize derives format from QUANT_METHOD
+#   KV_CACHE_DTYPE=fp8                   # KV cache dtype for vLLM (default: off, i.e. vLLM default auto)
 #   REDUCE_OPTIMIZER=adam_offload        # Optimizer: adam_offload (default) or adam_8bit
 #   MAX_EPOCHS=2                         # Training epochs (default: 1)
 #   EXTRA_ARGS="..."                     # Additional CLI flags
@@ -60,12 +61,12 @@
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
 #SBATCH --qos=normal
-#SBATCH --gpus=2
+#SBATCH --gpus=4
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=768G
+#SBATCH --mem=1280G
 #SBATCH --sockets-per-node=1
-#SBATCH --cpus-per-gpu=12
-#SBATCH --time=00-1:00:00
+#SBATCH --cpus-per-gpu=16
+#SBATCH --time=00-12:00:00
 
 ### PARCC PARAMETERS ###
 export OMP_NUM_THREADS=16
@@ -177,6 +178,7 @@ run_task() {
     TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
     GSPO="${GSPO:-0}"
     QAT="${QAT:-}"
+    KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-}"
     REDUCE_OPTIMIZER="${REDUCE_OPTIMIZER:-adam_offload}"
     MAX_EPOCHS="${MAX_EPOCHS:-1}"
     EXTRA_ARGS="${EXTRA_ARGS:-}"
@@ -187,7 +189,7 @@ run_task() {
     PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-8192}"
     N_SAMPLES_PER_PROMPT=8
     TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-4096}"
-    ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')}"
+    ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.25" | bc | awk '{print int($1)}')}"
 
     COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-32}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
 
@@ -239,7 +241,7 @@ run_task() {
     WARM_STEPS_MULTIPLIER=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
 
     ### MULTI-TASK ###
-    TASK_NAMES=(${TASK_NAMES:-BBB_Martins})
+    TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
     TASK_LABEL="Base"
 
     ### W&B ###
@@ -432,6 +434,7 @@ run_task() {
     echo "Liger GRPO Loss: $LIGER_GRPO_LOSS"
     echo "TIS: $TIS (type=$TIS_TYPE, thresholds=$TIS_THRESHOLDS)"
     echo "GSPO: $GSPO"
+    echo "KV Cache Dtype: ${KV_CACHE_DTYPE:-auto}"
     echo "Tool Version: $TOOL_VERSION"
     echo "----------------------------------------"
     echo "Runs Dir: $RUNS_DIR"
@@ -483,6 +486,9 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
     if [ -n "$QAT" ]; then
         OPTIONAL_FLAGS+=" --qat $QAT"
     fi
+    if [ -n "$KV_CACHE_DTYPE" ]; then
+        OPTIONAL_FLAGS+=" --kv_cache_dtype $KV_CACHE_DTYPE"
+    fi
 
     ### RENAME SLURM LOGS ###
     if [ -n "${SLURM_JOB_ID:-}" ]; then
@@ -504,7 +510,6 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --vllm_num_engines $VLLM_NUM_ENGINES \
         --vllm_tensor_parallel_size 1 \
         --reduce_cuda_graph \
-        --kv_cache_dtype fp8 \
         --max_num_batched_tokens 8192 \
         --vllm_gpu_memory_utilization $VLLM_GPU_MEM_UTIL \
         --advantage_estimator $ADVANTAGE_ESTIMATOR \
@@ -555,7 +560,6 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
         --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \
         --constant_lr_with_warm_up \
-        --skip_eval_step_zero \
         --warmup_steps $WARMUP_STEPS \
         --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
         $QUANT_FLAGS \

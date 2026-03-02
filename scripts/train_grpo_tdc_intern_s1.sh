@@ -19,13 +19,23 @@
 #     EXTRA_ARGS="--skip_eval_step_zero" bash scripts/train_grpo_tdc_intern_s1.sh
 #
 # Feature flags (all env-configurable):
-#   MODE=colocated|distributed   # Default: colocated
-#   TOOL_VERSION=v4              # Tool schema version (default: v4)
-#   SMART_REPLAY=1               # Enable smart replay with max_replay_rounds=2
-#   CURRICULUM_BALANCED=1        # Enable curriculum-balanced sampling
-#   MULTI_STAGE_DISPATCH=1       # Continuous-refill dispatch (best for 2-GPU setups)
-#   MAX_EPOCHS=2                 # Training epochs (default: 2)
-#   EXTRA_ARGS="..."             # Additional CLI flags
+#   MODE=colocated|distributed           # Default: colocated
+#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8       # Rollout batch size in distributed/async mode
+#   EFFECTIVE_MINI_GRADIENT_STEPS=2      # Mini gradient steps in distributed/async mode
+#   ASYNC_ADVANTAGE=4                    # Scale factor: colocated uses ASYNC_ADVANTAGE * EFFECTIVE_* for both
+#                                        # ROLLOUT and MINI, keeping ROLLOUT/MINI ratio constant across modes.
+#   COLO_EVAL_STEPS=32                   # Eval frequency (global steps) for colocated; distributed scales by ASYNC_ADVANTAGE
+#   TOOL_VERSION=v4                      # Tool schema version (default: v4)
+#   SMART_REPLAY=1                       # Enable smart replay with max_replay_rounds=2
+#   CURRICULUM_BALANCED=1                # Enable curriculum-balanced sampling
+#   MULTI_STAGE_DISPATCH=1               # Continuous-refill dispatch (best for 2-GPU setups)
+#   LIGER_GRPO_LOSS=1                    # Enable Liger fused GRPO loss
+#   TIS=1                                # Enable Truncated Importance Sampling (off-policy correction)
+#   TIS_TYPE=tis                         # TIS variant: tis (default), icepop, seq-mask-tis
+#   TIS_THRESHOLDS="0.5 5.0"            # Low and high clamp thresholds (default: 0.5 5.0)
+#   GSPO=1                               # Use GSPO loss (sequence-level IS ratio) instead of PPO
+#   MAX_EPOCHS=2                         # Training epochs (default: 1)
+#   EXTRA_ARGS="..."                     # Additional CLI flags
 #
 
 set -euo pipefail
@@ -44,10 +54,19 @@ DEBUG_TRACES=${3:-"0"}
 
 ### FEATURE FLAGS ###
 MODE="${MODE:-colocated}"
+EFFECTIVE_ROLLOUT_BATCH_SIZE="${EFFECTIVE_ROLLOUT_BATCH_SIZE:-8}"
+EFFECTIVE_MINI_GRADIENT_STEPS="${EFFECTIVE_MINI_GRADIENT_STEPS:-2}"
+ASYNC_ADVANTAGE="${ASYNC_ADVANTAGE:-4}"
 TOOL_VERSION="${TOOL_VERSION:-v4}"
 SMART_REPLAY="${SMART_REPLAY:-0}"
+MAX_REPLAY_ROUNDS="${MAX_REPLAY_ROUNDS:-2}"
 MULTI_STAGE_DISPATCH="${MULTI_STAGE_DISPATCH:-0}"
+LIGER_GRPO_LOSS="${LIGER_GRPO_LOSS:-0}"
 CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
+TIS="${TIS:-0}"
+TIS_TYPE="${TIS_TYPE:-tis}"
+TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
+GSPO="${GSPO:-0}"
 MAX_EPOCHS="${MAX_EPOCHS:-1}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
@@ -55,32 +74,29 @@ EXTRA_ARGS="${EXTRA_ARGS:-}"
 AGENT_MAX_STEPS=30
 ZERO_STAGE=2
 PROMPT_MAX_LEN=12288 # Any responses longer than this will be truncated.
-N_SAMPLES_PER_PROMPT=8
+N_SAMPLES_PER_PROMPT=12
 TRAIN_MAX_TOKENS_PER_GPU=32768 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
 ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')
+
+COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-32}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
 
 ### MODE-DEPENDENT DEFAULTS ###
 if [ "$MODE" = "colocated" ]; then
     ACTOR_GPUS="${ACTOR_GPUS:-$NUM_GPUS}"
     VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
-    ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-32}" # This decides how many prompts are used for each rollout.
-    MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-8}" # This decides how many mini gradient updates are used per rollout; Rollout_batch_size * N_samples_per_prompt / Mini_gradient_steps = number of trajectories used for each gradient update.
-    MICRO_TRAIN_BATCH_SIZE=4 # The larger the micro_train_batch_size, the more memory and less gradient accumulation steps for backwards pass.
-    MICRO_ROLLOUT_BATCH_SIZE=8 # ^ but for forwards pass. These two parameters are overridden, however, by default since we use dynamic batching.
+    ROLLOUT_BATCH_SIZE=$(( EFFECTIVE_ROLLOUT_BATCH_SIZE * ASYNC_ADVANTAGE ))
+    MINI_GRADIENT_STEPS=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
     VLLM_GPU_MEM_UTIL=0.825
     VLLM_SYNC_BACKEND=nccl
-    EVAL_STEPS="${EVAL_STEPS:-32}"
+    EVAL_STEPS="${EVAL_STEPS:-$COLO_EVAL_STEPS}"
 elif [ "$MODE" = "distributed" ]; then
     ACTOR_GPUS="${ACTOR_GPUS:?"MODE=distributed requires ACTOR_GPUS"}"
     VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:?"MODE=distributed requires VLLM_NUM_ENGINES"}"
-    ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-8}" # Decrease rollout batch size so that we can actually be more on-policy when we do async by doing less mini-gradient steps and more "on-policy" gradient updates that are off by only 1 step.
-    MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-2}" # Decreasing rollout batch size 4x but we decrease # of mini-gradient steps by 4x -> same number of gradient steps in total as colocated.
-    MICRO_TRAIN_BATCH_SIZE=1
-    MICRO_ROLLOUT_BATCH_SIZE=2
+    ROLLOUT_BATCH_SIZE=$EFFECTIVE_ROLLOUT_BATCH_SIZE  # Distributed uses the effective value directly; smaller than colocated to be more on-policy (only 1-step async lag).
+    MINI_GRADIENT_STEPS=$EFFECTIVE_MINI_GRADIENT_STEPS  # Fewer mini gradient steps to match; ROLLOUT/MINI ratio is identical to colocated, same total gradient steps.
     VLLM_GPU_MEM_UTIL=0.975
     VLLM_SYNC_BACKEND=gloo
-    COLO_ROLLOUT=32; COLO_EVAL=32
-    EVAL_STEPS="${EVAL_STEPS:-$(( COLO_EVAL * COLO_ROLLOUT / ROLLOUT_BATCH_SIZE ))}" # To match the evaluation frequency of the colocated mode.
+    EVAL_STEPS="${EVAL_STEPS:-$(( COLO_EVAL_STEPS * ASYNC_ADVANTAGE ))}"  # Distributed takes ASYNC_ADVANTAGE more global steps per colocated step, so scale eval frequency accordingly.
 else
     echo "Error: MODE must be 'colocated' or 'distributed', got '$MODE'" >&2
     exit 1
@@ -88,12 +104,6 @@ fi
 
 ### BATCH SIZE DERIVATION ###
 TRAIN_BATCH_SIZE=$(( ROLLOUT_BATCH_SIZE * N_SAMPLES_PER_PROMPT / MINI_GRADIENT_STEPS ))
-
-# Assert ratio invariant (cross-multiply to avoid float division)
-COLO_ROLLOUT=32; COLO_MINI=8; DIST_ROLLOUT=8; DIST_MINI=2
-if [ $(( COLO_ROLLOUT * DIST_MINI )) -ne $(( DIST_ROLLOUT * COLO_MINI )) ]; then
-    echo "Error: rollout/mini_gradient_steps ratio mismatch" >&2; exit 1
-fi
 
 ### GPU CHECK (distributed only) ###
 if [ "$MODE" = "distributed" ]; then
@@ -121,11 +131,7 @@ fi
 
 ### WARMUP LOGIC ###
 WARMUP_STEPS=20
-WARM_STEPS_MULTIPLIER=$(( MINI_GRADIENT_STEPS * COLO_ROLLOUT / ROLLOUT_BATCH_SIZE ))
-if [ "$WARM_STEPS_MULTIPLIER" -ne 8 ]; then
-    echo "Error: WARM_STEPS_MULTIPLIER should amount to 8 currently regardless of mode." >&2
-    exit 1
-fi
+WARM_STEPS_MULTIPLIER=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
 
 ### MULTI-TASK ###
 TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
@@ -182,11 +188,18 @@ IFS=,; TRAIN_DATA="${TRAIN_PARTS[*]}"; unset IFS
 N_TASKS=${#TASK_NAMES[@]}
 DATE_TAG=$(date +%m%d_%H%M)
 CHAT_PROTOCOL="intern_s1"
+
+# Build suffix tags for active features
+SUFFIX=""
+[ "$SMART_REPLAY" = "1" ] && SUFFIX+="-sr${MAX_REPLAY_ROUNDS}"
+[ "$GSPO" = "1" ] && SUFFIX+="-gspo"
+[ "$TIS" = "1" ] && SUFFIX+="-tis"
+
 if [ "$MODE" = "colocated" ]; then
-    RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
+    RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}${SUFFIX}-${DATE_TAG}"
     WANDB_GROUP="TDC-InternS1-colo-$TASK_LABEL"
 else
-    RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-dist-${LAYOUT_TAG}-${DATE_TAG}"
+    RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}${SUFFIX}-dist-${LAYOUT_TAG}-${DATE_TAG}"
     WANDB_GROUP="TDC-InternS1-dist-${LAYOUT_TAG}-$TASK_LABEL"
 fi
 RUN_ID="${RUN_NAME}"
@@ -297,6 +310,9 @@ echo "----------------------------------------"
 echo "Smart Replay: $SMART_REPLAY"
 echo "Curriculum Balanced: $CURRICULUM_BALANCED"
 echo "Multi Stage Dispatch: $MULTI_STAGE_DISPATCH"
+echo "Liger GRPO Loss: $LIGER_GRPO_LOSS"
+echo "TIS: $TIS (type=$TIS_TYPE, thresholds=$TIS_THRESHOLDS)"
+echo "GSPO: $GSPO"
 echo "Tool Version: $TOOL_VERSION"
 echo "----------------------------------------"
 echo "Runs Dir: $RUNS_DIR"
@@ -328,13 +344,22 @@ if [ "$DYNAMIC_FILTERING" = true ]; then
     OPTIONAL_FLAGS+=" --dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE"
 fi
 if [ "$SMART_REPLAY" = "1" ]; then
-    OPTIONAL_FLAGS+=" --smart_replay --max_replay_rounds 2"
+    OPTIONAL_FLAGS+=" --smart_replay --max_replay_rounds $MAX_REPLAY_ROUNDS"
 fi
 if [ "$CURRICULUM_BALANCED" = "1" ]; then
     OPTIONAL_FLAGS+=" --curriculum_balanced"
 fi
 if [ "$MULTI_STAGE_DISPATCH" = "1" ]; then
     OPTIONAL_FLAGS+=" --multi_stage_dispatch"
+fi
+if [ "$LIGER_GRPO_LOSS" = "1" ]; then
+    OPTIONAL_FLAGS+=" --use_liger_grpo_loss"
+fi
+if [ "$TIS" = "1" ]; then
+    OPTIONAL_FLAGS+=" --enable_vllm_is_correction --vllm_is_correction_type $TIS_TYPE --vllm_is_truncated_threshold $TIS_THRESHOLDS"
+fi
+if [ "$GSPO" = "1" ]; then
+    OPTIONAL_FLAGS+=" --policy_loss_type gspo"
 fi
 
 ### TRAINING ###
@@ -350,7 +375,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --actor_num_gpus_per_node $ACTOR_GPUS \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size 1 \
-    --reduce_cuda_graph \
     --kv_cache_dtype fp8 \
     --max_num_batched_tokens 8192 \
     --vllm_gpu_memory_utilization $VLLM_GPU_MEM_UTIL \
@@ -363,8 +387,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --disable_ds_ckpt \
     --logging_steps 1 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
-    --micro_train_batch_size $MICRO_TRAIN_BATCH_SIZE \
-    --micro_rollout_batch_size $MICRO_ROLLOUT_BATCH_SIZE \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $ROLLOUT_BATCH_SIZE \
     --num_episodes $MAX_EPOCHS \
@@ -402,7 +424,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
     --use_liger_kernel \
-    --use_liger_grpo_loss \
     --use_dynamic_batch \
     --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
     --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \

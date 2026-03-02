@@ -1,6 +1,14 @@
 #!/bin/bash
 #
-# GPT-OSS GRPO training — unified interactive script.
+# Unified interactive script for GPT-OSS GRPO training.
+#
+# Supports all quantization modes via env vars:
+#   QUANT_METHOD=mxfp4 (default) — MXFP4 QAT + FlashInfer MoE kernel
+#   QUANT_METHOD=nvfp4            — NVFP4 QAT + NVIDIA kernel backend
+#   DEQUANT=hf                    — Dequantize MXFP4 checkpoint via HF transformers
+#   DEQUANT=unsloth               — Load pre-converted BF16 model (no quant flags)
+#
+# When DEQUANT is set, QUANT_METHOD is ignored.
 #
 # Supports both colocated and distributed modes via MODE env var.
 #
@@ -8,84 +16,152 @@
 #   <|start|>assistant to=functions.<name><|channel|>commentary json<|message|>...
 #
 # Usage:
-#   # Colocated (default — actor and vLLM share GPUs via sleep mode):
+#   # MXFP4 QAT (default):
 #   bash scripts/train_grpo_tdc_gpt_oss.sh
 #
-#   # Distributed (actor and vLLM on separate GPUs):
-#   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 bash scripts/train_grpo_tdc_gpt_oss.sh
-#   ACTOR_GPUS=1 VLLM_NUM_ENGINES=1
-#   # Distributed with extra flags:
-#   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 SMART_REPLAY=1 \
-#     EXTRA_ARGS="--skip_eval_step_zero" bash scripts/train_grpo_tdc_gpt_oss.sh
+#   # NVFP4 QAT:
+#   QUANT_METHOD=nvfp4 bash scripts/train_grpo_tdc_gpt_oss.sh
+#
+#   # HF dequantize only:
+#   DEQUANT=hf bash scripts/train_grpo_tdc_gpt_oss.sh
+#
+#   # Unsloth BF16:
+#   DEQUANT=unsloth bash scripts/train_grpo_tdc_gpt_oss.sh
+#
+#   # Distributed:
+#   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 bash scripts/train_grpo_tdc_gpt_oss.sh
 #
 # Feature flags (all env-configurable):
-#   MODE=colocated|distributed   # Default: colocated
-#   TOOL_VERSION=v4              # Tool schema version (default: v4)
-#   SMART_REPLAY=1               # Enable smart replay with max_replay_rounds=2
-#   CURRICULUM_BALANCED=1        # Enable curriculum-balanced sampling
-#   MULTI_STAGE_DISPATCH=1       # Continuous-refill dispatch (best for 2-GPU setups)
-#   MAX_EPOCHS=2                 # Training epochs (default: 2)
-#   EXTRA_ARGS="..."             # Additional CLI flags
+#   MODE=colocated|distributed           # Default: colocated
+#   QUANT_METHOD=mxfp4|nvfp4             # FP4 format (default: mxfp4, ignored when DEQUANT set)
+#   DEQUANT=hf|unsloth                   # Skip quantization, run in BF16
+#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8       # Rollout batch size in distributed/async mode
+#   EFFECTIVE_MINI_GRADIENT_STEPS=2      # Mini gradient steps in distributed/async mode
+#   ASYNC_ADVANTAGE=4                    # Scale factor: colocated uses ASYNC_ADVANTAGE * EFFECTIVE_* for both
+#                                        # ROLLOUT and MINI, keeping ROLLOUT/MINI ratio constant across modes.
+#                                        # Reflects that colocated is synchronous and can afford more rollouts
+#                                        # before each update without the 1-step off-policy lag of async.
+#   COLO_EVAL_STEPS=32                   # Eval frequency (global steps) for colocated; distributed scales by ASYNC_ADVANTAGE
+#   TOOL_VERSION=v4                      # Tool schema version (default: v4)
+#   SMART_REPLAY=1                       # Enable smart replay with max_replay_rounds=2
+#   CURRICULUM_BALANCED=1                # Enable curriculum-balanced sampling
+#   MULTI_STAGE_DISPATCH=1               # Continuous-refill dispatch (best for 2-GPU setups)
+#   LIGER_GRPO_LOSS=1                    # Enable Liger fused GRPO loss
+#   TIS=1                                # Enable Truncated Importance Sampling (off-policy correction)
+#   TIS_TYPE=tis                         # TIS variant: tis (default), icepop, seq-mask-tis
+#   TIS_THRESHOLDS="0.5 5.0"            # Low and high clamp thresholds (default: 0.5 5.0)
+#   GSPO=1                               # Use GSPO loss (sequence-level IS ratio) instead of PPO
+#   MAX_EPOCHS=2                         # Training epochs (default: 1)
+#   EXTRA_ARGS="..."                     # Additional CLI flags
 #
-module load cuda/12.8.1
+
+### QUANTIZATION MODE RESOLUTION ###
+QUANT_METHOD="${QUANT_METHOD:-mxfp4}"
+DEQUANT="${DEQUANT:-}"
+
+if [ -n "$DEQUANT" ]; then
+    case "$DEQUANT" in
+        hf)
+            PRETRAIN_PATH="${PRETRAIN_PATH:-openai/gpt-oss-20b}"
+            QUANT_FLAGS="--mxfp4_dequantize"
+            QUANT_LABEL="dequant-hf"
+            ;;
+        unsloth)
+            PRETRAIN_PATH="${PRETRAIN_PATH:-unsloth/gpt-oss-20b-BF16}"
+            QUANT_FLAGS=""
+            QUANT_LABEL="dequant-unsloth"
+            ;;
+        *)
+            echo "Error: DEQUANT must be 'hf' or 'unsloth', got '$DEQUANT'" >&2
+            exit 1
+            ;;
+    esac
+    CUDA_MODULE="${CUDA_MODULE:-cuda/13.1.0}"
+    CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern}"
+else
+    case "$QUANT_METHOD" in
+        mxfp4)
+            PRETRAIN_PATH="${PRETRAIN_PATH:-openai/gpt-oss-20b}"
+            QUANT_FLAGS="--mxfp4_dequantize --vllm_sync_fp4 mxfp4 --qat_fp4 mxfp4"
+            export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
+            QUANT_LABEL="mxfp4"
+            ;;
+        nvfp4)
+            PRETRAIN_PATH="${PRETRAIN_PATH:-jiosephlee/gpt-oss-20B-NVFP4-packed}"
+            NVFP4_BASE="${NVFP4_BASE:-2imi9/gpt-oss-20B-NVFP4A16-BF16}"
+            QUANT_FLAGS="--vllm_sync_fp4 nvfp4 --qat_fp4 nvfp4 --nvfp4_dequantize_base_model $NVFP4_BASE"
+            QUANT_LABEL="nvfp4"
+            ;;
+        *)
+            echo "Error: QUANT_METHOD must be 'mxfp4' or 'nvfp4', got '$QUANT_METHOD'" >&2
+            exit 1
+            ;;
+    esac
+    CUDA_MODULE="${CUDA_MODULE:-cuda/12.8.1}"
+    CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/openrlhf}"
+fi
+
+### ENVIRONMENT SETUP ###
+module load "$CUDA_MODULE"
 eval "$(conda shell.bash hook)"
-conda activate /vast/projects/myatskar/design-documents/conda_env/openrlhf # This conda env uses torch 2.9.1, and the corresponding flash-attn for cuda 13.1.0, but torch is compiled for cuda 12.8... torch doesn't have pip wheels for 13.1.0 yet; no problems with this for now except for Adam_offload.
+conda activate "$CONDA_ENV"
 set -euo pipefail
-export DS_SKIP_CUDA_CHECK=1 # Adam_offload checks CUDA version and which version of torch is compiled for it; this is a workaround to skip the CUDA check.
-export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
+export DS_SKIP_CUDA_CHECK=1
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
 # Prevent corrupted torch inductor cache from crashing vLLM compilation.
-# We nuke any leftover default-location cache from prior runs.
 rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ ~/.cache/vllm/torch_compile_cache/ 2>/dev/null || true
 
 ### ARGS ###
-PRETRAIN_PATH=${1:-"openai/gpt-oss-20b"}
-LEARNING_RATE=${2:-"1e-6"}
+LEARNING_RATE="${LEARNING_RATE:-1e-6}"
 NUM_GPUS=$SLURM_GPUS_ON_NODE
-DEBUG_TRACES=${3:-"0"}
+DEBUG_TRACES="${DEBUG_TRACES:-0}"
 
 ### FEATURE FLAGS ###
 MODE="${MODE:-colocated}"
+EFFECTIVE_ROLLOUT_BATCH_SIZE="${EFFECTIVE_ROLLOUT_BATCH_SIZE:-8}"
+EFFECTIVE_MINI_GRADIENT_STEPS="${EFFECTIVE_MINI_GRADIENT_STEPS:-2}"
+ASYNC_ADVANTAGE="${ASYNC_ADVANTAGE:-4}"
 TOOL_VERSION="${TOOL_VERSION:-v4}"
 SMART_REPLAY="${SMART_REPLAY:-0}"
+MAX_REPLAY_ROUNDS="${MAX_REPLAY_ROUNDS:-2}"
 MULTI_STAGE_DISPATCH="${MULTI_STAGE_DISPATCH:-0}"
+LIGER_GRPO_LOSS="${LIGER_GRPO_LOSS:-0}"
 CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
+TIS="${TIS:-0}"
+TIS_TYPE="${TIS_TYPE:-tis}"
+TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
+GSPO="${GSPO:-0}"
 MAX_EPOCHS="${MAX_EPOCHS:-1}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 ### UNIFIED CONSTANTS ###
 AGENT_MAX_STEPS=30
 ZERO_STAGE=2
-PROMPT_MAX_LEN=8192 # Any responses longer than this will be truncated.
-N_SAMPLES_PER_PROMPT=8
+PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-8192}"
+N_SAMPLES_PER_PROMPT=12
+TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-4096}"
+ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1" | bc | awk '{print int($1)}')}"
+
+COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-32}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
 
 ### MODE-DEPENDENT DEFAULTS ###
 if [ "$MODE" = "colocated" ]; then
     ACTOR_GPUS="${ACTOR_GPUS:-$NUM_GPUS}"
     VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
-    ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-32}" # This decides how many prompts are used for each rollout.
-    MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-8}" # This decides how many mini gradient updates are used per rollout; Rollout_batch_size * N_samples_per_prompt / Mini_gradient_steps = number of trajectories used for each gradient update.
-    MICRO_TRAIN_BATCH_SIZE=1 # The larger the micro_train_batch_size, the more memory and less gradient accumulation steps for backwards pass.
-    MICRO_ROLLOUT_BATCH_SIZE=2 # ^ but for forwards pass. These two parameters are overridden, however, by default since we use dynamic batching.
-    VLLM_GPU_MEM_UTIL=0.75
+    ROLLOUT_BATCH_SIZE=$(( EFFECTIVE_ROLLOUT_BATCH_SIZE * ASYNC_ADVANTAGE ))
+    MINI_GRADIENT_STEPS=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
+    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.7}"
     VLLM_SYNC_BACKEND=nccl
-    EVAL_STEPS="${EVAL_STEPS:-32}"
-    TRAIN_MAX_TOKENS_PER_GPU=8192 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
-    ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')
-
+    EVAL_STEPS="${EVAL_STEPS:-$COLO_EVAL_STEPS}"
 elif [ "$MODE" = "distributed" ]; then
     ACTOR_GPUS="${ACTOR_GPUS:?"MODE=distributed requires ACTOR_GPUS"}"
     VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:?"MODE=distributed requires VLLM_NUM_ENGINES"}"
-    ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-8}" # Decrease rollout batch size so that we can actually be more on-policy when we do async by doing less mini-gradient steps and more "on-policy" gradient updates that are off by only 1 step.
-    MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-2}" # Decreasing rollout batch size 4x but we decrease # of mini-gradient steps by 4x -> same number of gradient steps in total as colocated.
-    MICRO_TRAIN_BATCH_SIZE=1
-    MICRO_ROLLOUT_BATCH_SIZE=2
-    VLLM_GPU_MEM_UTIL=0.96
+    ROLLOUT_BATCH_SIZE=$EFFECTIVE_ROLLOUT_BATCH_SIZE  # Distributed uses the effective value directly; smaller than colocated to be more on-policy (only 1-step async lag).
+    MINI_GRADIENT_STEPS=$EFFECTIVE_MINI_GRADIENT_STEPS  # Fewer mini gradient steps to match; ROLLOUT/MINI ratio is identical to colocated, same total gradient steps.
+    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.96}"
     VLLM_SYNC_BACKEND=gloo
-    COLO_ROLLOUT=32; COLO_EVAL=32
-    EVAL_STEPS="${EVAL_STEPS:-$(( COLO_EVAL * COLO_ROLLOUT / ROLLOUT_BATCH_SIZE ))}" # To match the evaluation frequency of the colocated mode.
-    TRAIN_MAX_TOKENS_PER_GPU=8192
-    ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')
+    EVAL_STEPS="${EVAL_STEPS:-$(( COLO_EVAL_STEPS * ASYNC_ADVANTAGE ))}" # Distributed takes ASYNC_ADVANTAGE more global steps per colocated step, so scale eval frequency accordingly.
 else
     echo "Error: MODE must be 'colocated' or 'distributed', got '$MODE'" >&2
     exit 1
@@ -93,12 +169,6 @@ fi
 
 ### BATCH SIZE DERIVATION ###
 TRAIN_BATCH_SIZE=$(( ROLLOUT_BATCH_SIZE * N_SAMPLES_PER_PROMPT / MINI_GRADIENT_STEPS ))
-
-# Assert ratio invariant (cross-multiply to avoid float division)
-COLO_ROLLOUT=32; COLO_MINI=8; DIST_ROLLOUT=8; DIST_MINI=2
-if [ $(( COLO_ROLLOUT * DIST_MINI )) -ne $(( DIST_ROLLOUT * COLO_MINI )) ]; then
-    echo "Error: rollout/mini_gradient_steps ratio mismatch" >&2; exit 1
-fi
 
 ### GPU CHECK (distributed only) ###
 if [ "$MODE" = "distributed" ]; then
@@ -111,24 +181,19 @@ if [ "$MODE" = "distributed" ]; then
     LAYOUT_TAG="${ACTOR_GPUS}a${VLLM_GPUS}v"
 fi
 
-
 ### MODE FLAGS ###
 if [ "$MODE" = "colocated" ]; then
-    MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep --adam_offload" #gpt-oss: adam_offload keeps optimizer on CPU, maximizing GPU VRAM for forward passes.
+    MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep --adam_offload"
 else
     MODE_FLAGS="--async_train --async_queue_size 1 --adam_offload"
 fi
 
-### WARMUP LOGIC (gpt_oss always) ###
+### WARMUP LOGIC ###
 WARMUP_STEPS=20
-WARM_STEPS_MULTIPLIER=$(( MINI_GRADIENT_STEPS * COLO_ROLLOUT / ROLLOUT_BATCH_SIZE ))
-if [ "$WARM_STEPS_MULTIPLIER" -ne 8 ]; then
-    echo "Error: WARM_STEPS_MULTIPLIER should amount to 8 currently regardless of mode." >&2
-    exit 1
-fi
+WARM_STEPS_MULTIPLIER=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
 
 ### MULTI-TASK ###
-TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
+TASK_NAMES=(${TASK_NAMES:-BBB_Martins})
 TASK_LABEL="Base"
 
 ### NCCL / IB / NETWORK CONFIG ###
@@ -182,15 +247,24 @@ IFS=,; TRAIN_DATA="${TRAIN_PARTS[*]}"; unset IFS
 N_TASKS=${#TASK_NAMES[@]}
 DATE_TAG=$(date +%m%d_%H%M)
 CHAT_PROTOCOL="gpt_oss"
+
+# Build suffix tags for active features
+SUFFIX=""
+[ "$SMART_REPLAY" = "1" ] && SUFFIX+="-sr${MAX_REPLAY_ROUNDS}"
+[ "$GSPO" = "1" ] && SUFFIX+="-gspo"
+[ "$TIS" = "1" ] && SUFFIX+="-tis"
+
 if [ "$MODE" = "colocated" ]; then
-    RUN_NAME="grpo-tdc-gptoss-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-colo-${DATE_TAG}"
-    WANDB_GROUP="TDC-GPTOss-colo-$TASK_LABEL"
+    MODE_TAG="colo"
+    RUN_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
+    WANDB_GROUP="TDC-GPTOss-${QUANT_LABEL}-colo-$TASK_LABEL"
 else
-    RUN_NAME="grpo-tdc-gptoss-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-dist-${LAYOUT_TAG}-${DATE_TAG}"
-    WANDB_GROUP="TDC-GPTOss-dist-${LAYOUT_TAG}-$TASK_LABEL"
+    MODE_TAG="dist-${LAYOUT_TAG}"
+    RUN_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
+    WANDB_GROUP="TDC-GPTOss-${QUANT_LABEL}-dist-${LAYOUT_TAG}-$TASK_LABEL"
 fi
 RUN_ID="${RUN_NAME}"
-HUB_NAME="grpo-tdc-gptoss-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
+HUB_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
 RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}"
 mkdir -p "$RUNS_DIR"
 SAVE_PATH="$PROJECT_ROOT/saves/tdc/$RUN_NAME"
@@ -230,7 +304,7 @@ export OPENRLHF_DEBUG_NAN_GUARD=0
 export RAY_NODE_IP_ADDRESS=$(hostname -I | awk '{print $1}')
 ulimit -n 65535 2>/dev/null || true
 
-# Use the conda env's ray to avoid version mismatch with the training script's ray
+# Use the conda env's ray to avoid version mismatch
 CONDA_RAY="$(which python) -m ray.scripts.scripts"
 echo "Using ray from: $(which python)"
 
@@ -264,11 +338,13 @@ echo "Ray is ready."
 
 ### PRINT CONFIG ###
 echo "========================================"
-echo "TDC GRPO Training — GPT-OSS (MODE=$MODE)"
+echo "TDC GRPO Training — GPT-OSS (MODE=$MODE, QUANT=$QUANT_LABEL)"
 echo "========================================"
 echo "Tasks: ${TASK_NAMES[*]}"
 echo "Model: $PRETRAIN_PATH"
 echo "Chat Protocol: $CHAT_PROTOCOL"
+echo "Quantization: $QUANT_LABEL"
+echo "Quant Flags: $QUANT_FLAGS"
 echo "Learning Rate: $LEARNING_RATE"
 echo "Run ID: $RUN_ID"
 echo "----------------------------------------"
@@ -284,6 +360,8 @@ echo "ROLLOUT_BATCH_SIZE: $ROLLOUT_BATCH_SIZE"
 echo "TRAIN_BATCH_SIZE: $TRAIN_BATCH_SIZE"
 echo "VLLM_NUM_ENGINES: $VLLM_NUM_ENGINES"
 echo "EVAL_STEPS: $EVAL_STEPS"
+echo "TRAIN_MAX_TOKENS_PER_GPU: $TRAIN_MAX_TOKENS_PER_GPU"
+echo "ROLLOUT_MAX_TOKENS_PER_GPU: $ROLLOUT_MAX_TOKENS_PER_GPU"
 echo "----------------------------------------"
 echo "Agent Max Steps: $AGENT_MAX_STEPS"
 echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
@@ -294,6 +372,9 @@ echo "----------------------------------------"
 echo "Smart Replay: $SMART_REPLAY"
 echo "Curriculum Balanced: $CURRICULUM_BALANCED"
 echo "Multi Stage Dispatch: $MULTI_STAGE_DISPATCH"
+echo "Liger GRPO Loss: $LIGER_GRPO_LOSS"
+echo "TIS: $TIS (type=$TIS_TYPE, thresholds=$TIS_THRESHOLDS)"
+echo "GSPO: $GSPO"
 echo "Tool Version: $TOOL_VERSION"
 echo "----------------------------------------"
 echo "Runs Dir: $RUNS_DIR"
@@ -325,13 +406,22 @@ if [ "$DYNAMIC_FILTERING" = true ]; then
     OPTIONAL_FLAGS+=" --dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE"
 fi
 if [ "$SMART_REPLAY" = "1" ]; then
-    OPTIONAL_FLAGS+=" --smart_replay --max_replay_rounds 2"
+    OPTIONAL_FLAGS+=" --smart_replay --max_replay_rounds $MAX_REPLAY_ROUNDS"
 fi
 if [ "$CURRICULUM_BALANCED" = "1" ]; then
     OPTIONAL_FLAGS+=" --curriculum_balanced"
 fi
 if [ "$MULTI_STAGE_DISPATCH" = "1" ]; then
     OPTIONAL_FLAGS+=" --multi_stage_dispatch"
+fi
+if [ "$LIGER_GRPO_LOSS" = "1" ]; then
+    OPTIONAL_FLAGS+=" --use_liger_grpo_loss"
+fi
+if [ "$TIS" = "1" ]; then
+    OPTIONAL_FLAGS+=" --enable_vllm_is_correction --vllm_is_correction_type $TIS_TYPE --vllm_is_truncated_threshold $TIS_THRESHOLDS"
+fi
+if [ "$GSPO" = "1" ]; then
+    OPTIONAL_FLAGS+=" --policy_loss_type gspo"
 fi
 
 ### TRAINING ###
@@ -360,8 +450,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --disable_ds_ckpt \
     --logging_steps 1 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
-    --micro_train_batch_size $MICRO_TRAIN_BATCH_SIZE \
-    --micro_rollout_batch_size $MICRO_ROLLOUT_BATCH_SIZE \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $ROLLOUT_BATCH_SIZE \
     --num_episodes $MAX_EPOCHS \
@@ -401,13 +489,11 @@ python -m openrlhf.cli.train_ppo_ray \
     --use_dynamic_batch \
     --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
     --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \
-    --mxfp4_dequantize \
-    --vllm_sync_fp4 mxfp4 \
-    --qat_fp4 mxfp4 \
     --constant_lr_with_warm_up \
     --warmup_steps $WARMUP_STEPS \
     --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
     --skip_eval_step_zero \
+    $QUANT_FLAGS \
     $MODE_FLAGS \
     $OPTIONAL_FLAGS \
     $EXTRA_ARGS \
@@ -415,4 +501,4 @@ python -m openrlhf.cli.train_ppo_ray \
 
 ### CLEANUP ###
 echo "Training complete! Stopping Ray..."
-ray stop --force || true
+$CONDA_RAY stop --force || true

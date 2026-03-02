@@ -106,6 +106,7 @@ run_task() {
     ASYNC_ADVANTAGE="${ASYNC_ADVANTAGE:-4}"
     TOOL_VERSION="${TOOL_VERSION:-v4}"
     SMART_REPLAY="${SMART_REPLAY:-0}"
+    MAX_REPLAY_ROUNDS="${MAX_REPLAY_ROUNDS:-2}"
     MULTI_STAGE_DISPATCH="${MULTI_STAGE_DISPATCH:-0}"
     LIGER_GRPO_LOSS="${LIGER_GRPO_LOSS:-0}"
     CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
@@ -130,20 +131,16 @@ run_task() {
     if [ "$MODE" = "colocated" ]; then
         ACTOR_GPUS="${ACTOR_GPUS:-$NUM_GPUS}"
         VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
-        ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-$(( EFFECTIVE_ROLLOUT_BATCH_SIZE * ASYNC_ADVANTAGE ))}" # This decides how many prompts are used for each rollout.
-        MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))}" # This decides how many mini gradient updates are used per rollout; Rollout_batch_size * N_samples_per_prompt / Mini_gradient_steps = number of trajectories used for each gradient update.
-        MICRO_TRAIN_BATCH_SIZE=4 # The larger the micro_train_batch_size, the more memory and less gradient accumulation steps for backwards pass.
-        MICRO_ROLLOUT_BATCH_SIZE=8 # ^ but for forwards pass. These two parameters are overridden, however, by default since we use dynamic batching.
+        ROLLOUT_BATCH_SIZE=$(( EFFECTIVE_ROLLOUT_BATCH_SIZE * ASYNC_ADVANTAGE ))
+        MINI_GRADIENT_STEPS=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
         VLLM_GPU_MEM_UTIL=0.825
         VLLM_SYNC_BACKEND=nccl
         EVAL_STEPS="${EVAL_STEPS:-$COLO_EVAL_STEPS}"
     elif [ "$MODE" = "distributed" ]; then
         ACTOR_GPUS="${ACTOR_GPUS:?"MODE=distributed requires ACTOR_GPUS"}"
         VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:?"MODE=distributed requires VLLM_NUM_ENGINES"}"
-        ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-$EFFECTIVE_ROLLOUT_BATCH_SIZE}" # Distributed uses the effective value directly; smaller than colocated to be more on-policy (only 1-step async lag).
-        MINI_GRADIENT_STEPS="${MINI_GRADIENT_STEPS:-$EFFECTIVE_MINI_GRADIENT_STEPS}" # Fewer mini gradient steps to match; ROLLOUT/MINI ratio is identical to colocated, same total gradient steps.
-        MICRO_TRAIN_BATCH_SIZE=1
-        MICRO_ROLLOUT_BATCH_SIZE=2
+        ROLLOUT_BATCH_SIZE=$EFFECTIVE_ROLLOUT_BATCH_SIZE  # Distributed uses the effective value directly; smaller than colocated to be more on-policy (only 1-step async lag).
+        MINI_GRADIENT_STEPS=$EFFECTIVE_MINI_GRADIENT_STEPS  # Fewer mini gradient steps to match; ROLLOUT/MINI ratio is identical to colocated, same total gradient steps.
         VLLM_GPU_MEM_UTIL=0.975
         VLLM_SYNC_BACKEND=gloo
         EVAL_STEPS="${EVAL_STEPS:-$(( COLO_EVAL_STEPS * ASYNC_ADVANTAGE ))}" # Distributed takes ASYNC_ADVANTAGE more global steps per colocated step, so scale eval frequency accordingly.
@@ -227,11 +224,18 @@ run_task() {
     N_TASKS=${#TASK_NAMES[@]}
     DATE_TAG=$(date +%m%d_%H%M)
     CHAT_PROTOCOL="intern_s1"
+
+    # Build suffix tags for active features
+    SUFFIX=""
+    [ "$SMART_REPLAY" = "1" ] && SUFFIX+="-sr${MAX_REPLAY_ROUNDS}"
+    [ "$GSPO" = "1" ] && SUFFIX+="-gspo"
+    [ "$TIS" = "1" ] && SUFFIX+="-tis"
+
     if [ "$MODE" = "colocated" ]; then
-        RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
+        RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}${SUFFIX}-${DATE_TAG}"
         WANDB_GROUP="TDC-InternS1-colo-$TASK_LABEL"
     else
-        RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-dist-${LAYOUT_TAG}-${DATE_TAG}"
+        RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}${SUFFIX}-dist-${LAYOUT_TAG}-${DATE_TAG}"
         WANDB_GROUP="TDC-InternS1-dist-${LAYOUT_TAG}-$TASK_LABEL"
     fi
     RUN_ID="${RUN_NAME}"
@@ -388,7 +392,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         OPTIONAL_FLAGS+=" --dynamic_filtering --dynamic_filtering_reward_range $DYNAMIC_FILTERING_REWARD_RANGE"
     fi
     if [ "$SMART_REPLAY" = "1" ]; then
-        OPTIONAL_FLAGS+=" --smart_replay --max_replay_rounds 2"
+        OPTIONAL_FLAGS+=" --smart_replay --max_replay_rounds $MAX_REPLAY_ROUNDS"
     fi
     if [ "$CURRICULUM_BALANCED" = "1" ]; then
         OPTIONAL_FLAGS+=" --curriculum_balanced"
@@ -429,8 +433,6 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --disable_ds_ckpt \
         --logging_steps 1 \
         --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
-        --micro_train_batch_size $MICRO_TRAIN_BATCH_SIZE \
-        --micro_rollout_batch_size $MICRO_ROLLOUT_BATCH_SIZE \
         --train_batch_size $TRAIN_BATCH_SIZE \
         --rollout_batch_size $ROLLOUT_BATCH_SIZE \
         --num_episodes $MAX_EPOCHS \

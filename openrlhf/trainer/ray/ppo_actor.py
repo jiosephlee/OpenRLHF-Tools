@@ -258,6 +258,11 @@ class ActorPPOTrainer(ABC):
         if self.args.use_dynamic_batch:
             self.replay_buffer.setup_dynamic_batch(self.strategy)
 
+        # clear cache at the start
+        import torch
+
+        torch.cuda.empty_cache()
+
         not_shuffle = (
             self.strategy.ring_attn_group is not None
             or self.args.ds_tensor_parallel_size > 1

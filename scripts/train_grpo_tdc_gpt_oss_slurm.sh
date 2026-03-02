@@ -126,7 +126,7 @@ export CONDA_ENV_PATH
 run_task() {
     set -euo pipefail
     export DS_SKIP_CUDA_CHECK=1
-    export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+
 
     ### QUANTIZATION MODE RESOLUTION (inside run_task for srun context) ###
     QUANT_METHOD="${QUANT_METHOD:-mxfp4}"

@@ -17,7 +17,7 @@
 #
 # Usage:
 #   # MXFP4 QAT (default):
-#   LIGER_GRPO_LOSS=1 TRAIN_MAX_TOKENS_PER_GPU=1024 REDUCE_OPTIMIZER=adam_8bit bash train_grpo_tdc_gpt_oss.sh
+#   LIGER_GRPO_LOSS=1 TRAIN_MAX_TOKENS_PER_GPU=16384 REDUCE_OPTIMIZER=adam_8bit bash train_grpo_tdc_gpt_oss.sh
 #
 #   # NVFP4 QAT:
 #   TRAIN_MAX_TOKENS_PER_GPU=1024 QUANT_METHOD=nvfp4 bash train_grpo_tdc_gpt_oss.sh
@@ -109,7 +109,6 @@ eval "$(conda shell.bash hook)"
 conda activate "$CONDA_ENV"
 set -euo pipefail
 export DS_SKIP_CUDA_CHECK=1
-export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
 # Prevent corrupted torch inductor cache from crashing vLLM compilation.
 rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ ~/.cache/vllm/torch_compile_cache/ 2>/dev/null || true

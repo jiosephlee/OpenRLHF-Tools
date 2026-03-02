@@ -16,7 +16,7 @@
 #
 # Usage:
 #   # MXFP4 QAT (default):
-#   MULTI_STAGE_DISPATCH=1 VLLM_GPU_MEM_UTIL=0.7 TRAIN_MAX_TOKENS_PER_GPU=32768 sbatch train_grpo_tdc_gpt_oss_slurm.sh
+#   MULTI_STAGE_DISPATCH=1 VLLM_GPU_MEM_UTIL=0.65 TRAIN_MAX_TOKENS_PER_GPU=32768 sbatch train_grpo_tdc_gpt_oss_slurm.sh
 #
 #   # NVFP4 QAT:
 #   QUANT_METHOD=nvfp4 sbatch scripts/train_grpo_tdc_gpt_oss_slurm.sh

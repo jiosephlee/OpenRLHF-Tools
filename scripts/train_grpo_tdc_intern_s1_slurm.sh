@@ -15,7 +15,7 @@
 #   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
 #
 # With TIS off-policy correction (token-level clamped IS):
-#   TIS=1 SMART_REPLAY=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
+#   TIS=1 MULTI_STAGE_DISPATCH=1 SMART_REPLAY=1 MAX_REPLAY_ROUNDS=2 sbatch train_grpo_tdc_intern_s1_slurm.sh
 #
 # With GSPO loss (sequence-level IS ratio, replaces PPO clipping):
 #   GSPO=1 MULTI_STAGE_DISPATCH=1 SMART_REPLAY=1 MAX_REPLAY_ROUNDS=2 sbatch train_grpo_tdc_intern_s1_slurm.sh
@@ -56,12 +56,11 @@
 #SBATCH --error=logs/grpo-tdc-s1_%j.err
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
-#SBATCH --gpus=4
+#SBATCH --gpus=8
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=1024G
+#SBATCH --mem=1536G
 #SBATCH --cpus-per-gpu=18
 #SBATCH --time=0-8:00:00
-#SBATCH --sockets-per-node=1
 #SBATCH --account=myatskar-lab
 
 ### PARCC PARAMETERS ###
@@ -123,7 +122,7 @@ run_task() {
     ZERO_STAGE=2
     PROMPT_MAX_LEN=12288 # Any responses longer than this will be truncated.
     N_SAMPLES_PER_PROMPT=12
-    TRAIN_MAX_TOKENS_PER_GPU=32768 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
+    TRAIN_MAX_TOKENS_PER_GPU=38912 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
     ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')
 
     COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-32}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
@@ -134,7 +133,7 @@ run_task() {
         VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
         ROLLOUT_BATCH_SIZE=$(( EFFECTIVE_ROLLOUT_BATCH_SIZE * ASYNC_ADVANTAGE ))
         MINI_GRADIENT_STEPS=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
-        VLLM_GPU_MEM_UTIL=0.825
+        VLLM_GPU_MEM_UTIL=0.8275
         VLLM_SYNC_BACKEND=nccl
         EVAL_STEPS="${EVAL_STEPS:-$COLO_EVAL_STEPS}"
     elif [ "$MODE" = "distributed" ]; then
@@ -184,8 +183,8 @@ run_task() {
     WARM_STEPS_MULTIPLIER=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
 
     ### MULTI-TASK ###
-    #TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
-    TASK_NAMES=(BBB_Martins)
+    TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
+    #TASK_NAMES=(BBB_Martins)
     TASK_LABEL="Base"
 
     ### W&B ###

@@ -175,7 +175,11 @@ class Actor(nn.Module):
                         "with Mxfp4Config(dequantize=True) so expert weights are in bf16."
                     )
                     from openrlhf.utils.mxfp4_quantize import register_mxfp4_qat_parametrization
-
+                    # Update internal usage of mxfp4 parametrization to use the optimal router?
+                    # The parametrization currently calls fake_quantize_mxfp4 directly in mxfp4_quantize.py.
+                    # As requested by the user, we swap out the usage of `fake_quantize_mxfp4` directly if possible.
+                    # It's cleaner to patch `fake_quantize_mxfp4` dynamically or just continue using the router in places
+                    # like `vllm_worker_wrap.py`. No change strictly needed here as `register_*_qat_parametrization` sets it up.
                     n = register_mxfp4_qat_parametrization(self.model)
                     logger.info(f"[QAT fp4_fake_quantize/mxfp4] Applied to {n} expert weight layers in actor.")
                 elif qat_fp4_format == "nvfp4":

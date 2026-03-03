@@ -127,6 +127,25 @@ Which dequantizes weights as `fp4 * (block_scale_fp8 * weight_gs)` — exactly M
 
 `nvfp4_emulation_utils.py` is only used via `NvFp4LinearBackend.EMULATION`, activated by the env var `VLLM_USE_NVFP4_CT_EMULATIONS`. This is a debug/fallback mode, never used in production on B200s (which use CUTLASS or FlashInfer). The function `ref_nvfp4_quant` is called with `input_global_scale_inv` (= `1/gs`), so its internal scale formula `gs * vec_max/6` evaluates to `(1/gs) * vec_max/6` = large values — which coincidentally matches ModelOpt format. But the function itself is ambiguous and not the canonical reference.
 
+## MXFP4 vs NVFP4: W4A16 vs W4A4
+
+This is a critical difference for understanding what QAT fake-quantization is actually simulating:
+
+| | **MXFP4** | **NVFP4** |
+|---|---|---|
+| **Activation dtype at inference** | BF16 (unchanged) | FP4 (quantized on-the-fly) |
+| **Kernel type** | W4A16 (Marlin GEMM on SM90/Ampere; MXFP4+MXFP8 CUTLASS on SM100) | W4A4 (CUTLASS/FlashInfer `scaled_fp4_mm`) |
+| **QAT fake-quant on weights only** | **Exact simulation** of inference | **Approximation** — misses activation quantization error |
+
+For **MXFP4**, the default Marlin kernel (`apply_fp4_marlin_linear` in `marlin_utils_fp4.py`) takes bf16 activations directly — no activation quantization happens. So our weight-only fake-quantizer perfectly simulates inference.
+
+For **NVFP4**, `apply_nvfp4_linear` always calls `scaled_fp4_quant(x, input_global_scale_inv)` to quantize activations to FP4 before the GEMM. Fake-quantizing only the weights leaves a gap: training sees bf16 activations, inference sees FP4 activations. In practice this is usually acceptable (weight quantization error dominates), but it's worth knowing.
+
+Key vLLM file references:
+- `vllm/model_executor/layers/quantization/utils/marlin_utils_fp4.py` — `apply_fp4_marlin_linear()`, MXFP4 W4A16 kernel
+- `vllm/model_executor/layers/quantization/mxfp4.py` — MoE backends (Marlin W4A16, SM90 FI W4A16, SM100 FI MXFP4+MXFP8)
+- `vllm/model_executor/layers/quantization/compressed_tensors/schemes/compressed_tensors_w4a16_mxfp4.py` — confirms W4A16 in the scheme name
+
 ## MXFP4: Already Correct
 
 Our MXFP4 code matches ModelOpt exactly (E8M0 exponent-based scales, block_size=32). No formula changes needed.
@@ -146,5 +165,18 @@ Our MXFP4 code matches ModelOpt exactly (E8M0 exponent-based scales, block_size=
 ## Performance Context
 
 - MXFP4: Triton kernel (fused, one pass) + `@torch.compile` PyTorch fallback
-- NVFP4: Two-pass (PyTorch FP8 cast → Triton snap+dequant); can't fuse because FP8 cast isn't supported in Triton on Ampere. `combined_scale = pbs_fp8 * gs` precomputed in pass 1 and passed to kernel to avoid recomputing.
 - `torch.compile` can't be used for NVFP4 on Ampere (current dev GPU); will work on B200s.
+
+## Achieving Exact Match with ModelOpt
+
+Getting our Triton and PyTorch kernels to achieve an **exact 1:1 mathematical match** with ModelOpt required fixing two subtle floating-point precision issues:
+
+### 1. Triton hardware division semantics (`tl.div_rn`)
+Initially, our Triton kernels showed a persistent small mismatch (`max_diff=0.244`) against the PyTorch baseline. This was traced to the Triton `/` operator. On Ampere GPUs, Triton defaults to the `div.approx.f32` PTX instruction for performance, which uses reciprocal multiplication and introduces ~2 ULPs of error. This tiny error was enough to push values residing exactly on E2M1 bucket boundaries into the wrong bucket.
+**Fix**: Replaced `w / scale` with `tl.div_rn(w, scale)`, which forces the compiler to emit the IEEE 754-compliant `div.rn.f32` (round-to-nearest-even) division instruction. This perfectly aligns Triton's arithmetic with PyTorch's.
+
+### 2. IEEE 754 Tie-Breaking in Bucketization
+Even after fixing division, we saw a mismatch (`max_diff=0.812`) between our implementation and ModelOpt itself. 
+The PyTorch `torch.bucketize` function naturally rounds down when a value falls exactly on a boundary. However, the exact midpoint between two valid E2M1 formats represents a tie. Standard IEEE 754 semantics dictate that ties should be rounded to the *nearest even mantissa*. 
+Because E2M1 has alternating odd and even mantissas, the boundaries of `0.75`, `1.75`, and `3.5` represent exact ties between an odd and an even format.
+**Fix**: Updated the comparison-sum bucketization logic to explicitly use `>=` at these specific odd boundaries (and `torch.any(abs_X == odd_bounds)` for PyTorch) to force rounding up to the even mantissa, as implemented internally by ModelOpt's `_cast_fp4`.

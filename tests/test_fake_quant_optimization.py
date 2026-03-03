@@ -71,125 +71,6 @@ MODEL_PROFILES = {
 }
 
 # ---------------------------------------------------------------------------
-# Baseline implementations (original code, pre-optimization)
-# ---------------------------------------------------------------------------
-
-E2M1_MAX = 6.0
-E2M1_BOUNDS = torch.tensor([0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5])
-E2M1_VALUES = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0])
-E4M3_MAX = 448.0
-
-
-def _baseline_fake_quantize_mxfp4_chunk(w_flat, block_size, bounds, values):
-    """Original _fake_quantize_mxfp4_chunk with torch.bucketize."""
-    amax = w_flat.abs().max(dim=-1, keepdim=True).values
-    descale = amax / E2M1_MAX
-    min_exp = torch.tensor(-127.0, device=w_flat.device)
-    e8m0_exp = torch.ceil(torch.maximum(torch.log2(descale), min_exp))
-    scale = torch.exp2(e8m0_exp)
-    w_normalized = w_flat / scale
-    sign = torch.sign(w_normalized)
-    abs_w = w_normalized.abs()
-    ord_ = torch.bucketize(abs_w, bounds)
-    
-    # IEEE round-to-nearest-even tie-breaking for odd E2M1 bounds
-    odd_bounds = bounds[[1, 3, 5]]
-    equals_odd_bounds = torch.any(abs_w.unsqueeze(-1) == odd_bounds, dim=-1)
-    ord_ = ord_ + equals_odd_bounds.to(ord_.dtype)
-    
-    return sign * values[ord_] * scale
-
-
-def baseline_fake_quantize_mxfp4(weight, block_size=32, max_chunk_rows=4096):
-    """Original fake_quantize_mxfp4 with chunking loop."""
-    original_shape = weight.shape
-    original_dtype = weight.dtype
-    total_rows = weight.numel() // block_size
-    bounds = E2M1_BOUNDS.to(weight.device)
-    values = E2M1_VALUES.to(weight.device)
-
-    if total_rows <= max_chunk_rows:
-        w_blocks = weight.float().reshape(-1, block_size)
-        dequantized = _baseline_fake_quantize_mxfp4_chunk(w_blocks, block_size, bounds, values)
-        dequantized = dequantized.reshape(original_shape).to(original_dtype)
-    else:
-        w_blocks = weight.float().reshape(-1, block_size)
-        out = torch.empty_like(w_blocks)
-        for start in range(0, total_rows, max_chunk_rows):
-            end = min(start + max_chunk_rows, total_rows)
-            out[start:end] = _baseline_fake_quantize_mxfp4_chunk(
-                w_blocks[start:end], block_size, bounds, values
-            )
-        dequantized = out.reshape(original_shape).to(original_dtype)
-
-    return weight + (dequantized - weight).detach()
-
-
-def _baseline_compute_nvfp4_global_scale(tensor):
-    amax = tensor.float().abs().max()
-    global_scale = amax / (E4M3_MAX * E2M1_MAX)
-    global_scale = torch.clamp(global_scale, min=1e-12)
-    return global_scale.to(torch.float32)
-
-
-def _baseline_fake_quantize_nvfp4_chunk(w_flat, block_size, global_scale, bounds, values):
-    """Original _fake_quantize_nvfp4_chunk with torch.bucketize."""
-    vec_max = torch.max(torch.abs(w_flat), dim=-1, keepdim=True)[0].to(torch.float32)
-    scale = vec_max / (E2M1_MAX * global_scale)
-    scale = torch.clamp(scale, max=E4M3_MAX, min=-E4M3_MAX)
-    scale = scale.to(torch.float8_e4m3fn).to(torch.float32)
-
-    scaled_x = torch.where(
-        scale == 0, torch.zeros_like(w_flat), w_flat / (scale * global_scale)
-    )
-    clipped_x = torch.clamp(scaled_x, -E2M1_MAX, E2M1_MAX)
-
-    sign = torch.sign(clipped_x)
-    abs_x = clipped_x.abs()
-    ord_ = torch.bucketize(abs_x, bounds)
-    
-    # ModelOpt IEEE round-to-nearest-even tie-breaking for odd E2M1 bounds
-    odd_bounds = bounds[[1, 3, 5]]
-    equals_odd_bounds = torch.any(abs_x.unsqueeze(-1) == odd_bounds, dim=-1)
-    ord_ = ord_ + equals_odd_bounds.to(ord_.dtype)
-    
-    dequantized = sign * values[ord_]
-    dequantized = dequantized * (scale * global_scale)
-    return dequantized
-
-
-def baseline_fake_quantize_nvfp4(weight, block_size=16, global_scale=None, max_chunk_rows=4096):
-    """Original fake_quantize_nvfp4 with chunking loop."""
-    original_shape = weight.shape
-    original_dtype = weight.dtype
-
-    if global_scale is None:
-        global_scale = _baseline_compute_nvfp4_global_scale(weight)
-
-    total_rows = weight.numel() // block_size
-    bounds = E2M1_BOUNDS.to(weight.device)
-    values = E2M1_VALUES.to(weight.device)
-
-    if total_rows <= max_chunk_rows:
-        w_blocks = weight.float().reshape(-1, block_size)
-        dequantized = _baseline_fake_quantize_nvfp4_chunk(
-            w_blocks, block_size, global_scale, bounds, values
-        )
-        dequantized = dequantized.reshape(original_shape).to(original_dtype)
-    else:
-        w_blocks = weight.float().reshape(-1, block_size)
-        out = torch.empty_like(w_blocks)
-        for start in range(0, total_rows, max_chunk_rows):
-            end = min(start + max_chunk_rows, total_rows)
-            out[start:end] = _baseline_fake_quantize_nvfp4_chunk(
-                w_blocks[start:end], block_size, global_scale, bounds, values
-            )
-        dequantized = out.reshape(original_shape).to(original_dtype)
-
-    return weight + (dequantized - weight).detach()
-
-
-# ---------------------------------------------------------------------------
 # ModelOpt cross-check helpers
 # ---------------------------------------------------------------------------
 
@@ -427,12 +308,6 @@ def main():
             return modelopt_mxfp4_roundtrip(w2d, block_size=32).reshape(orig_shape)
 
         print("\n[Timing — full model pass]")
-        base_time, _ = benchmark_model_fakequant(
-            baseline_fake_quantize_mxfp4, weights,
-            warmup=args.warmup, repeat=args.repeat,
-            label="Baseline (chunked + bucketize)"
-        )
-
         compiled_time, _ = benchmark_model_fakequant(
             compiled_mxfp4, weights,
             warmup=args.warmup, repeat=args.repeat,
@@ -458,36 +333,36 @@ def main():
             except Exception as e:
                 print(f"  ⚠️ ModelOpt benchmark failed: {e}")
 
-        compiled_speedup = base_time / compiled_time if compiled_time > 0 else float('inf')
+        ref_time = modelopt_time if modelopt_time is not None else compiled_time
+        ref_name = "ModelOpt" if modelopt_time is not None else "Compiled"
+        
+        compiled_speedup = ref_time / compiled_time if compiled_time > 0 else float('inf')
         print(f"\n  Compiled speedup: {compiled_speedup:.1f}x  "
-              f"({base_time*1000:.0f}ms → {compiled_time*1000:.0f}ms)")
+              f"({ref_time*1000:.0f}ms [{ref_name}] → {compiled_time*1000:.0f}ms)")
+              
         if triton_time is not None:
-            triton_speedup = base_time / triton_time
+            triton_speedup = ref_time / triton_time if triton_time > 0 else float('inf')
             print(f"  Triton speedup:   {triton_speedup:.1f}x  "
-                  f"({base_time*1000:.0f}ms → {triton_time*1000:.0f}ms)")
-        if modelopt_time is not None:
-            modelopt_speedup = base_time / modelopt_time
-            print(f"  ModelOpt speed:   {modelopt_speedup:.1f}x  "
-                  f"({base_time*1000:.0f}ms → {modelopt_time*1000:.0f}ms)")
+                  f"({ref_time*1000:.0f}ms [{ref_name}] → {triton_time*1000:.0f}ms)")
 
         print("\n[Correctness]")
-        check_correctness(
-            baseline_fake_quantize_mxfp4, compiled_mxfp4,
-            weights, "Baseline", "Compiled"
-        )
-        if MXFP4_HAS_TRITON:
-            check_correctness(
-                baseline_fake_quantize_mxfp4, triton_mxfp4,
-                weights, "Baseline", "Triton"
-            )
+        ref_fn = modelopt_mxfp4 if not args.skip_modelopt else compiled_mxfp4
+        ref_name = "ModelOpt" if not args.skip_modelopt else "Compiled"
+        
         if not args.skip_modelopt:
             try:
                 check_correctness(
-                    baseline_fake_quantize_mxfp4, modelopt_mxfp4,
-                    weights, "Baseline", "ModelOpt"
+                    ref_fn, compiled_mxfp4,
+                    weights, ref_name, "Compiled"
                 )
             except Exception as e:
                 print(f"  ⚠️ ModelOpt correctness check failed: {e}")
+                
+        if MXFP4_HAS_TRITON:
+            check_correctness(
+                ref_fn, triton_mxfp4,
+                weights, ref_name, "Triton"
+            )
 
     # -----------------------------------------------------------------------
     # NVFP4 tests
@@ -537,14 +412,6 @@ def main():
             return modelopt_nvfp4_roundtrip(w2d, block_size=16).reshape(orig_shape)
 
         print("\n[Timing — full model pass]")
-        base_time_nv, _ = benchmark_model_fakequant(
-            baseline_fake_quantize_nvfp4, nvfp4_weights,
-            warmup=args.warmup, repeat=args.repeat,
-            label="Baseline (chunked + bucketize)"
-        )
-
-
-
         compiled_time_nv, _ = benchmark_model_fakequant(
             compiled_nvfp4, nvfp4_weights,
             warmup=args.warmup, repeat=args.repeat,
@@ -570,36 +437,36 @@ def main():
             except Exception as e:
                 print(f"  ⚠️ ModelOpt benchmark failed: {e}")
 
-        compiled_speedup_nv = base_time_nv / compiled_time_nv if compiled_time_nv > 0 else float('inf')
-        print(f"  Compiled speedup: {compiled_speedup_nv:.1f}x  "
-              f"({base_time_nv*1000:.0f}ms → {compiled_time_nv*1000:.0f}ms)")
+        ref_time_nv = modelopt_time_nv if modelopt_time_nv is not None else compiled_time_nv
+        ref_name_nv = "ModelOpt" if modelopt_time_nv is not None else "Compiled"
+        
+        compiled_speedup_nv = ref_time_nv / compiled_time_nv if compiled_time_nv > 0 else float('inf')
+        print(f"\n  Compiled speedup: {compiled_speedup_nv:.1f}x  "
+              f"({ref_time_nv*1000:.0f}ms [{ref_name_nv}] → {compiled_time_nv*1000:.0f}ms)")
+              
         if triton_time_nv is not None:
-            triton_speedup_nv = base_time_nv / triton_time_nv
+            triton_speedup_nv = ref_time_nv / triton_time_nv if triton_time_nv > 0 else float('inf')
             print(f"  Triton speedup:   {triton_speedup_nv:.1f}x  "
-                  f"({base_time_nv*1000:.0f}ms → {triton_time_nv*1000:.0f}ms)")
-        if modelopt_time_nv is not None:
-            modelopt_speedup_nv = base_time_nv / modelopt_time_nv
-            print(f"  ModelOpt speed:   {modelopt_speedup_nv:.1f}x  "
-                  f"({base_time_nv*1000:.0f}ms → {modelopt_time_nv*1000:.0f}ms)")
+                  f"({ref_time_nv*1000:.0f}ms [{ref_name_nv}] → {triton_time_nv*1000:.0f}ms)")
 
         print("\n[Correctness]")
-        check_correctness(
-            baseline_fake_quantize_nvfp4, compiled_nvfp4,
-            nvfp4_weights, "Baseline", "Compiled"
-        )
-        if NVFP4_HAS_TRITON:
-            check_correctness(
-                baseline_fake_quantize_nvfp4, triton_nvfp4,
-                nvfp4_weights, "Baseline", "Triton"
-            )
+        ref_fn_nv = modelopt_nvfp4 if not args.skip_modelopt else compiled_nvfp4
+        ref_name_nv = "ModelOpt" if not args.skip_modelopt else "Compiled"
+        
         if not args.skip_modelopt:
             try:
                 check_correctness(
-                    baseline_fake_quantize_nvfp4, modelopt_nvfp4,
-                    nvfp4_weights, "Baseline", "ModelOpt"
+                    ref_fn_nv, compiled_nvfp4,
+                    nvfp4_weights, ref_name_nv, "Compiled"
                 )
             except Exception as e:
                 print(f"  ⚠️ ModelOpt correctness check failed: {e}")
+                
+        if NVFP4_HAS_TRITON:
+            check_correctness(
+                ref_fn_nv, triton_nvfp4,
+                nvfp4_weights, ref_name_nv, "Triton"
+            )
 
     # -----------------------------------------------------------------------
     # Summary
@@ -610,20 +477,22 @@ def main():
     print(f"Profile: {profile['name']} ({total_tensors} tensors, "
           f"{total_elements/1e6:.0f}M elements)")
     if run_mxfp4:
-        line = f"  MXFP4: Baseline {base_time*1000:.0f}ms"
+        ref_time = modelopt_time if modelopt_time is not None else compiled_time
+        ref_name = "ModelOpt" if modelopt_time is not None else "Compiled"
+        line = f"  MXFP4: [Ref: {ref_name}] {ref_time*1000:.0f}ms"
         if modelopt_time is not None:
-            line += f" | ModelOpt {modelopt_time*1000:.0f}ms ({modelopt_speedup:.1f}x)"
-        line += f" | Compiled {compiled_time*1000:.0f}ms ({compiled_speedup:.1f}x)"
+            line += f" | Compiled {compiled_time*1000:.0f}ms ({ref_time/compiled_time:.1f}x)"
         if triton_time is not None:
-            line += f" | Triton {triton_time*1000:.0f}ms ({triton_speedup:.1f}x)"
+            line += f" | Triton {triton_time*1000:.0f}ms ({ref_time/triton_time:.1f}x)"
         print(line)
     if run_nvfp4:
-        line = f"  NVFP4: Baseline {base_time_nv*1000:.0f}ms"
+        ref_time_nv = modelopt_time_nv if modelopt_time_nv is not None else compiled_time_nv
+        ref_name_nv = "ModelOpt" if modelopt_time_nv is not None else "Compiled"
+        line = f"  NVFP4: [Ref: {ref_name_nv}] {ref_time_nv*1000:.0f}ms"
         if modelopt_time_nv is not None:
-            line += f" | ModelOpt {modelopt_time_nv*1000:.0f}ms ({modelopt_speedup_nv:.1f}x)"
-        line += f" | Compiled {compiled_time_nv*1000:.0f}ms ({compiled_speedup_nv:.1f}x)"
+            line += f" | Compiled {compiled_time_nv*1000:.0f}ms ({ref_time_nv/compiled_time_nv:.1f}x)"
         if triton_time_nv is not None:
-            line += f" | Triton {triton_time_nv*1000:.0f}ms ({triton_speedup_nv:.1f}x)"
+            line += f" | Triton {triton_time_nv*1000:.0f}ms ({ref_time_nv/triton_time_nv:.1f}x)"
         print(line)
     print()
 

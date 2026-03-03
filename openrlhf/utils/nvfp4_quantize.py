@@ -170,6 +170,53 @@ if _HAS_TRITON:
 
                 tl.store(out_ptr + offs, result.to(tl.bfloat16), mask=mask)
 
+    @triton.jit
+    def _triton_fused_nvfp4_kernel(
+        w_ptr, global_scale_ptr, out_ptr, N,
+        BLOCK_SIZE: tl.constexpr,
+        BLOCKS_PER_PROGRAM: tl.constexpr,
+    ):
+        """Fused NVFP4 fake-quantize kernel."""
+        pid = tl.program_id(0)
+        global_scale = tl.load(global_scale_ptr).to(tl.float32)
+        
+        for i in range(BLOCKS_PER_PROGRAM):
+            block_idx = pid * BLOCKS_PER_PROGRAM + i
+            base_offs = block_idx * BLOCK_SIZE
+            offs = base_offs + tl.arange(0, BLOCK_SIZE)
+            mask = offs < N
+
+            if base_offs < N:
+                w = tl.load(w_ptr + offs, mask=mask, other=0.0).to(tl.float32)
+                abs_w = tl.abs(w)
+                vec_max = tl.max(abs_w)
+                
+                scale = vec_max / (6.0 * global_scale)
+                scale = tl.minimum(tl.maximum(scale, -448.0), 448.0)
+                # cast to E4M3 and back
+                scale = scale.to(tl.float8e4nv).to(tl.float32)
+                
+                combined_scale = scale * global_scale
+
+                scaled_x = tl.where(combined_scale == 0.0, 0.0, tl.div_rn(w, combined_scale))
+                clipped_x = tl.minimum(tl.maximum(scaled_x, -6.0), 6.0)
+                abs_x = tl.abs(clipped_x)
+
+                ord_ = ((abs_x > 0.25).to(tl.int32) + (abs_x >= 0.75).to(tl.int32) +
+                        (abs_x > 1.25).to(tl.int32) + (abs_x >= 1.75).to(tl.int32) +
+                        (abs_x > 2.5).to(tl.int32) + (abs_x >= 3.5).to(tl.int32) +
+                        (abs_x > 5.0).to(tl.int32))
+
+                m_bit = (ord_ & 1).to(tl.float32)
+                e_bits = (ord_ >> 1).to(tl.float32)
+                normal_val = (1.0 + m_bit * 0.5) * tl.math.exp2(e_bits - 1.0)
+                subnormal_val = ord_.to(tl.float32) * 0.5
+                q_val = tl.where(ord_ < 2, subnormal_val, normal_val)
+
+                sign = tl.where(clipped_x >= 0, 1.0, -1.0)
+                result = sign * q_val * combined_scale
+
+                tl.store(out_ptr + offs, result.to(tl.bfloat16), mask=mask)
 
 def _fake_quantize_nvfp4_triton(
     weight: torch.Tensor, block_size: int, global_scale: torch.Tensor,
@@ -210,6 +257,31 @@ def _fake_quantize_nvfp4_triton(
     )
     return out.reshape(original_shape)
 
+def _fake_quantize_nvfp4_triton_fused(
+    weight: torch.Tensor, block_size: int, global_scale: torch.Tensor,
+) -> torch.Tensor:
+    """Triton V2 fused."""
+    original_shape = weight.shape
+    N = weight.numel()
+    num_blocks = triton.cdiv(N, block_size)
+    assert N % block_size == 0
+
+    w_flat = weight.reshape(-1)
+    out = torch.empty(N, dtype=torch.bfloat16, device=weight.device)
+    
+    BLOCKS_PER_PROGRAM = 64
+    num_programs = triton.cdiv(num_blocks, BLOCKS_PER_PROGRAM)
+    grid = (num_programs,)
+
+    gs_tensor = global_scale.view(1)
+
+    _triton_fused_nvfp4_kernel[grid](
+        w_flat, gs_tensor, out, N,
+        BLOCK_SIZE=block_size,
+        BLOCKS_PER_PROGRAM=BLOCKS_PER_PROGRAM,
+    )
+    return out.reshape(original_shape)
+
 
 def _fake_quantize_nvfp4_chunk(
     w_flat: torch.Tensor, block_size: int, global_scale: torch.Tensor,
@@ -239,6 +311,36 @@ def _fake_quantize_nvfp4_chunk(
     dequantized = sign * values[ord_]
 
     # Dequantize back: value * (scale * global_scale)
+    dequantized = dequantized * (scale * global_scale)
+    return dequantized
+
+@torch.compile(mode="reduce-overhead")
+def _fake_quantize_nvfp4_chunk_v2(
+    w_flat: torch.Tensor, block_size: int, global_scale: torch.Tensor,
+    values: torch.Tensor,
+) -> torch.Tensor:
+    """PyTorch compiled fallback v2."""
+    vec_max = torch.max(torch.abs(w_flat), dim=-1, keepdim=True)[0].to(torch.float32)
+    scale = vec_max / (E2M1_MAX * global_scale)
+    scale = torch.clamp(scale, max=E4M3_MAX, min=-E4M3_MAX)
+    scale = scale.to(torch.float8_e4m3fn).to(torch.float32)
+
+    scaled_x = torch.where(
+        scale == 0,
+        torch.zeros_like(w_flat),
+        w_flat / (scale * global_scale),
+    )
+    clipped_x = torch.clamp(scaled_x, -E2M1_MAX, E2M1_MAX)
+
+    sign = torch.sign(clipped_x)
+    abs_x = clipped_x.abs()
+    ord_ = (
+        (abs_x > 0.25).int() + (abs_x >= 0.75).int() + (abs_x > 1.25).int() +
+        (abs_x >= 1.75).int() + (abs_x > 2.5).int() + (abs_x >= 3.5).int() +
+        (abs_x > 5.0).int()
+    )
+    dequantized = sign * values[ord_]
+
     dequantized = dequantized * (scale * global_scale)
     return dequantized
 

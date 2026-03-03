@@ -201,3 +201,48 @@ python scripts/inspect_nvfp4_checkpoint.py \
 | `RuntimeError: size mismatch dim 1` | Global scale `[E]` vs vLLM's `[E,2]`/`[E,1]` | Reshape in `_load_weights_nvfp4` with `unsqueeze`/`expand` |
 | `AssertionError` on attention weight shapes | vLLM instantiated attn as NVFP4 | `gpt_oss.py` runtime override extends `exclude_modules` |
 | Falls through to MXFP4 loader | `quant_method: "modelopt"` not recognized as NVFP4 | Check `_name_or_path` as fallback in `load_weights` |
+
+---
+
+## Weight Loading Architecture (Why `_load_weights_nvfp4` Exists)
+
+### The General vLLM Weight Loading Flow
+
+When vLLM loads a model, each layer parameter has a `weight_loader` attribute attached by the quantization method's `create_weights()`. For `FusedMoE`, the single `FusedMoE.weight_loader()` method handles all expert parameters. It is called once per weight tensor per expert with three key arguments:
+
+- `weight_name`: the parameter name (e.g. `"w13_weight"`)
+- `shard_id`: `"w1"`, `"w2"`, or `"w3"` — which projection this tensor is for
+- `expert_id`: the global expert index this tensor belongs to
+
+Internally it maps `expert_id` to a local id (for Expert Parallelism), does TP sharding by narrowing the loaded tensor, and dispatches to quantization-method-specific logic (e.g. `ModelOptNvFp4FusedMoE`'s handler).
+
+### Why `_load_weights_nvfp4` Bypasses This (and What We Changed)
+
+The gpt-oss NVFP4 checkpoint stores **all experts fused into one tensor** — e.g. `w13_weight` has shape `(E, 2*intermediate, hidden//2)` rather than one tensor per expert. The generic `weight_loader` API expects to be called once per expert with a 2D per-expert slice, so it cannot directly consume the all-experts-combined format without special handling.
+
+Before our change, `_load_weights_nvfp4` responded to this by **skipping `weight_loader` entirely**: it computed TP/EP slices manually and called `param.copy_()` directly. This bypassed:
+- The ModelOpt-specific loading logic (`_load_combined_w13_weight_scale`, `_load_model_weight_or_group_weight_scale`)
+- `process_weights_after_loading()` format assumptions (correct packed layout per kernel backend)
+
+After our change, we use `weight_loader` for expert weights by:
+1. **Pre-slicing by EP rank** when EP is enabled, so the tensor has shape `(local_E, ...)` before being passed in
+2. **Splitting the fused `w13_weight`** into `w1` and `w3` halves along dim 1, then calling `weight_loader` once for each with `shard_id="w1"` and `shard_id="w3"` — the weight_loader's `_load_w13` handles TP narrowing and writes each half into the correct slot of the fused param. **The param itself stays fused** (`[w1_tp_slice | w3_tp_slice]`); the split only controls what `weight_loader` receives as input.
+3. **Passing `expert_id=ep_rank_start`** for all full-load calls. Since `full_load=True` (3D tensor), `expert_data = param.data` regardless of expert_id. Using `ep_rank_start` (which is always a valid expert on the current EP rank) prevents the `expert_id == -1` guard from short-circuiting the load on non-zero EP ranks.
+
+### What Still Uses Direct Copy and Why
+
+**Global scales (`w13_weight_scale_2`, `w2_weight_scale_2`):**
+The weight_loader does have a path for these — ModelOpt's `_load_per_tensor_weight_scale` is triggered when `"weight_scale_2"` is in the weight name. However, it does `param_data[expert_id][idx] = loaded_weight`, which expects `loaded_weight` to be a single scalar for one expert. The gpt-oss checkpoint stores shape `(E,)` for all experts combined, so calling weight_loader would assign an entire `(E,)` tensor into one expert's scalar slot — wrong. Direct copy (after EP-slicing and shape expansion) is the correct approach here.
+
+**Biases (`w13_bias`, `w2_bias`):**
+The ModelOpt weight_loader handler checks `"weight" in weight_name` to decide whether to dispatch to `_load_model_weight_or_group_weight_scale`. Since `"weight"` is not a substring of `"w13_bias"`, this check is False — the handler returns `True` (success) without loading anything. A silent no-op. Manual TP/EP slicing + `param.copy_()` is required.
+
+Note: the `mxfp4` quant_config path in `weight_loader` (line 1063 of `layer.py`) *does* handle bias via a special `"bias" in weight_name` check. That path is for the MXFP4 checkpoint format, not ModelOpt NVFP4.
+
+### The Duplicate `_load_weights_other` Bug
+
+There were two definitions of `_load_weights_other` in `GptOssModel`:
+- Lines ~972–994: incomplete stub — set up `params_dict` and TP params, then the function body ended with no loading loop
+- Lines ~1168+: the real, complete implementation
+
+Python silently uses the second definition (it overwrites the first). The stub had no runtime effect but was confusing and was removed.

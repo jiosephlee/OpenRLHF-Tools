@@ -28,7 +28,7 @@ E2M1_VALUES = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0])
 E4M3_MAX = 448.0
 
 
-@torch.compile(mode="reduce-overhead")
+@torch.compile()
 def compute_nvfp4_global_scale(tensor: torch.Tensor) -> torch.Tensor:
     """Compute per-tensor FP32 global scale for NVFP4 quantization.
 
@@ -41,7 +41,7 @@ def compute_nvfp4_global_scale(tensor: torch.Tensor) -> torch.Tensor:
     global_scale = amax / (E4M3_MAX * E2M1_MAX)
     # Clamp to avoid zero global_scale
     global_scale = torch.clamp(global_scale, min=1e-12)
-    return global_scale.to(torch.float32)
+    return global_scale.to(torch.float32).clone()
 
 
 @torch.compile(mode="reduce-overhead")
@@ -127,7 +127,7 @@ def legacy_quantize_to_nvfp4(
     # E4M3 scales: squeeze keepdim and cast to float8_e4m3fn
     e4m3_scales = scale.squeeze(-1).to(torch.float8_e4m3fn)
 
-    return packed, e4m3_scales, global_scale
+    return packed.clone(), e4m3_scales.clone(), global_scale.clone()
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +298,7 @@ def _quantize_to_nvfp4_triton(
         BLOCKS_PER_PROGRAM=BLOCKS_PER_PROGRAM,
     )
     
-    return packed.reshape(m, n // 2), scales.reshape(m, n // block_size), global_scale
+    return packed.reshape(m, n // 2).clone(), scales.reshape(m, n // block_size).clone(), global_scale.clone()
 
 
 def _fake_quantize_nvfp4_chunk(

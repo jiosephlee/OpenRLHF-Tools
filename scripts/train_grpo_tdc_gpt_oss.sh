@@ -17,7 +17,7 @@
 # Usage:
 #   VLLM_GPU_MEM_UTIL=0.6
 #   # MXFP4 QAT (default):
-#   LIGER_GRPO_LOSS=1 TRAIN_MAX_TOKENS_PER_GPU=8192 REDUCE_OPTIMIZER=adam_8bit bash train_grpo_tdc_gpt_oss.sh
+#   TRAIN_MAX_TOKENS_PER_GPU=8192 QAT=fp4_fake_quantize bash train_grpo_tdc_gpt_oss.sh
 #
 #   # NVFP4 QAT:
 #   TRAIN_MAX_TOKENS_PER_GPU=1024 QUANT_METHOD=nvfp4 bash train_grpo_tdc_gpt_oss.sh

@@ -89,7 +89,7 @@ def legacy_quantize_to_mxfp4(
     scale_shape[-1] = scale_shape[-1] // block_size
     e8m0_scales = (e8m0_exp + 127).to(torch.uint8).reshape(scale_shape)
 
-    return packed, e8m0_scales
+    return packed.clone(), e8m0_scales.clone()
 
 
 # FP4 E2M1 magnitude lookup: ord_ index 0..7 -> representable magnitude
@@ -269,7 +269,7 @@ def _quantize_to_mxfp4_triton(
     scale_shape = list(original_shape)
     scale_shape[-1] = scale_shape[-1] // block_size
     
-    return packed.reshape(packed_shape), scales.reshape(scale_shape)
+    return packed.reshape(packed_shape).clone(), scales.reshape(scale_shape).clone()
 
 
 @torch.compile(mode="reduce-overhead")

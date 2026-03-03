@@ -10,6 +10,13 @@
 import torch
 import torch.nn as nn
 
+try:
+    import triton
+    import triton.language as tl
+    _HAS_TRITON = True
+except ImportError:
+    _HAS_TRITON = False
+
 # FP4 E2M1 representable values: ±{0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0}
 E2M1_MAX = 6.0
 E2M1_BOUNDS = torch.tensor([0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5])
@@ -63,22 +70,19 @@ def quantize_to_nvfp4(
     # Reshape into blocks
     x = tensor.float().reshape(m, n // block_size, block_size)
 
-    # Compute per-block E4M3 scales (following ref_nvfp4_quant)
+    # Compute per-block E4M3 scales (ModelOpt convention)
     vec_max = torch.max(torch.abs(x), dim=-1, keepdim=True)[0].to(torch.float32)
-    scale = global_scale * (vec_max / E2M1_MAX)
+    scale = vec_max / (E2M1_MAX * global_scale)
     scale = torch.clamp(scale, max=E4M3_MAX, min=-E4M3_MAX)
     # Cast to E4M3 and back to simulate E4M3 precision loss
     scale = scale.to(torch.float8_e4m3fn).to(torch.float32)
 
-    # Compute inverse scale for normalization
-    output_scale = torch.where(
-        scale == 0,
-        torch.zeros_like(scale),
-        1.0 / (scale / global_scale),
-    )
-
     # Normalize values into FP4 range and clamp
-    scaled_x = x.to(torch.float32) * output_scale
+    scaled_x = torch.where(
+        scale == 0,
+        torch.zeros_like(x, dtype=torch.float32),
+        x.to(torch.float32) / (scale * global_scale),
+    )
     clipped_x = torch.clamp(scaled_x, -E2M1_MAX, E2M1_MAX).reshape(m, n)
 
     # Cast to nearest FP4 E2M1 representable value
@@ -100,46 +104,147 @@ def quantize_to_nvfp4(
     return packed, e4m3_scales, global_scale
 
 
+# ---------------------------------------------------------------------------
+# Triton kernel for NVFP4 fake quantization
+# ---------------------------------------------------------------------------
+
+if _HAS_TRITON:
+    @triton.jit
+    def _triton_fake_quant_nvfp4_kernel(
+        w_ptr, scale_ptr, out_ptr, N,
+        global_scale,
+        BLOCK_SIZE: tl.constexpr,
+        BLOCKS_PER_PROGRAM: tl.constexpr,
+    ):
+        """NVFP4 fake-quantize kernel with pre-computed E4M3 scales processing BLOCKS_PER_PROGRAM blocks.
+
+        Takes pre-computed per-block scales (from PyTorch E4M3 cast) and
+        performs normalize → snap to E2M1 → dequantize in one fused kernel.
+        """
+        pid = tl.program_id(0)
+        
+        for i in range(BLOCKS_PER_PROGRAM):
+            block_idx = pid * BLOCKS_PER_PROGRAM + i
+            base_offs = block_idx * BLOCK_SIZE
+            offs = base_offs + tl.arange(0, BLOCK_SIZE)
+            mask = offs < N
+
+            # If block is completely out of bounds, skip
+            if base_offs < N:
+                # Load block data and pre-computed scale for this block
+                w = tl.load(w_ptr + offs, mask=mask, other=0.0).to(tl.float32)
+                scale = tl.load(scale_ptr + block_idx).to(tl.float32)
+
+                # Normalize and clamp to FP4 range
+                scaled_x = tl.where(scale == 0.0, 0.0, w / (scale * global_scale))
+                clipped_x = tl.minimum(tl.maximum(scaled_x, -6.0), 6.0)
+                abs_x = tl.abs(clipped_x)
+
+                # Comparison-sum bucketize (matches torch.bucketize right=False)
+                ord_ = ((abs_x > 0.25).to(tl.int32) + (abs_x > 0.75).to(tl.int32) +
+                        (abs_x > 1.25).to(tl.int32) + (abs_x > 1.75).to(tl.int32) +
+                        (abs_x > 2.5).to(tl.int32) + (abs_x > 3.5).to(tl.int32) +
+                        (abs_x > 5.0).to(tl.int32))
+
+                # Inline E2M1 decode: no table lookup needed
+                # Subnormals (ord_ < 2): val = ord_ * 0.5 → {0.0, 0.5}
+                # Normals (ord_ >= 2): val = (1 + mantissa_bit * 0.5) * 2^(exp_bits - 1)
+                #   where mantissa_bit = ord_ & 1, exp_bits = ord_ >> 1
+                m_bit = (ord_ & 1).to(tl.float32)
+                e_bits = (ord_ >> 1).to(tl.float32)
+                normal_val = (1.0 + m_bit * 0.5) * tl.math.exp2(e_bits - 1.0)
+                subnormal_val = ord_.to(tl.float32) * 0.5
+                q_val = tl.where(ord_ < 2, subnormal_val, normal_val)
+
+                # Dequantize: sign * fp4_val * (scale * global_scale)
+                dequant_scale = tl.where(scale == 0.0, 0.0, scale * global_scale)
+                result = tl.where(clipped_x >= 0, q_val, -q_val) * dequant_scale
+
+                tl.store(out_ptr + offs, result.to(tl.bfloat16), mask=mask)
+
+
+def _fake_quantize_nvfp4_triton(
+    weight: torch.Tensor, block_size: int, global_scale: torch.Tensor,
+) -> torch.Tensor:
+    """Two-pass NVFP4 fake quantization: PyTorch scale + Triton snap+dequant.
+
+    Pass 1 (PyTorch): Compute per-block E4M3 scale using real float8_e4m3fn cast.
+    Pass 2 (Triton): Fused normalize + snap-to-E2M1 + dequantize.
+    """
+    original_shape = weight.shape
+    N = weight.numel()
+    num_blocks = triton.cdiv(N, block_size)
+    assert N % block_size == 0
+
+    # Pass 1: compute per-block E4M3 scales in PyTorch (exact fp8 cast, ModelOpt convention)
+    w_blocks = weight.float().reshape(num_blocks, block_size)
+    vec_max = w_blocks.abs().max(dim=-1, keepdim=True).values
+    scale = vec_max / (E2M1_MAX * global_scale)
+    scale = torch.clamp(scale, max=E4M3_MAX, min=-E4M3_MAX)
+    scale = scale.to(torch.float8_e4m3fn).to(torch.float32).squeeze(-1)  # [num_blocks]
+
+    # Pass 2: Triton kernel — normalize, snap, dequant
+    w_flat = weight.reshape(-1)
+    out = torch.empty(N, dtype=torch.bfloat16, device=weight.device)
+    
+    # Process 64 blocks (1024 elements) per program to improve occupancy
+    BLOCKS_PER_PROGRAM = 64
+    num_programs = triton.cdiv(num_blocks, BLOCKS_PER_PROGRAM)
+    grid = (num_programs,)
+
+    _triton_fake_quant_nvfp4_kernel[grid](
+        w_flat, scale, out, N,
+        global_scale.item(),
+        BLOCK_SIZE=block_size,
+        BLOCKS_PER_PROGRAM=BLOCKS_PER_PROGRAM,
+    )
+    return out.reshape(original_shape)
+
+
 def _fake_quantize_nvfp4_chunk(
     w_flat: torch.Tensor, block_size: int, global_scale: torch.Tensor,
-    bounds: torch.Tensor, values: torch.Tensor,
+    values: torch.Tensor,
 ) -> torch.Tensor:
-    """Quantize a flat (N, block_size) float32 tensor to fake-NVFP4. Returns float32 result."""
+    """PyTorch fallback: quantize a flat (N, block_size) float32 tensor to fake-NVFP4."""
     vec_max = torch.max(torch.abs(w_flat), dim=-1, keepdim=True)[0].to(torch.float32)
-    scale = global_scale * (vec_max / E2M1_MAX)
+    scale = vec_max / (E2M1_MAX * global_scale)
     scale = torch.clamp(scale, max=E4M3_MAX, min=-E4M3_MAX)
     scale = scale.to(torch.float8_e4m3fn).to(torch.float32)
 
-    output_scale = torch.where(
+    scaled_x = torch.where(
         scale == 0,
-        torch.zeros_like(scale),
-        1.0 / (scale / global_scale),
+        torch.zeros_like(w_flat),
+        w_flat / (scale * global_scale),
     )
-
-    scaled_x = w_flat * output_scale
     clipped_x = torch.clamp(scaled_x, -E2M1_MAX, E2M1_MAX)
 
-    # Snap to nearest FP4 value
+    # Snap to nearest FP4 value — manual bucketize matching torch.bucketize(right=False)
     sign = torch.sign(clipped_x)
-    ord_ = torch.bucketize(clipped_x.abs(), bounds)
+    abs_x = clipped_x.abs()
+    ord_ = (
+        (abs_x > 0.25).int() + (abs_x > 0.75).int() + (abs_x > 1.25).int() +
+        (abs_x > 1.75).int() + (abs_x > 2.5).int() + (abs_x > 3.5).int() +
+        (abs_x > 5.0).int()
+    )
     dequantized = sign * values[ord_]
 
-    # Dequantize back: value * (scale / global_scale)
-    dequantized = dequantized * (scale / global_scale)
+    # Dequantize back: value * (scale * global_scale)
+    dequantized = dequantized * (scale * global_scale)
     return dequantized
 
 
 def fake_quantize_nvfp4(
     weight: torch.Tensor, block_size: int = 16,
     global_scale: torch.Tensor | None = None,
-    max_chunk_rows: int = 4096,
+    max_chunk_rows: int = 65536,
 ) -> torch.Tensor:
     """Differentiable NVFP4 fake-quantizer for QAT.
 
     Forward: returns NVFP4-dequantized approximation (same shape/dtype as input).
     Backward: straight-through estimator — gradient flows unchanged.
 
-    Processes in row-chunks to cap peak intermediate memory.
+    Uses a fused Triton kernel when available, falls back to PyTorch with
+    large-chunk processing to bound peak memory.
     """
     original_shape = weight.shape
     original_dtype = weight.dtype
@@ -147,13 +252,18 @@ def fake_quantize_nvfp4(
     if global_scale is None:
         global_scale = compute_nvfp4_global_scale(weight)
 
-    total_rows = weight.numel() // block_size
-    bounds = E2M1_BOUNDS.to(weight.device)
+    # Triton path: fused kernel, zero intermediate memory
+    if _HAS_TRITON and weight.is_cuda and weight.dtype == torch.bfloat16:
+        dequantized = _fake_quantize_nvfp4_triton(weight, block_size, global_scale)
+        return weight + (dequantized - weight).detach()
+
+    # PyTorch fallback with large-chunk processing
     values = E2M1_VALUES.to(weight.device)
+    total_rows = weight.numel() // block_size
 
     if total_rows <= max_chunk_rows:
         w_blocks = weight.float().reshape(-1, block_size)
-        dequantized = _fake_quantize_nvfp4_chunk(w_blocks, block_size, global_scale, bounds, values)
+        dequantized = _fake_quantize_nvfp4_chunk(w_blocks, block_size, global_scale, values)
         dequantized = dequantized.reshape(original_shape).to(original_dtype)
     else:
         w_blocks = weight.float().reshape(-1, block_size)
@@ -161,11 +271,10 @@ def fake_quantize_nvfp4(
         for start in range(0, total_rows, max_chunk_rows):
             end = min(start + max_chunk_rows, total_rows)
             out[start:end] = _fake_quantize_nvfp4_chunk(
-                w_blocks[start:end], block_size, global_scale, bounds, values,
+                w_blocks[start:end], block_size, global_scale, values,
             )
         dequantized = out.reshape(original_shape).to(original_dtype)
 
-    # STE: forward = dequantized value, backward = identity through weight
     return weight + (dequantized - weight).detach()
 
 

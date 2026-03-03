@@ -9,6 +9,13 @@
 import torch
 import torch.nn as nn
 
+try:
+    import triton
+    import triton.language as tl
+    _HAS_TRITON = True
+except ImportError:
+    _HAS_TRITON = False
+
 # FP4 E2M1 representable values: ±{0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0}
 E2M1_MAX = 6.0
 E2M1_BOUNDS = torch.tensor([0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5])
@@ -70,10 +77,97 @@ def quantize_to_mxfp4(
 E2M1_VALUES = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0])
 
 
+# ---------------------------------------------------------------------------
+# Triton kernel for MXFP4 fake quantization
+# ---------------------------------------------------------------------------
+
+if _HAS_TRITON:
+    @triton.jit
+    def _triton_fake_quant_mxfp4_kernel(
+        w_ptr, out_ptr, N,
+        BLOCK_SIZE: tl.constexpr,
+        BLOCKS_PER_PROGRAM: tl.constexpr,
+    ):
+        """Fused MXFP4 fake-quantize kernel: processes BLOCKS_PER_PROGRAM blocks.
+
+        Reads bf16 → computes E8M0 scale → normalizes → snaps to E2M1 → dequantizes → writes bf16.
+        Zero intermediate tensor materialization.
+        """
+        pid = tl.program_id(0)
+        
+        # Loop over BLOCKS_PER_PROGRAM
+        for i in range(BLOCKS_PER_PROGRAM):
+            block_idx = pid * BLOCKS_PER_PROGRAM + i
+            base_offs = block_idx * BLOCK_SIZE
+            offs = base_offs + tl.arange(0, BLOCK_SIZE)
+            mask = offs < N
+
+            # If block is completely out of bounds, skip computations
+            if base_offs < N:
+                # Load block and convert to float32
+                # Use other=0.0 so out-of-bounds doesn't affect amax
+                w = tl.load(w_ptr + offs, mask=mask, other=0.0).to(tl.float32)
+                
+                # Per-block amax + E8M0 scale
+                amax = tl.max(tl.abs(w))
+                descale = amax * 0.16666666666666666  # amax / 6.0
+                log2_val = tl.math.log2(descale + 1e-45)  # +eps avoids log2(0)
+                e8m0_exp = tl.math.ceil(tl.maximum(log2_val, -127.0))
+                scale = tl.math.exp2(e8m0_exp)
+
+                # Normalize
+                w_norm = w / scale
+                abs_w = tl.abs(w_norm)
+
+                # Comparison-sum bucketize (same as torch.bucketize with right=False)
+                ord_ = ((abs_w > 0.25).to(tl.int32) + (abs_w > 0.75).to(tl.int32) +
+                        (abs_w > 1.25).to(tl.int32) + (abs_w > 1.75).to(tl.int32) +
+                        (abs_w > 2.5).to(tl.int32) + (abs_w > 3.5).to(tl.int32) +
+                        (abs_w > 5.0).to(tl.int32))
+
+                # Inline E2M1 decode: no table lookup needed
+                # Subnormals (ord_ < 2): val = ord_ * 0.5 → {0.0, 0.5}
+                # Normals (ord_ >= 2): val = (1 + mantissa_bit * 0.5) * 2^(exp_bits - 1)
+                #   where mantissa_bit = ord_ & 1, exp_bits = ord_ >> 1
+                m_bit = (ord_ & 1).to(tl.float32)
+                e_bits = (ord_ >> 1).to(tl.float32)
+                normal_val = (1.0 + m_bit * 0.5) * tl.math.exp2(e_bits - 1.0)
+                subnormal_val = ord_.to(tl.float32) * 0.5
+                q_val = tl.where(ord_ < 2, subnormal_val, normal_val)
+
+                # Dequantize: sign * fp4_val * scale
+                result = tl.where(w_norm >= 0, q_val, -q_val) * scale
+
+                tl.store(out_ptr + offs, result.to(tl.bfloat16), mask=mask)
+
+
+def _fake_quantize_mxfp4_triton(weight: torch.Tensor, block_size: int = 32) -> torch.Tensor:
+    """Triton-based MXFP4 fake quantization. Fuses all ops into a single kernel."""
+    original_shape = weight.shape
+    N = weight.numel()
+    
+    # Process 32 blocks (1024 elements) per program to improve occupancy
+    BLOCKS_PER_PROGRAM = 32
+    
+    out = torch.empty(N, dtype=torch.bfloat16, device=weight.device)
+    
+    num_blocks = triton.cdiv(N, block_size)
+    num_programs = triton.cdiv(num_blocks, BLOCKS_PER_PROGRAM)
+    grid = (num_programs,)
+
+    _triton_fake_quant_mxfp4_kernel[grid](
+        weight.reshape(-1), out, N,
+        BLOCK_SIZE=block_size,
+        BLOCKS_PER_PROGRAM=BLOCKS_PER_PROGRAM,
+    )
+    return out.reshape(original_shape)
+
+
+@torch.compile(mode="reduce-overhead")
 def _fake_quantize_mxfp4_chunk(
-    w_flat: torch.Tensor, block_size: int, bounds: torch.Tensor, values: torch.Tensor
+    w_flat: torch.Tensor, block_size: int, values: torch.Tensor
 ) -> torch.Tensor:
-    """Quantize a flat (N, block_size) float32 tensor to fake-MXFP4. Returns bf16/fp16-sized result."""
+    """PyTorch compiled fallback: quantize a flat (N, block_size) float32 tensor to fake-MXFP4."""
     amax = w_flat.abs().max(dim=-1, keepdim=True).values
     descale = amax / E2M1_MAX
     min_exp = torch.tensor(-127.0, device=w_flat.device)
@@ -82,42 +176,36 @@ def _fake_quantize_mxfp4_chunk(
 
     w_normalized = w_flat / scale
     sign = torch.sign(w_normalized)
-    ord_ = torch.bucketize(w_normalized.abs(), bounds)
+
+    abs_w = w_normalized.abs()
+    ord_ = (
+        (abs_w > 0.25).int() + (abs_w > 0.75).int() + (abs_w > 1.25).int() +
+        (abs_w > 1.75).int() + (abs_w > 2.5).int() + (abs_w > 3.5).int() +
+        (abs_w > 5.0).int()
+    )
 
     return sign * values[ord_] * scale
 
 
-def fake_quantize_mxfp4(weight: torch.Tensor, block_size: int = 32, max_chunk_rows: int = 4096) -> torch.Tensor:
+def fake_quantize_mxfp4(weight: torch.Tensor, block_size: int = 32) -> torch.Tensor:
     """Differentiable MXFP4 fake-quantizer for QAT.
 
     Forward: returns MXFP4-dequantized approximation (same shape/dtype as input).
     Backward: straight-through estimator — gradient flows unchanged.
 
-    Processes in row-chunks of `max_chunk_rows` blocks to cap peak intermediate
-    memory during gradient-checkpoint recompute.
+    Uses a fused Triton kernel when available, falls back to PyTorch.
     """
+    if _HAS_TRITON and weight.is_cuda and weight.dtype == torch.bfloat16:
+        dequantized = _fake_quantize_mxfp4_triton(weight, block_size)
+        return weight + (dequantized - weight).detach()
+
+    # PyTorch fallback
     original_shape = weight.shape
     original_dtype = weight.dtype
-
-    total_rows = weight.numel() // block_size
-    bounds = E2M1_BOUNDS.to(weight.device)
     values = E2M1_VALUES.to(weight.device)
-
-    if total_rows <= max_chunk_rows:
-        # Small tensor — process in one shot (no overhead)
-        w_blocks = weight.float().reshape(-1, block_size)
-        dequantized = _fake_quantize_mxfp4_chunk(w_blocks, block_size, bounds, values)
-        dequantized = dequantized.reshape(original_shape).to(original_dtype)
-    else:
-        # Large tensor — process in chunks to bound peak memory
-        w_blocks = weight.float().reshape(-1, block_size)
-        out = torch.empty_like(w_blocks)
-        for start in range(0, total_rows, max_chunk_rows):
-            end = min(start + max_chunk_rows, total_rows)
-            out[start:end] = _fake_quantize_mxfp4_chunk(w_blocks[start:end], block_size, bounds, values)
-        dequantized = out.reshape(original_shape).to(original_dtype)
-
-    # STE: forward = dequantized value, backward = identity through weight
+    w_blocks = weight.float().reshape(-1, block_size)
+    dequantized = _fake_quantize_mxfp4_chunk(w_blocks, block_size, values)
+    dequantized = dequantized.reshape(original_shape).to(original_dtype)
     return weight + (dequantized - weight).detach()
 
 

@@ -187,11 +187,6 @@ class Actor(nn.Module):
                     raise ValueError(
                         f"--qat fp4_fake_quantize requires --vllm_sync_fp4 (mxfp4 or nvfp4), got '{qat_fp4_format}'"
                     )
-            elif qat == "gaussian_noise":
-                logger.info(
-                    "[QAT Gaussian Noise] No parametrize hooks applied. "
-                    "Gaussian noise will be injected into RMSNorm layers at each training step."
-                )
 
             # MoE - balancing loss
             model_config = self.model.config.to_dict()

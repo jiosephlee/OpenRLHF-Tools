@@ -103,7 +103,7 @@ Closes the train/inference distribution gap when vLLM serves with FP4-quantized 
 
 - Only MoE expert projections are targeted (same name filter as `vllm_worker_wrap`: `"experts"` in path AND one of `gate_up_proj`/`down_proj`/`w13_weight`/`w2_weight`).
 - Weight sync unaffected: `named_parameters()` yields true bf16.
-- Enabled via `--qat_fp4 gaussian_noise` (along with `--mxfp4_dequantize_base_model` / `--nvfp4_dequantize_base_model`).
+- Enabled via `--qat fp4_fake_quantize` (along with `--mxfp4_dequantize_base_model` / `--nvfp4_dequantize_base_model`).
 
 ### 16. Ceiling Fix for Dynamic Batch Splitting
 **File:** `openrlhf/trainer/ppo_utils/experience_maker.py`

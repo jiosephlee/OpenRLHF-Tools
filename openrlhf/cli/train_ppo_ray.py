@@ -441,12 +441,11 @@ if __name__ == "__main__":
         "--qat",
         type=str,
         default=None,
-        choices=["fp4_fake_quantize", "gaussian_noise"],
+        choices=["fp4_fake_quantize"],
         help=(
             "Enable Quantization-Aware Training (QAT) during actor forward passes. "
             "'fp4_fake_quantize': fake-quantize expert weights (bf16 -> nearest FP4 -> bf16) via STE; "
             "the concrete FP4 format (mxfp4/nvfp4) is derived from --vllm_sync_fp4. "
-            "'gaussian_noise': Simulates quantization via injected Gaussian noise (QeRL approach). "
             "Default: None (no QAT)."
         ),
     )

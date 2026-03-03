@@ -821,12 +821,6 @@ class PolicyModelActor(BaseModelActor):
     def broadcast_to_vllm(self):
         self.trainer.broadcast_to_vllm()
 
-    def apply_gaussian_noise(self, step, total_step, sigma_trend):
-        """Inject Gaussian noise into Actor's RMSNorm layers (QeRL approach)."""
-        from openrlhf.utils.noise_scheduler import generate_gaussian_noise
-
-        generate_gaussian_noise(self.actor, step, total_step, sigma_trend)
-
     def get_checkpoint_states(self):
         return self.checkpoint_states
 

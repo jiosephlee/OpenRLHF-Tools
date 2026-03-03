@@ -48,7 +48,7 @@
 #   TIS_TYPE=tis                         # TIS variant: tis (default), icepop, seq-mask-tis
 #   TIS_THRESHOLDS="0.5 5.0"            # Low and high clamp thresholds (default: 0.5 5.0)
 #   GSPO=1                               # Use GSPO loss (sequence-level IS ratio) instead of PPO
-#   QAT=fp4_fake_quantize|gaussian_noise  # QAT method (default: off). fp4_fake_quantize derives format from QUANT_METHOD
+#   QAT=fp4_fake_quantize                 # QAT method (default: off). fp4_fake_quantize derives format from QUANT_METHOD
 #   KV_CACHE_DTYPE=fp8                   # KV cache dtype for vLLM (default: off, i.e. vLLM default auto)
 #   REDUCE_OPTIMIZER=adam_offload        # Optimizer: adam_offload (default) or adam_8bit
 #   MAX_EPOCHS=2                         # Training epochs (default: 1)

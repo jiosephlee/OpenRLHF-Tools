@@ -463,12 +463,12 @@ def main():
 
         from openrlhf.utils.nvfp4_quantize import (
             fake_quantize_nvfp4, compute_nvfp4_global_scale,
-            _fake_quantize_nvfp4_chunk, _fake_quantize_nvfp4_chunk_v2,
+            _fake_quantize_nvfp4_chunk,
             _HAS_TRITON as NVFP4_HAS_TRITON,
             E2M1_VALUES as NV_VALUES,
         )
         if NVFP4_HAS_TRITON:
-            from openrlhf.utils.nvfp4_quantize import _fake_quantize_nvfp4_triton, _fake_quantize_nvfp4_triton_fused
+            from openrlhf.utils.nvfp4_quantize import _fake_quantize_nvfp4_triton
 
         # Compiled PyTorch wrapper (uses manual comparisons, no chunking)
         def compiled_nvfp4(w, block_size=16):
@@ -479,25 +479,11 @@ def main():
             dq = dq.reshape(w.shape).to(w.dtype)
             return w + (dq - w).detach()
 
-        def compiled_nvfp4_v2(w, block_size=16):
-            gs = compute_nvfp4_global_scale(w)
-            vals = NV_VALUES.to(w.device)
-            w_blocks = w.float().reshape(-1, block_size)
-            dq = _fake_quantize_nvfp4_chunk_v2(w_blocks, block_size, gs, vals)
-            dq = dq.reshape(w.shape).to(w.dtype)
-            return w + (dq - w).detach()
-
         # Triton wrapper
         def triton_nvfp4(w):
             from openrlhf.utils.nvfp4_quantize import _fake_quantize_nvfp4_triton
             gs = compute_nvfp4_global_scale(w)
             dq = _fake_quantize_nvfp4_triton(w, 16, gs)
-            return w + (dq - w).detach()
-
-        def triton_nvfp4_v2(w):
-            from openrlhf.utils.nvfp4_quantize import _fake_quantize_nvfp4_triton_fused
-            gs = compute_nvfp4_global_scale(w)
-            dq = _fake_quantize_nvfp4_triton_fused(w, 16, gs)
             return w + (dq - w).detach()
 
         # ModelOpt wrapper
@@ -512,31 +498,14 @@ def main():
             warmup=args.warmup, repeat=args.repeat,
             label="Compiled PyTorch (B+C: manual cmp, no-chunk)"
         )
-        
-        try:
-            compiled_time_nv_v2, _ = benchmark_model_fakequant(
-                compiled_nvfp4_v2, nvfp4_weights,
-                warmup=args.warmup, repeat=args.repeat,
-                label="Compiled PyTorch V2 (@torch.compile)"
-            )
-        except Exception as e:
-            print(f"  ⚠️ Compiled PyTorch V2 benchmark failed: {e}")
 
         triton_time_nv = None
         if NVFP4_HAS_TRITON:
             triton_time_nv, _ = benchmark_model_fakequant(
                 triton_nvfp4, nvfp4_weights,
                 warmup=args.warmup, repeat=args.repeat,
-                label="Triton kernel (two-pass: PyTorch E4M3 + Triton)"
+                label="Triton kernel (fused scale + quantize)"
             )
-            try:
-                triton_time_nv_v2, _ = benchmark_model_fakequant(
-                    triton_nvfp4_v2, nvfp4_weights,
-                    warmup=args.warmup, repeat=args.repeat,
-                    label="Triton kernel V2 (fused scale + quantize)"
-                )
-            except Exception as e:
-                print(f"  ⚠️ Triton V2 benchmark failed: {e}")
 
         modelopt_time_nv = None
         if not args.skip_modelopt:
@@ -579,27 +548,12 @@ def main():
                 )
             except Exception as e:
                 print(f"  ⚠️ ModelOpt correctness check failed: {e}")
-
-        try:
-            check_correctness(
-                ref_fn_nv, compiled_nvfp4_v2,
-                nvfp4_weights, ref_name_nv, "Compiled V2"
-            )
-        except Exception as e:
-            pass
                 
         if NVFP4_HAS_TRITON:
             check_correctness(
                 ref_fn_nv, triton_nvfp4,
                 nvfp4_weights, ref_name_nv, "Triton"
             )
-            try:
-                check_correctness(
-                    ref_fn_nv, triton_nvfp4_v2,
-                    nvfp4_weights, ref_name_nv, "Triton V2"
-                )
-            except Exception as e:
-                pass
 
         check_correctness(
             ref_fn_nv, openrlhf_nvfp4_sync_roundtrip,

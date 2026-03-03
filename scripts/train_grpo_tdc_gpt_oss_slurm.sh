@@ -61,13 +61,13 @@
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
 #SBATCH --qos=normal
-#SBATCH --gpus=2
+#SBATCH --gpus=4
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=768G
+#SBATCH --mem=1024G
 #SBATCH --gres-flags=enforce-binding
 #SBATCH --sockets-per-node=1
-#SBATCH --cpus-per-gpu=16
-#SBATCH --time=00-36:00:00
+#SBATCH --cpus-per-task=56
+#SBATCH --time=00-24:00:00
 
 ### PARCC PARAMETERS ###
 export OMP_NUM_THREADS=16

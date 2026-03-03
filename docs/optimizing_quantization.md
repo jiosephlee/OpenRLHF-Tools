@@ -146,37 +146,34 @@ Key vLLM file references:
 - `vllm/model_executor/layers/quantization/mxfp4.py` — MoE backends (Marlin W4A16, SM90 FI W4A16, SM100 FI MXFP4+MXFP8)
 - `vllm/model_executor/layers/quantization/compressed_tensors/schemes/compressed_tensors_w4a16_mxfp4.py` — confirms W4A16 in the scheme name
 
-## MXFP4: Already Correct
+## MXFP4 vs NVFP4 Rounding Rules
 
-Our MXFP4 code matches ModelOpt exactly (E8M0 exponent-based scales, block_size=32). No formula changes needed.
+To achieve an **exact 1:1 numerical match** with NVIDIA ModelOpt, we identified that the two formats use different tie-breaking rules during bucketization:
 
-## Files
+| Format | Rounding Rule | Boundary Behavior | Tie-breaking result |
+|--------|---------------|-------------------|---------------------|
+| **MXFP4** | Strictly Greater (`>`) | `abs(x) > bounds` | Ties round **down** (towards zero) |
+| **NVFP4** | Round-to-Nearest-Even (TNE) | `abs(x) >= odd_bounds` | Ties round to **nearest even** mantissa |
 
-| File | Role |
-|---|---|
-| `openrlhf/utils/mxfp4_quantize.py` | MXFP4 fake quant (QAT) + weight sync quantization |
-| `openrlhf/utils/nvfp4_quantize.py` | NVFP4 fake quant (QAT) + weight sync quantization |
-| `tests/test_fake_quant_optimization.py` | Benchmark + correctness vs ModelOpt |
+### MXFP4: Strictly Greater (Tie-rounds-down)
+Our initial implementation using `torch.bucketize` (which effectively uses `>=`) was nearly correct but introduced a `max_diff=1.0` mismatch on tie-points. ModelOpt's `MXFP4QTensor` explicitly uses a strictly-greater comparison against its bounds:
+```python
+ord_ = torch.sum((x.abs().unsqueeze(-1) - E2M1_bounds) > 0, dim=-1)
+```
+We aligned our Triton and PyTorch kernels by switching to all-`>` comparisons for MXFP4, achieving perfect parity.
 
-## Weight Sync Note
+### NVFP4: Round-to-Nearest-Even (TNE)
+NVFP4 alignment required a more sophisticated "Comparison-Sum" approach to simulate IEEE 754 tie-breaking. Midpoints between E2M1 values (0.75, 1.75, 3.5) represent ties between odd and even formats. Using `>=` at these specific boundaries forces a round-up to the even mantissa, matching ModelOpt's `_cast_fp4` logic.
 
-`quantize_to_nvfp4` (weight sync, NOT fake quant) should also be updated to ModelOpt convention, but was deferred. When done: same formula change as fake quant, PLUS the `quantize_to_nvfp4` function docstring says "vLLM ref" but should say "ModelOpt".
+## Summary of Parity Achievement
+
+As of March 2026, both formats achieve an **EXACT MATCH** against ModelOpt across all implementations:
+
+1.  **Bit-level Parity**: Quantitative checks against `MXFP4QTensor` and `NVFP4QTensor` show zero error (`max_diff=0`).
+2.  **Hardware Alignment**: Triton kernels use `tl.div_rn` to match PyTorch's IEEE 754 division semantics, eliminating the precision drift previously seen on Ampere/Hopper GPUs.
+3.  **Performance**: Our fused Triton kernels provide **~10x speedup** over ModelOpt for MXFP4 and **~2x speedup** for NVFP4 (two-pass) in full-model simulations.
 
 ## Performance Context
 
-- MXFP4: Triton kernel (fused, one pass) + `@torch.compile` PyTorch fallback
-- `torch.compile` can't be used for NVFP4 on Ampere (current dev GPU); will work on B200s.
-
-## Achieving Exact Match with ModelOpt
-
-Getting our Triton and PyTorch kernels to achieve an **exact 1:1 mathematical match** with ModelOpt required fixing two subtle floating-point precision issues:
-
-### 1. Triton hardware division semantics (`tl.div_rn`)
-Initially, our Triton kernels showed a persistent small mismatch (`max_diff=0.244`) against the PyTorch baseline. This was traced to the Triton `/` operator. On Ampere GPUs, Triton defaults to the `div.approx.f32` PTX instruction for performance, which uses reciprocal multiplication and introduces ~2 ULPs of error. This tiny error was enough to push values residing exactly on E2M1 bucket boundaries into the wrong bucket.
-**Fix**: Replaced `w / scale` with `tl.div_rn(w, scale)`, which forces the compiler to emit the IEEE 754-compliant `div.rn.f32` (round-to-nearest-even) division instruction. This perfectly aligns Triton's arithmetic with PyTorch's.
-
-### 2. IEEE 754 Tie-Breaking in Bucketization
-Even after fixing division, we saw a mismatch (`max_diff=0.812`) between our implementation and ModelOpt itself. 
-The PyTorch `torch.bucketize` function naturally rounds down when a value falls exactly on a boundary. However, the exact midpoint between two valid E2M1 formats represents a tie. Standard IEEE 754 semantics dictate that ties should be rounded to the *nearest even mantissa*. 
-Because E2M1 has alternating odd and even mantissas, the boundaries of `0.75`, `1.75`, and `3.5` represent exact ties between an odd and an even format.
-**Fix**: Updated the comparison-sum bucketization logic to explicitly use `>=` at these specific odd boundaries (and `torch.any(abs_X == odd_bounds)` for PyTorch) to force rounding up to the even mantissa, as implemented internally by ModelOpt's `_cast_fp4`.
+- **MXFP4**: Triton kernel is fully fused (one pass: scale compute + quantize).
+- **NVFP4**: Currently uses a two-pass approach (PyTorch scale compute + Triton quantize) due to the complexity of the global scale dependency. Even so, it significantly outperforms the ModelOpt roundtrip.

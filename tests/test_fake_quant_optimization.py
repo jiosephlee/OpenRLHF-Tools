@@ -137,6 +137,76 @@ def modelopt_nvfp4_roundtrip(weight, block_size=16):
 
 
 # ---------------------------------------------------------------------------
+# OpenRLHF Weight Sync Baselines (Production Quantization)
+# ---------------------------------------------------------------------------
+
+def openrlhf_mxfp4_sync_roundtrip(weight, block_size=32):
+    """Production quantization (weight sync) used in OpenRLHF."""
+    from openrlhf.utils.mxfp4_quantize import quantize_to_mxfp4, E2M1_VALUES
+    
+    # Quantize
+    packed, e8m0_scales = quantize_to_mxfp4(weight, block_size=block_size)
+    
+    # Dequantize (local emulation for benchmark)
+    orig_shape = weight.shape
+    device = weight.device
+    
+    # Unpack uint8 -> uint4
+    left = packed & 0x0F
+    right = (packed >> 4) & 0x0F
+    unpacked = torch.stack([left, right], dim=-1).reshape(-1)
+    
+    # Extract sign and magnitude
+    sign = 1 - 2 * ((unpacked & 0b1000) >> 3).float()
+    magnitude = (unpacked & 0b0111).long()
+    
+    vals = E2M1_VALUES.to(device)
+    deq = sign * vals[magnitude]
+    
+    # Scale
+    deq = deq.reshape(-1, block_size)
+    scale_factor = torch.exp2(e8m0_scales.float() - 127).reshape(-1, 1)
+    deq = (deq * scale_factor).reshape(orig_shape)
+    
+    return deq.to(weight.dtype)
+
+
+def openrlhf_nvfp4_sync_roundtrip(weight, block_size=16):
+    """Production quantization (weight sync) used in OpenRLHF."""
+    from openrlhf.utils.nvfp4_quantize import quantize_to_nvfp4, E2M1_VALUES
+    
+    # Quantize
+    orig_shape = weight.shape
+    w2d = weight.reshape(-1, weight.shape[-1]) if weight.ndim != 2 else weight
+    packed, wsf, wsf2 = quantize_to_nvfp4(w2d, block_size=block_size)
+    
+    # Dequantize (local emulation for benchmark)
+    device = weight.device
+    
+    # Unpack uint8 -> uint4
+    low = packed & 0x0F
+    high = (packed >> 4) & 0x0F
+    unpacked = torch.stack([low, high], dim=-1).reshape(-1)
+    
+    # Sign bit is bit 3 (value 8)
+    sign = 1 - 2 * ((unpacked & 0b1000) >> 3).float()
+    # Magnitude is bits 0-2 (values 0-7)
+    magnitude = (unpacked & 0b0111).long()
+    
+    vals = E2M1_VALUES.to(device)
+    deq = sign * vals[magnitude]
+    
+    # Scale
+    deq = deq.reshape(-1, block_size)
+    # double_scale (wsf2) is per-tensor, scale (wsf) is per-block (FP8 E4M3)
+    # ModelOpt convention: dequant = fp4 * (wsf_fp8 * wsf2)
+    effective_scale = (wsf.float() * wsf2).reshape(-1, 1)
+    deq = (deq * effective_scale).reshape(orig_shape)
+    
+    return deq.to(weight.dtype)
+
+
+# ---------------------------------------------------------------------------
 # Benchmark helpers
 # ---------------------------------------------------------------------------
 
@@ -333,6 +403,12 @@ def main():
             except Exception as e:
                 print(f"  ⚠️ ModelOpt benchmark failed: {e}")
 
+        sync_baseline_time, _ = benchmark_model_fakequant(
+            openrlhf_mxfp4_sync_roundtrip, weights,
+            warmup=args.warmup, repeat=args.repeat,
+            label="Baseline (Production Weight Sync)"
+        )
+
         ref_time = modelopt_time if modelopt_time is not None else compiled_time
         ref_name = "ModelOpt" if modelopt_time is not None else "Compiled"
         
@@ -363,6 +439,11 @@ def main():
                 ref_fn, triton_mxfp4,
                 weights, ref_name, "Triton"
             )
+            
+        check_correctness(
+            ref_fn, openrlhf_mxfp4_sync_roundtrip,
+            weights, ref_name, "Sync Baseline"
+        )
 
     # -----------------------------------------------------------------------
     # NVFP4 tests
@@ -437,6 +518,12 @@ def main():
             except Exception as e:
                 print(f"  ⚠️ ModelOpt benchmark failed: {e}")
 
+        sync_baseline_time_nv, _ = benchmark_model_fakequant(
+            openrlhf_nvfp4_sync_roundtrip, nvfp4_weights,
+            warmup=args.warmup, repeat=args.repeat,
+            label="Baseline (Production Weight Sync)"
+        )
+
         ref_time_nv = modelopt_time_nv if modelopt_time_nv is not None else compiled_time_nv
         ref_name_nv = "ModelOpt" if modelopt_time_nv is not None else "Compiled"
         
@@ -468,6 +555,11 @@ def main():
                 nvfp4_weights, ref_name_nv, "Triton"
             )
 
+        check_correctness(
+            ref_fn_nv, openrlhf_nvfp4_sync_roundtrip,
+            nvfp4_weights, ref_name_nv, "Sync Baseline"
+        )
+
     # -----------------------------------------------------------------------
     # Summary
     # -----------------------------------------------------------------------
@@ -484,6 +576,7 @@ def main():
             line += f" | Compiled {compiled_time*1000:.0f}ms ({ref_time/compiled_time:.1f}x)"
         if triton_time is not None:
             line += f" | Triton {triton_time*1000:.0f}ms ({ref_time/triton_time:.1f}x)"
+        line += f" | Sync {sync_baseline_time*1000:.0f}ms ({ref_time/sync_baseline_time:.1f}x)"
         print(line)
     if run_nvfp4:
         ref_time_nv = modelopt_time_nv if modelopt_time_nv is not None else compiled_time_nv
@@ -493,6 +586,7 @@ def main():
             line += f" | Compiled {compiled_time_nv*1000:.0f}ms ({ref_time_nv/compiled_time_nv:.1f}x)"
         if triton_time_nv is not None:
             line += f" | Triton {triton_time_nv*1000:.0f}ms ({ref_time_nv/triton_time_nv:.1f}x)"
+        line += f" | Sync {sync_baseline_time_nv*1000:.0f}ms ({ref_time_nv/sync_baseline_time_nv:.1f}x)"
         print(line)
     print()
 

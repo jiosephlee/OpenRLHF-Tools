@@ -60,7 +60,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres-flags=enforce-binding
 #SBATCH --mem=1024G
-#SBATCH --cpus-per-task=64
+#SBATCH --cpus-per-task=56
 #SBATCH --sockets-per-node=1
 #SBATCH --time=0-36:00:00
 #SBATCH --account=myatskar-lab

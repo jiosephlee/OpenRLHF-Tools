@@ -167,11 +167,13 @@ def _fake_quantize_mxfp4_triton(weight: torch.Tensor, block_size: int = 32) -> t
     original_shape = weight.shape
     N = weight.numel()
     
-    # Process 32 blocks (1024 elements) per program to improve occupancy
-    BLOCKS_PER_PROGRAM = 32
-    
+    # Process 128 blocks (4096 elements) per program to reduce dispatch overhead
+    # for large stacked expert tensors [E, in, out]. Each iteration is independent
+    # so there's no correctness risk from increasing this.
+    BLOCKS_PER_PROGRAM = 128
+
     out = torch.empty(N, dtype=torch.bfloat16, device=weight.device)
-    
+
     num_blocks = triton.cdiv(N, block_size)
     num_programs = triton.cdiv(num_blocks, BLOCKS_PER_PROGRAM)
     grid = (num_programs,)
@@ -348,8 +350,33 @@ class _Mxfp4FakeQuant(nn.Module):
         super().__init__()
         self.block_size = block_size
         self.transpose = transpose
+        self._dq_cache: torch.Tensor | None = None
+        self._stream: torch.cuda.Stream | None = None
+
+    def prefetch(self, weight: torch.Tensor) -> None:
+        """Launch fake-quant async on self._stream. Skips ZeRO-3 shards (ds_id)."""
+        if self._stream is None or not (_HAS_TRITON and weight.is_cuda and weight.dtype == torch.bfloat16):
+            return
+        if hasattr(weight, "ds_id"):
+            return
+        w = weight.detach()
+        if self.transpose:
+            w = w.transpose(-1, -2).contiguous()
+        with torch.no_grad(), torch.cuda.stream(self._stream):
+            self._dq_cache = _fake_quantize_mxfp4_triton(w, self.block_size)
 
     def forward(self, weight: torch.Tensor) -> torch.Tensor:
+        if self._dq_cache is not None:
+            # Sync once; subsequent calls (gradient-checkpointing recompute) are no-ops
+            torch.cuda.current_stream().wait_stream(self._stream)
+            dq = self._dq_cache
+            # Do NOT clear — cache reused for gradient-checkpointing recomputes
+            if self.transpose:
+                weight = weight.transpose(-1, -2).contiguous()
+                return (weight + (dq - weight).detach()).transpose(-1, -2).contiguous()
+            return weight + (dq - weight).detach()
+
+        # Inline fallback: first step before any prefetch, ZeRO-3, or no stream
         if self.transpose:
             weight = weight.transpose(-1, -2).contiguous()
             weight = fake_quantize_mxfp4(weight, block_size=self.block_size)
@@ -434,6 +461,7 @@ def register_mxfp4_qat_parametrization(model: nn.Module, block_size: int = 32) -
         _has_peft = False
 
     count = 0
+    _prefetch_targets = []  # list of (module, param_name, fq)
     for name, module in model.named_modules():
         if "experts" not in name:
             continue
@@ -441,7 +469,9 @@ def register_mxfp4_qat_parametrization(model: nn.Module, block_size: int = 32) -
         # Case 1 & 2: module name itself matches (e.g. "layers.0.mlp.experts.gate_up_proj")
         if any(frag in name for frag in _MXFP4_EXPERT_NAME_FRAGMENTS):
             if isinstance(module, nn.Linear):
-                parametrize.register_parametrization(module, "weight", _Mxfp4FakeQuant(block_size))
+                fq = _Mxfp4FakeQuant(block_size)
+                parametrize.register_parametrization(module, "weight", fq)
+                _prefetch_targets.append((module, "weight", fq))
                 count += 1
             elif _has_peft and isinstance(module, LoraLayer):
                 _patch_lora_layer_qat(module, block_size)
@@ -457,8 +487,26 @@ def register_mxfp4_qat_parametrization(model: nn.Module, block_size: int = 32) -
                 continue
             # Stacked expert weights are [E, in, out] — transpose=True to quantize
             # along in_features (last dim after transpose to [E, out, in])
-            parametrize.register_parametrization(module, param_name, _Mxfp4FakeQuant(block_size, transpose=True))
+            fq = _Mxfp4FakeQuant(block_size, transpose=True)
+            parametrize.register_parametrization(module, param_name, fq)
+            _prefetch_targets.append((module, param_name, fq))
             count += 1
 
     logger.info(f"[QAT MXFP4] Registered fake-quantization on {count} expert weight layers.")
+
+    if _prefetch_targets and _HAS_TRITON:
+        _NUM_STREAMS = min(len(_prefetch_targets), 8)
+        _stream_pool = [torch.cuda.Stream() for _ in range(_NUM_STREAMS)]
+        for i, (_, _, fq) in enumerate(_prefetch_targets):
+            fq._stream = _stream_pool[i % _NUM_STREAMS]
+
+        def _prefetch_hook(module_instance, inputs):
+            for _, _, fq in _prefetch_targets:
+                fq._dq_cache = None  # free previous step's cache
+            for mod, pname, fq in _prefetch_targets:
+                fq.prefetch(mod.parametrizations[pname].original)
+
+        model.register_forward_pre_hook(_prefetch_hook)
+        logger.info(f"[QAT MXFP4] Async prefetch: {len(_prefetch_targets)} targets, {_NUM_STREAMS} streams.")
+
     return count

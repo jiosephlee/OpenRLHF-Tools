@@ -162,3 +162,61 @@ result = fp4_val * block_scale
 - **NVFP4 activation fake-quantization**: if the W4A4 activation gap proves significant empirically, fake-quantize activations during training too. Same ModelOpt roundtrip formula, but applied per-token with a calibrated static `input_global_scale`.
 - **NVFP4 weight sync** (`quantize_to_nvfp4`): still uses old vLLM-ref convention. Should be updated to ModelOpt convention (same formula change as fake-quant).
 - **SM100 MXFP4 QAT**: SM100 uses MXFP4 weights + MXFP8 activations — weight-only fake-quant may have a similar (smaller) activation gap there too.
+
+## Making Fake Dequantization Faster in Real Deployment
+
+### New Caching Strategy
+
+Full step timeline
+
+Training step N:
+
+  model.forward() called
+  ├── pre-forward hook fires
+  │     ├── clear _dq_cache on all 64 fq instances  (frees step
+N-1's tensors)
+  │     └── launch 64 Triton kernels on 8 streams   (async, GPU
+starts immediately)
+  │
+  ├── layer 0 runs
+  │     └── self.gate_up_proj accessed → _Mxfp4FakeQuant.forward()
+  │           → wait_stream (GPU sync if kernel not done yet)
+  │           → dq = self._dq_cache   ← cache hit, not cleared
+  │           → returns weight + (dq - weight).detach()
+  │
+  ├── layers 1–31 run similarly, all cache hits, stream already
+done → wait is no-op
+
+  loss.backward() called
+  ├── checkpointing recomputes layer 5
+  │     └── layer_5.forward() called  ← NOT model.forward(), hook
+does NOT fire
+  │           └── self.gate_up_proj accessed →
+_Mxfp4FakeQuant.forward()
+  │                 → _dq_cache is still set (we never cleared it)
+  │                 → wait_stream is a no-op (kernel finished long
+  ago)
+  │                 → same result as the original forward pass ✓
+  │
+  └── all other recomputes similarly use the cache
+
+Training step N+1:
+
+  model.forward() called
+  └── pre-forward hook fires → clears caches → launches new
+kernels
+
+---
+Summary
+
+The cache persists through the entire backward because:
+1. The pre-forward hook only runs on model.forward() — once per
+step
+2. _Mxfp4FakeQuant.forward() never clears _dq_cache
+3. Gradient checkpointing recomputes call layer.forward(), not
+model.forward()
+
+The second wait_stream during recompute is a no-op since the
+stream completed during the forward pass. The recompute gets the
+exact same fake-quantized tensor, so the STE gradient is
+consistent with the original forward.

@@ -246,3 +246,21 @@ There were two definitions of `_load_weights_other` in `GptOssModel`:
 - Lines ~1168+: the real, complete implementation
 
 Python silently uses the second definition (it overwrites the first). The stub had no runtime effect but was confusing and was removed.
+
+## How vLLM does FP4
+
+It's right there in nvfp4_utils.py that we already read — in the production apply_nvfp4_linear path (lines 213–216):
+
+  # Quantize BF16 or FP16 to (FP4 and interleaved block scale)
+  x_fp4, x_blockscale = scaled_fp4_quant(
+      x, input_global_scale_inv, is_sf_swizzled_layout=True, backend=backend.value
+  )
+
+  This runs on every forward pass. x is the bf16 activation coming in; x_fp4 is what actually gets fed into the GEMM. Then the call is:
+
+  cutlass_scaled_fp4_mm(x_fp4, weight, x_blockscale, weight_scale, alpha, output_dtype)
+
+  Both inputs to the matmul are FP4 — this is W4A4, not W4A16. The filename compressed_tensors_w4a4_nvfp4.py also spells it out explicitly.
+
+compressed_tensors_w4a16_nvfp4.py — W4A16, Marlin GEMM, bf16 activations (same as MXFP4)
+compressed_tensors_w4a4_nvfp4.py — W4A4, CUTLASS/FlashInfer, FP4 activations

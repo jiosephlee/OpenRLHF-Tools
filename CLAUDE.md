@@ -212,7 +212,15 @@ Debug flags:
 | `openrlhf/cli/train_ppo_ray.py` | New CLI args for tools, eval, checkpointing, `--qat_fp4` |
 | `openrlhf/utils/agent.py` | Pass hf_tokenizer through to agent instance |
 
+## Storage Guidelines
+
+**IMPORTANT:** The Slurm personal home directory has very limited storage. Always save large files (model checkpoints, datasets, logs) to the shared project directory instead:
+
+- **Large file storage:** `/vast/projects/myatskar/design-documents/hf_home/`
+- **Never** save large checkpoints or model weights under `$PROJECT_ROOT/saves/` or commit them to the repo.
+- Scripts use `LOCAL_SAVE_DIR=/vast/projects/myatskar/design-documents/hf_home` as the default save path.
+
 ---
 
-**Last Updated:** 2026-03-01
+**Last Updated:** 2026-03-03
 **Base Version:** OpenRLHF (latest main branch)

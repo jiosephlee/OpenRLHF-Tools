@@ -116,7 +116,8 @@ if _HAS_TRITON:
                 scale = tl.math.exp2(e8m0_exp)
 
                 # Normalize
-                w_norm = w / scale
+                # Use tl.div_rn for IEEE 754-compliant division (Triton's / uses div.approx)
+                w_norm = tl.div_rn(w, scale)
                 abs_w = tl.abs(w_norm)
 
                 # Comparison-sum bucketize (same as torch.bucketize with right=False)

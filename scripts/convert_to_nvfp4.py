@@ -99,6 +99,22 @@ def _convert_nvfp4_modelopt(model, block_size=16):
                 ratio = gs_mo_val / gs_bi_val if gs_bi_val != 0 else float('inf')
                 print(f"\n[DIAG] Ratio ModelOpt/Builtin global_scale = {ratio:.4f}")
                 print(f"[DIAG]   → {'MATCH — same convention ✓' if 0.99 < ratio < 1.01 else 'MISMATCH — likely inverted convention, may need 1/global_scale'}")
+
+                # Compare packed uint8 values — detects nibble packing order differences
+                p_mo = q_mo._quantized_data
+                p_bi, _, _ = quantize_to_nvfp4(param[0].cuda(), block_size=block_size)
+                packed_match = torch.equal(p_mo.cpu(), p_bi.cpu())
+                print(f"\n[DIAG] Packed uint8 values match: {packed_match}")
+                if not packed_match:
+                    diff = (p_mo.cpu().int() - p_bi.cpu().int()).abs()
+                    print(f"[DIAG]   max diff={diff.max().item()}, mean diff={diff.float().mean().item():.4f}")
+                    print(f"[DIAG]   ModelOpt sample (first 8 bytes): {p_mo.flatten()[:8].tolist()}")
+                    print(f"[DIAG]   Builtin  sample (first 8 bytes): {p_bi.flatten()[:8].tolist()}")
+                    # Detect nibble-swap: if swapping nibbles in ModelOpt matches builtin
+                    p_mo_swapped = ((p_mo & 0x0F) << 4) | ((p_mo >> 4) & 0x0F)
+                    nibble_swap_match = torch.equal(p_mo_swapped.cpu(), p_bi.cpu())
+                    print(f"[DIAG]   Nibble-swapped ModelOpt matches Builtin: {nibble_swap_match}")
+                    print(f"[DIAG]   → {'Packing is nibble-reversed — need to swap in conversion' if nibble_swap_match else 'Different packing scheme entirely'}")
                 print()
             # --- END DIAG ---
 

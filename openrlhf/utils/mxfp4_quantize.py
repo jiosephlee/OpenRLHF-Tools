@@ -120,10 +120,11 @@ if _HAS_TRITON:
                 w_norm = tl.div_rn(w, scale)
                 abs_w = tl.abs(w_norm)
 
-                # Comparison-sum bucketize (same as torch.bucketize with right=False)
-                ord_ = ((abs_w > 0.25).to(tl.int32) + (abs_w > 0.75).to(tl.int32) +
-                        (abs_w > 1.25).to(tl.int32) + (abs_w > 1.75).to(tl.int32) +
-                        (abs_w > 2.5).to(tl.int32) + (abs_w > 3.5).to(tl.int32) +
+                # Comparison-sum bucketize with IEEE round-to-nearest-even tie-breaking
+                # For odd E2M1 bounds (0.75, 1.75, 3.5), we use >= to round up to the even mantissa.
+                ord_ = ((abs_w > 0.25).to(tl.int32) + (abs_w >= 0.75).to(tl.int32) +
+                        (abs_w > 1.25).to(tl.int32) + (abs_w >= 1.75).to(tl.int32) +
+                        (abs_w > 2.5).to(tl.int32) + (abs_w >= 3.5).to(tl.int32) +
                         (abs_w > 5.0).to(tl.int32))
 
                 # Inline E2M1 decode: no table lookup needed
@@ -180,8 +181,8 @@ def _fake_quantize_mxfp4_chunk(
 
     abs_w = w_normalized.abs()
     ord_ = (
-        (abs_w > 0.25).int() + (abs_w > 0.75).int() + (abs_w > 1.25).int() +
-        (abs_w > 1.75).int() + (abs_w > 2.5).int() + (abs_w > 3.5).int() +
+        (abs_w > 0.25).int() + (abs_w >= 0.75).int() + (abs_w > 1.25).int() +
+        (abs_w >= 1.75).int() + (abs_w > 2.5).int() + (abs_w >= 3.5).int() +
         (abs_w > 5.0).int()
     )
 

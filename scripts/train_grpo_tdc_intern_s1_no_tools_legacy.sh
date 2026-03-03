@@ -76,7 +76,8 @@ MAX_EPOCHS=1
 DATE_TAG=$(date +%m%d)
 RUN_NAME="grpo-tdc-s1-${N_TASKS}t-notools-ep${MAX_EPOCHS}-${DATE_TAG}"
 RUN_ID="${RUN_NAME}"
-SAVE_PATH="$PROJECT_ROOT/saves/tdc/$RUN_NAME"
+LOCAL_SAVE_DIR="${LOCAL_SAVE_DIR:-/vast/projects/myatskar/design-documents/hf_home}"
+SAVE_PATH="$LOCAL_SAVE_DIR/$RUN_NAME"
 HUB_REPO_ID="jiosephlee/${RUN_NAME}"
 
 ### GPU LAYOUT (colocated — shared GPUs) ###

@@ -89,7 +89,14 @@ def quantize_to_nvfp4(
     sign = torch.sign(clipped_x)
     sign_bit = (2 - sign) // 2
     bounds = E2M1_BOUNDS.to(clipped_x.device)
-    ord_ = torch.bucketize(clipped_x.abs(), bounds)
+    abs_x = clipped_x.abs()
+    ord_ = torch.bucketize(abs_x, bounds)
+    
+    # IEEE round-to-nearest-even tie-breaking for odd E2M1 bounds
+    odd_bounds = bounds[[1, 3, 5]]
+    equals_odd_bounds = torch.any(abs_x.unsqueeze(-1) == odd_bounds, dim=-1)
+    ord_ = ord_ + equals_odd_bounds.to(ord_.dtype)
+    
     fp4_val = (sign_bit * 0b1000 + ord_).to(torch.uint8)
 
     # Pack two 4-bit values into one uint8
@@ -140,10 +147,11 @@ if _HAS_TRITON:
                 clipped_x = tl.minimum(tl.maximum(scaled_x, -6.0), 6.0)
                 abs_x = tl.abs(clipped_x)
 
-                # Comparison-sum bucketize (matches torch.bucketize right=False)
-                ord_ = ((abs_x > 0.25).to(tl.int32) + (abs_x > 0.75).to(tl.int32) +
-                        (abs_x > 1.25).to(tl.int32) + (abs_x > 1.75).to(tl.int32) +
-                        (abs_x > 2.5).to(tl.int32) + (abs_x > 3.5).to(tl.int32) +
+                # Comparison-sum bucketize with IEEE round-to-nearest-even tie-breaking
+                # For odd E2M1 bounds (0.75, 1.75, 3.5), we use >= to round up to the even mantissa.
+                ord_ = ((abs_x > 0.25).to(tl.int32) + (abs_x >= 0.75).to(tl.int32) +
+                        (abs_x > 1.25).to(tl.int32) + (abs_x >= 1.75).to(tl.int32) +
+                        (abs_x > 2.5).to(tl.int32) + (abs_x >= 3.5).to(tl.int32) +
                         (abs_x > 5.0).to(tl.int32))
 
                 # Inline E2M1 decode: no table lookup needed
@@ -224,8 +232,8 @@ def _fake_quantize_nvfp4_chunk(
     sign = torch.sign(clipped_x)
     abs_x = clipped_x.abs()
     ord_ = (
-        (abs_x > 0.25).int() + (abs_x > 0.75).int() + (abs_x > 1.25).int() +
-        (abs_x > 1.75).int() + (abs_x > 2.5).int() + (abs_x > 3.5).int() +
+        (abs_x > 0.25).int() + (abs_x >= 0.75).int() + (abs_x > 1.25).int() +
+        (abs_x >= 1.75).int() + (abs_x > 2.5).int() + (abs_x >= 3.5).int() +
         (abs_x > 5.0).int()
     )
     dequantized = sign * values[ord_]

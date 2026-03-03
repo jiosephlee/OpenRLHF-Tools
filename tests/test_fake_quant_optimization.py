@@ -89,7 +89,14 @@ def _baseline_fake_quantize_mxfp4_chunk(w_flat, block_size, bounds, values):
     scale = torch.exp2(e8m0_exp)
     w_normalized = w_flat / scale
     sign = torch.sign(w_normalized)
-    ord_ = torch.bucketize(w_normalized.abs(), bounds)
+    abs_w = w_normalized.abs()
+    ord_ = torch.bucketize(abs_w, bounds)
+    
+    # IEEE round-to-nearest-even tie-breaking for odd E2M1 bounds
+    odd_bounds = bounds[[1, 3, 5]]
+    equals_odd_bounds = torch.any(abs_w.unsqueeze(-1) == odd_bounds, dim=-1)
+    ord_ = ord_ + equals_odd_bounds.to(ord_.dtype)
+    
     return sign * values[ord_] * scale
 
 
@@ -138,7 +145,14 @@ def _baseline_fake_quantize_nvfp4_chunk(w_flat, block_size, global_scale, bounds
     clipped_x = torch.clamp(scaled_x, -E2M1_MAX, E2M1_MAX)
 
     sign = torch.sign(clipped_x)
-    ord_ = torch.bucketize(clipped_x.abs(), bounds)
+    abs_x = clipped_x.abs()
+    ord_ = torch.bucketize(abs_x, bounds)
+    
+    # ModelOpt IEEE round-to-nearest-even tie-breaking for odd E2M1 bounds
+    odd_bounds = bounds[[1, 3, 5]]
+    equals_odd_bounds = torch.any(abs_x.unsqueeze(-1) == odd_bounds, dim=-1)
+    ord_ = ord_ + equals_odd_bounds.to(ord_.dtype)
+    
     dequantized = sign * values[ord_]
     dequantized = dequantized * (scale * global_scale)
     return dequantized

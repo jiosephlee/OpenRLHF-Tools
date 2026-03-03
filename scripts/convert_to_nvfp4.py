@@ -133,9 +133,13 @@ def _convert_nvfp4_modelopt(model, block_size=16):
             global_scales = torch.stack(global_scale_list)  # [E]
 
             # Save as 3D — vLLM expects [E, out, K//2] (not 4D with block sub-dim)
+            # Naming convention must match hf_to_vllm_mapper in gpt_oss.py:
+            #   gate_up_proj_blocks  → w13_weight       (packed uint8)
+            #   gate_up_proj_scales  → w13_weight_scale (E4M3 block scales, plural!)
+            #   gate_up_proj_scales_2 → w13_weight_scales_2 (FP32 global scale, plural!)
             new_state_dict[f"{name}_blocks"] = packed.cpu()
-            new_state_dict[f"{name}_scale"] = scales.cpu()
-            new_state_dict[f"{name}_scale_2"] = global_scales.cpu()
+            new_state_dict[f"{name}_scales"] = scales.cpu()
+            new_state_dict[f"{name}_scales_2"] = global_scales.cpu()
 
             del param, packed, scales, global_scales
             torch.cuda.empty_cache()
@@ -174,8 +178,8 @@ def _convert_nvfp4_builtin(model, block_size=16):
 
             # Save as 3D — vLLM expects [E, out, K//2] (not 4D with block sub-dim)
             new_state_dict[f"{name}_blocks"] = packed
-            new_state_dict[f"{name}_scale"] = scales
-            new_state_dict[f"{name}_scale_2"] = global_scales
+            new_state_dict[f"{name}_scales"] = scales
+            new_state_dict[f"{name}_scales_2"] = global_scales
 
             del param_t, packed, scales, global_scales
             torch.cuda.empty_cache()

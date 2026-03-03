@@ -111,15 +111,14 @@ def quantize_to_nvfp4(
 if _HAS_TRITON:
     @triton.jit
     def _triton_fake_quant_nvfp4_kernel(
-        w_ptr, scale_ptr, out_ptr, N,
-        global_scale,
+        w_ptr, combined_scale_ptr, out_ptr, N,
         BLOCK_SIZE: tl.constexpr,
         BLOCKS_PER_PROGRAM: tl.constexpr,
     ):
-        """NVFP4 fake-quantize kernel with pre-computed E4M3 scales processing BLOCKS_PER_PROGRAM blocks.
+        """NVFP4 fake-quantize kernel with pre-computed combined scales.
 
-        Takes pre-computed per-block scales (from PyTorch E4M3 cast) and
-        performs normalize → snap to E2M1 → dequantize in one fused kernel.
+        Takes pre-computed per-block combined_scale = E4M3_scale * global_scale
+        and performs normalize → snap to E2M1 → dequantize in one fused kernel.
         """
         pid = tl.program_id(0)
         
@@ -131,12 +130,13 @@ if _HAS_TRITON:
 
             # If block is completely out of bounds, skip
             if base_offs < N:
-                # Load block data and pre-computed scale for this block
+                # Load block data and pre-computed combined scale
                 w = tl.load(w_ptr + offs, mask=mask, other=0.0).to(tl.float32)
-                scale = tl.load(scale_ptr + block_idx).to(tl.float32)
+                combined_scale = tl.load(combined_scale_ptr + block_idx).to(tl.float32)
 
                 # Normalize and clamp to FP4 range
-                scaled_x = tl.where(scale == 0.0, 0.0, w / (scale * global_scale))
+                # Use tl.div_rn for IEEE 754 round-to-nearest division
+                scaled_x = tl.where(combined_scale == 0.0, 0.0, tl.div_rn(w, combined_scale))
                 clipped_x = tl.minimum(tl.maximum(scaled_x, -6.0), 6.0)
                 abs_x = tl.abs(clipped_x)
 
@@ -156,9 +156,9 @@ if _HAS_TRITON:
                 subnormal_val = ord_.to(tl.float32) * 0.5
                 q_val = tl.where(ord_ < 2, subnormal_val, normal_val)
 
-                # Dequantize: sign * fp4_val * (scale * global_scale)
-                dequant_scale = tl.where(scale == 0.0, 0.0, scale * global_scale)
-                result = tl.where(clipped_x >= 0, q_val, -q_val) * dequant_scale
+                # Dequantize: sign * fp4_val * combined_scale
+                sign = tl.where(clipped_x >= 0, 1.0, -1.0)
+                result = sign * q_val * combined_scale
 
                 tl.store(out_ptr + offs, result.to(tl.bfloat16), mask=mask)
 
@@ -168,7 +168,7 @@ def _fake_quantize_nvfp4_triton(
 ) -> torch.Tensor:
     """Two-pass NVFP4 fake quantization: PyTorch scale + Triton snap+dequant.
 
-    Pass 1 (PyTorch): Compute per-block E4M3 scale using real float8_e4m3fn cast.
+    Pass 1 (PyTorch): Compute per-block E4M3 scale and combined_scale = scale * global_scale.
     Pass 2 (Triton): Fused normalize + snap-to-E2M1 + dequantize.
     """
     original_shape = weight.shape
@@ -182,6 +182,9 @@ def _fake_quantize_nvfp4_triton(
     scale = vec_max / (E2M1_MAX * global_scale)
     scale = torch.clamp(scale, max=E4M3_MAX, min=-E4M3_MAX)
     scale = scale.to(torch.float8_e4m3fn).to(torch.float32).squeeze(-1)  # [num_blocks]
+    
+    # Precompute combined scale to match PyTorch evaluation exactly
+    combined_scale = scale * global_scale  # [num_blocks], float32
 
     # Pass 2: Triton kernel — normalize, snap, dequant
     w_flat = weight.reshape(-1)
@@ -193,8 +196,7 @@ def _fake_quantize_nvfp4_triton(
     grid = (num_programs,)
 
     _triton_fake_quant_nvfp4_kernel[grid](
-        w_flat, scale, out, N,
-        global_scale.item(),
+        w_flat, combined_scale, out, N,
         BLOCK_SIZE=block_size,
         BLOCKS_PER_PROGRAM=BLOCKS_PER_PROGRAM,
     )

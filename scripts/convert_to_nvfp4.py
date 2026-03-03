@@ -58,14 +58,49 @@ LOCAL_SAVE_DIR = "/vast/projects/myatskar/design-documents/hf_home"
 def _convert_nvfp4_modelopt(model, block_size=16):
     """Convert MoE expert weights to NVFP4 using ModelOpt's NVFP4QTensor."""
     from modelopt.torch.quantization.qtensor import NVFP4QTensor
+    from openrlhf.utils.nvfp4_quantize import quantize_to_nvfp4, compute_nvfp4_global_scale
 
     new_state_dict = {}
+    _diag_done = False
 
     for name, param in model.state_dict().items():
         # Only convert expert weights, skip bias and other modules
         if "experts" in name and "bias" not in name:
             # Transpose: [E, in, out] -> [E, out, in] (checkpoint convention)
             param = param.transpose(-1, -2).contiguous()
+
+            # --- ONE-TIME SANITY CHECK ---
+            if not _diag_done:
+                _diag_done = True
+                orig = model.state_dict()[name]
+                E, d1, d2 = orig.shape
+                print(f"\n[DIAG] {name}")
+                print(f"[DIAG]   original shape: {orig.shape} — "
+                      f"{'d1<d2 → looks like [E,in,out], transpose to [E,out,in] ✓' if d1 < d2 else 'd1>=d2 → may already be [E,out,in], transpose could be WRONG'}")
+                expert0_t = param[0].cuda().float()  # after transpose: [out, in]
+                print(f"[DIAG]   after transpose: {expert0_t.shape}")
+
+                # ModelOpt
+                q_mo, s_mo, gs_mo = NVFP4QTensor.quantize(param[0].cuda(), block_size=block_size)
+                gs_mo_val = float(gs_mo) if not hasattr(gs_mo, 'item') else gs_mo.item()
+                print(f"\n[DIAG] ModelOpt:")
+                print(f"[DIAG]   global_scale = {gs_mo_val:.6e}")
+                print(f"[DIAG]   scales  dtype={s_mo.dtype}, shape={tuple(s_mo.shape)}, sample={s_mo.flatten()[:4].tolist()}")
+                print(f"[DIAG]   packed  dtype={q_mo._quantized_data.dtype}, shape={tuple(q_mo._quantized_data.shape)}")
+
+                # Builtin (same input)
+                _, s_bi, gs_bi = quantize_to_nvfp4(param[0].cuda(), block_size=block_size)
+                gs_bi_expected = compute_nvfp4_global_scale(param[0].cuda())
+                gs_bi_val = gs_bi.item()
+                print(f"\n[DIAG] Builtin:")
+                print(f"[DIAG]   global_scale = {gs_bi_val:.6e}  (compute_nvfp4_global_scale = {gs_bi_expected.item():.6e})")
+                print(f"[DIAG]   scales  dtype={s_bi.dtype}, shape={tuple(s_bi.shape)}, sample={s_bi.flatten()[:4].tolist()}")
+
+                ratio = gs_mo_val / gs_bi_val if gs_bi_val != 0 else float('inf')
+                print(f"\n[DIAG] Ratio ModelOpt/Builtin global_scale = {ratio:.4f}")
+                print(f"[DIAG]   → {'MATCH — same convention ✓' if 0.99 < ratio < 1.01 else 'MISMATCH — likely inverted convention, may need 1/global_scale'}")
+                print()
+            # --- END DIAG ---
 
             packed_list = []
             scale_list = []

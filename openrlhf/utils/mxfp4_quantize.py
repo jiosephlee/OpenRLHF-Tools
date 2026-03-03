@@ -272,7 +272,7 @@ def _quantize_to_mxfp4_triton(
     return packed.reshape(packed_shape).clone(), scales.reshape(scale_shape).clone()
 
 
-@torch.compile(mode="reduce-overhead")
+@torch.compile(mode="default")
 def _fake_quantize_mxfp4_chunk(
     w_flat: torch.Tensor, block_size: int, values: torch.Tensor
 ) -> torch.Tensor:
@@ -316,10 +316,15 @@ def fake_quantize_mxfp4(weight: torch.Tensor, block_size: int = 32) -> torch.Ten
 
     Forward: returns MXFP4-dequantized approximation (same shape/dtype as input).
     Backward: straight-through estimator — gradient flows unchanged.
-    
-    This optimal shell routes to the PyTorch chunk implementation as it's the fastest
-    for the OCP MXFP4 specification (1.2ms per full model pass vs 1.6ms for Triton).
+
+    Routes to the Triton fused kernel when available (no intermediate tensors,
+    no torch.compile CUDA graph accumulation during training). Falls back to the
+    compiled PyTorch chunk path otherwise.
     """
+    if _HAS_TRITON and weight.is_cuda and weight.dtype == torch.bfloat16:
+        dequantized = _fake_quantize_mxfp4_triton(weight, block_size)
+        return weight + (dequantized - weight).detach()
+
     original_shape = weight.shape
     original_dtype = weight.dtype
     values = E2M1_VALUES.to(weight.device)

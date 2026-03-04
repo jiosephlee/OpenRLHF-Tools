@@ -149,8 +149,13 @@ class WorkerWrap:
 
         from openrlhf.utils.mxfp4_quantize import quantize_to_mxfp4
 
-        # Transpose: Actor [E, in, out] → checkpoint [E, out, in]
-        weight_t = weight.transpose(-1, -2).contiguous()
+        # Transpose: Actor [E, in, out] → checkpoint [E, out, in].
+        # .clone() escapes the inference-tensor constraint: vLLM's EngineCore
+        # process runs inside torch.inference_mode(), so CUDA IPC tensors arrive
+        # as inference tensors. torch.compile(reduce-overhead) then fails when
+        # trying to write into its pre-allocated CUDA graph buffers from outside
+        # that context.  A clone produces a normal (non-inference) tensor.
+        weight_t = weight.transpose(-1, -2).contiguous().clone()
 
         # Quantize each expert independently
         num_experts = weight_t.shape[0]
@@ -198,8 +203,9 @@ class WorkerWrap:
 
         from openrlhf.utils.nvfp4_quantize import quantize_to_nvfp4
 
-        # Transpose: Actor [E, in, out] → checkpoint [E, out, in]
-        weight_t = weight.transpose(-1, -2).contiguous()
+        # Transpose: Actor [E, in, out] → checkpoint [E, out, in].
+        # .clone() escapes the inference-tensor constraint (same reason as mxfp4 path).
+        weight_t = weight.transpose(-1, -2).contiguous().clone()
 
         num_experts = weight_t.shape[0]
         packed_list = []

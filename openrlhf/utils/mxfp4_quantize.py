@@ -482,7 +482,7 @@ def register_mxfp4_qat_parametrization(model: nn.Module, block_size: int = 32) -
     if _prefetch_targets and _HAS_TRITON:
         _last_weight_version = [None]  # mutable in closure; tracks optimizer steps
 
-        def _batched_prefetch_hook(module_instance, inputs):
+        def _prefetch_hook(module_instance, inputs):
             # Skip recompute if weights haven't changed (gradient accumulation).
             # PyTorch's _version counter increments on in-place ops (optimizer.step).
             ref_param = _prefetch_targets[0][0].parametrizations[_prefetch_targets[0][1]].original
@@ -491,46 +491,22 @@ def register_mxfp4_qat_parametrization(model: nn.Module, block_size: int = 32) -
                 return  # caches still valid from previous forward in this accumulation window
             _last_weight_version[0] = current_version
 
-            # Gather all expert weights, applying transpose where needed.
-            # Skip ZeRO-3 shards (they'll fall through to the inline fallback).
-            flat_parts = []
-            part_sizes = []  # numel of each part for splitting later
-            active_fqs = []  # fq objects that have a valid part
-            for mod, pname, fq in _prefetch_targets:
-                w = mod.parametrizations[pname].original.detach()
-                if hasattr(w, "ds_id") or not (w.is_cuda and w.dtype == torch.bfloat16):
-                    fq._dq_cache = None
-                    continue
-                if fq.transpose:
-                    w = w.transpose(-1, -2).contiguous()
-                flat_parts.append(w.reshape(-1))
-                part_sizes.append(w.numel())
-                active_fqs.append(fq)
-
-            if not flat_parts:
-                return
-
-            # Single batched Triton kernel over all concatenated weights.
+            # Process each weight individually on the default stream.
+            # Avoids concatenating all expert weights into one huge tensor (tens of GBs
+            # for a 32-layer MoE), which was causing cudaErrorIllegalAddress from
+            # corrupting the CUDA heap.  All ops are on the default stream so there
+            # is no cross-stream race condition.
             with torch.no_grad():
-                all_weights = torch.cat(flat_parts)
-                all_dq = _fake_quantize_mxfp4_triton(all_weights, fq.block_size)
-
-            # Split result back and store in each fq's cache.
-            splits = all_dq.split(part_sizes)
-            idx = 0
-            for mod, pname, fq in _prefetch_targets:
-                if fq in active_fqs:
-                    # Reshape to match the (possibly transposed) weight shape.
+                for mod, pname, fq in _prefetch_targets:
                     w = mod.parametrizations[pname].original.detach()
+                    if hasattr(w, "ds_id") or not (w.is_cuda and w.dtype == torch.bfloat16):
+                        fq._dq_cache = None
+                        continue
                     if fq.transpose:
-                        target_shape = w.transpose(-1, -2).shape
-                    else:
-                        target_shape = w.shape
-                    fq._dq_cache = splits[idx].reshape(target_shape)
-                    idx += 1
-                # ZeRO-3 skipped targets already have _dq_cache = None
+                        w = w.transpose(-1, -2).contiguous()
+                    fq._dq_cache = _fake_quantize_mxfp4_triton(w, fq.block_size)
 
-        model.register_forward_pre_hook(_batched_prefetch_hook)
-        logger.info(f"[QAT MXFP4] Batched prefetch: {len(_prefetch_targets)} targets, single Triton kernel.")
+        model.register_forward_pre_hook(_prefetch_hook)
+        logger.info(f"[QAT MXFP4] Prefetch hook: {len(_prefetch_targets)} targets, per-weight Triton kernels.")
 
     return count

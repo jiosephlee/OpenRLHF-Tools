@@ -357,6 +357,21 @@ class Actor(nn.Module):
 
         # aux_loss (MoE load-balancing loss) — available when output_router_logits=True
         aux_loss = getattr(output, "aux_loss", None)
+        if aux_loss is None:
+            # Backbone forward (used by Liger path) doesn't compute aux_loss,
+            # but it does return router_logits. Recompute aux_loss manually —
+            # same logic the CausalLM wrapper uses internally.
+            router_logits = getattr(output, "router_logits", None)
+            if router_logits is not None:
+                logger.info(
+                    "[forward_hidden_states] aux_loss not in backbone output; "
+                    "recomputing from router_logits (Liger path MoE fix)"
+                )
+                from transformers.models.mixtral.modeling_mixtral import load_balancing_loss_func
+
+                num_experts = self.model.config.num_local_experts
+                top_k = self.model.config.num_experts_per_tok
+                aux_loss = load_balancing_loss_func(router_logits, num_experts, top_k, attention_mask)
 
         return last_hidden_state, aux_loss
 

@@ -30,15 +30,13 @@ MODEL = os.environ.get("MODEL", "jiosephlee/gpt-oss-20B-NVFP4-packed-clean")
 MAX_NEW_TOKENS = int(os.environ.get("MAX_NEW_TOKENS", "50"))
 PROMPT = os.environ.get("PROMPT", "The capital of France is")
 
-# Preflight: check CUDA is actually accessible before spawning vLLM subprocesses.
-try:
-    import torch
-    if not torch.cuda.is_available():
-        raise RuntimeError("torch.cuda.is_available() returned False")
-    _ = torch.cuda.device_count()
-except Exception as _cuda_err:
+# Preflight: check CUDA is accessible using nvidia-smi — avoids initializing the CUDA
+# context in the main process (which would cause vLLM's forked EngineCore subprocess
+# to fail with "Cannot re-initialize CUDA in forked subprocess").
+_smi = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True)
+if _smi.returncode != 0:
     print(
-        f"ERROR: CUDA not accessible ({_cuda_err}).\n"
+        f"ERROR: nvidia-smi failed (returncode={_smi.returncode}): {_smi.stderr.strip()}\n"
         "Make sure you are on a GPU node and have loaded the CUDA module:\n"
         "  module load cuda/12.8.1\n"
         "  conda activate /vast/projects/myatskar/design-documents/conda_env/openrlhf\n"
@@ -46,6 +44,7 @@ except Exception as _cuda_err:
         file=sys.stderr,
     )
     sys.exit(1)
+print(f"[test_nvfp4_inference] GPUs detected:\n  " + _smi.stdout.strip().replace("\n", "\n  "))
 
 flashinfer_disabled = os.environ.get("VLLM_USE_FLASHINFER_MOE_FP4", "") == "0"
 print(f"[test_nvfp4_inference] Model: {MODEL}")

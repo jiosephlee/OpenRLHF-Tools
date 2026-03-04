@@ -354,11 +354,8 @@ class _Mxfp4FakeQuant(nn.Module):
 
     def forward(self, weight: torch.Tensor) -> torch.Tensor:
         if self._dq_cache is not None:
-            dq = self._dq_cache
+            dq = self._dq_cache  # same shape as weight (original space)
             # Do NOT clear — cache reused for gradient-checkpointing recomputes
-            if self.transpose:
-                weight = weight.transpose(-1, -2).contiguous()
-                return (weight + (dq - weight).detach()).transpose(-1, -2).contiguous()
             return weight + (dq - weight).detach()
 
         # Inline fallback: first step before any prefetch, ZeRO-3, or no stream
@@ -504,7 +501,10 @@ def register_mxfp4_qat_parametrization(model: nn.Module, block_size: int = 32) -
                         continue
                     if fq.transpose:
                         w = w.transpose(-1, -2).contiguous()
-                    fq._dq_cache = _fake_quantize_mxfp4_triton(w, fq.block_size)
+                    dq = _fake_quantize_mxfp4_triton(w, fq.block_size)
+                    if fq.transpose:
+                        dq = dq.transpose(-1, -2).contiguous()  # back to original [E, in, out]
+                    fq._dq_cache = dq
 
         model.register_forward_pre_hook(_prefetch_hook)
         logger.info(f"[QAT MXFP4] Prefetch hook: {len(_prefetch_targets)} targets, per-weight Triton kernels.")

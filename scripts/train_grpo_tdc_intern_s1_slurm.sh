@@ -118,6 +118,7 @@ run_task() {
     REDUCE_OPTIMIZER="${REDUCE_OPTIMIZER:-adam_offload}"
     MAX_EPOCHS="${MAX_EPOCHS:-1}"
     VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-256}"
+    VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
     EXTRA_ARGS="${EXTRA_ARGS:-}"
 
     ### UNIFIED CONSTANTS ###
@@ -366,6 +367,7 @@ run_task() {
     echo "TIS: $TIS (type=$TIS_TYPE, thresholds=$TIS_THRESHOLDS)"
     echo "GSPO: $GSPO"
     echo "VLLM_MAX_NUM_SEQS: $VLLM_MAX_NUM_SEQS"
+    echo "VLLM_MAX_NUM_BATCHED_TOKENS: $VLLM_MAX_NUM_BATCHED_TOKENS"
     echo "Tool Version: $TOOL_VERSION"
     echo "----------------------------------------"
     echo "Runs Dir: $RUNS_DIR"
@@ -428,6 +430,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --actor_num_gpus_per_node $ACTOR_GPUS \
         --vllm_num_engines $VLLM_NUM_ENGINES \
         --vllm_tensor_parallel_size 1 \
+        --max_num_batched_tokens $VLLM_MAX_NUM_BATCHED_TOKENS \
         --vllm_gpu_memory_utilization $VLLM_GPU_MEM_UTIL \
         --advantage_estimator $ADVANTAGE_ESTIMATOR \
         --init_kl_coef 0 \

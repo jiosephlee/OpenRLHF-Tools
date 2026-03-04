@@ -85,9 +85,11 @@ else
             NVFP4_BASE="${NVFP4_BASE:-unsloth/gpt-oss-20b-BF16}"
             QUANT_FLAGS="--vllm_sync_fp4 nvfp4 --nvfp4_dequantize_base_model $NVFP4_BASE"
             QUANT_LABEL="nvfp4"
-            # Disable FlashInfer MoE FP4 — falls back to VLLM_CUTLASS which is more stable
-            # on B200 for hidden_size=2880 (not a multiple of 512, rejected by FLASHINFER_TRTLLM).
+            # Our checkpoint is W4A16 (weight-only FP4, BF16 activations — no activation
+            # calibration data). VLLM_CUTLASS does W4A4 and saturates activations with
+            # a1_gscale=1.0 → garbage output. Force Marlin (W4A16) which is correct.
             export VLLM_USE_FLASHINFER_MOE_FP4=0
+            export VLLM_TEST_FORCE_FP8_MARLIN=1
             ;;
         *)
             echo "Error: QUANT_METHOD must be 'mxfp4' or 'nvfp4', got '$QUANT_METHOD'" >&2

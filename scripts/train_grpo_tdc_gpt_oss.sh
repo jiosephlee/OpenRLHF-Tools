@@ -23,7 +23,7 @@
 #   TRAIN_MAX_TOKENS_PER_GPU=1024 QUANT_METHOD=nvfp4 bash train_grpo_tdc_gpt_oss.sh
 #
 #   # Unsloth BF16:
-#   DEQUANT=unsloth bash scripts/train_grpo_tdc_gpt_oss.sh
+#   MULTI_STAGE_DISPATCH=1 TRAIN_MAX_TOKENS_PER_GPU=8192 DEQUANT=unsloth bash train_grpo_tdc_gpt_oss.sh
 #
 #   # Distributed:
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 bash scripts/train_grpo_tdc_gpt_oss.sh
@@ -54,7 +54,6 @@
 #   MAX_EPOCHS=2                         # Training epochs (default: 1)
 #   EXTRA_ARGS="..."                     # Additional CLI flags
 #
-
 ### QUANTIZATION MODE RESOLUTION ###
 QUANT_METHOD="${QUANT_METHOD:-mxfp4}"
 DEQUANT="${DEQUANT:-}"
@@ -86,6 +85,9 @@ else
             NVFP4_BASE="${NVFP4_BASE:-unsloth/gpt-oss-20b-BF16}"
             QUANT_FLAGS="--vllm_sync_fp4 nvfp4 --nvfp4_dequantize_base_model $NVFP4_BASE"
             QUANT_LABEL="nvfp4"
+            # Disable FlashInfer MoE FP4 — falls back to VLLM_CUTLASS which is more stable
+            # on B200 for hidden_size=2880 (not a multiple of 512, rejected by FLASHINFER_TRTLLM).
+            export VLLM_USE_FLASHINFER_MOE_FP4=0
             ;;
         *)
             echo "Error: QUANT_METHOD must be 'mxfp4' or 'nvfp4', got '$QUANT_METHOD'" >&2
@@ -448,7 +450,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \
-    --eps_clip_low_high 0.2 0.272 \
+    --eps_clip_low_high 0.3 0.372 \
     --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
     --save_hf_ckpt \
     --disable_ds_ckpt \

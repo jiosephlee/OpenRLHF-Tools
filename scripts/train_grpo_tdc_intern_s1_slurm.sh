@@ -21,7 +21,7 @@
 #   GSPO=1 MULTI_STAGE_DISPATCH=1 SMART_REPLAY=1 MAX_REPLAY_ROUNDS=2 sbatch train_grpo_tdc_intern_s1_slurm.sh
 #
 # With smart replay (halved effective rollout batch size):
-#   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 SMART_REPLAY=1 COLO_EVAL_STEPS=32 EFFECTIVE_ROLLOUT_BATCH_SIZE=4 sbatch train_grpo_tdc_intern_s1_slurm.sh
+#   MODE=distributed ACTOR_GPUS=1 MULTI_STAGE_DISPATCH=1 VLLM_NUM_ENGINES=3 SMART_REPLAY=1 MAX_REPLAY_ROUNDS=3 sbatch train_grpo_tdc_intern_s1_slurm.sh
 #   SMART_REPLAY=1 MULTI_STAGE_DISPATCH=1 COLO_EVAL_STEPS=24 sbatch train_grpo_tdc_intern_s1_slurm.sh
 # With curriculum balanced:
 #   CURRICULUM_BALANCED=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh

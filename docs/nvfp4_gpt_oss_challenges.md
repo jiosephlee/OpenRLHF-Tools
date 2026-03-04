@@ -264,3 +264,89 @@ It's right there in nvfp4_utils.py that we already read — in the production ap
 
 compressed_tensors_w4a16_nvfp4.py — W4A16, Marlin GEMM, bf16 activations (same as MXFP4)
 compressed_tensors_w4a4_nvfp4.py — W4A4, CUTLASS/FlashInfer, FP4 activations
+
+---
+
+## Inference Debugging: Hang / No Output (B200 + hidden_size=2880)
+
+**Symptom:** The NVFP4 checkpoint (`jiosephlee/gpt-oss-20B-NVFP4-packed-clean`) loads cleanly — both POST-LOAD CHECK and KERNEL CONFIG CHECK report "all layers OK" — but inference either hangs indefinitely or produces garbage output. No trace is written.
+
+### Quant Method Clarification (Critical)
+
+For ModelOpt NVFP4 checkpoints, vLLM uses **`ModelOptNvFp4FusedMoE`** (in `modelopt.py`), **NOT** `CompressedTensorsW4A4Nvfp4MoEMethod`. These two register completely different param names:
+
+| | `ModelOptNvFp4FusedMoE` (what we use) | `CompressedTensorsW4A4Nvfp4MoEMethod` (wrong) |
+|---|---|---|
+| Packed weights | `w13_weight` | `w13_weight_packed` |
+| Global scale | `w13_weight_scale_2` | `w13_weight_global_scale` |
+| Activation scale | `w13_input_scale` | `w13_weight_global_scale` |
+
+`ModelOptNvFp4FusedMoE.create_weights` (line 1274 of `modelopt.py`) registers:
+- `w13_weight`: shape `[E, 2*intermediate, hidden//2]`
+- `w13_weight_scale_2`: shape `[E, 2]` (w13_num_shards=2)
+- `w13_input_scale`: scalar, pre-filled with 1.0 by `_load_weights_nvfp4`
+
+### What Is Confirmed Correct (Weight Loading)
+
+- All param names match: `_load_weights_nvfp4` finds all params via `params_dict`
+- Block scales loaded via `_load_combined_w13_weight_scale` (handles combined w1+w3 case at line 857 of `layer.py`)
+- Global scales reshaped `[E] → [E, 2]` via `unsqueeze(1).expand(-1, 2)` before `copy_()`
+- Packed weights split into w1/w3 halves; each half loaded via `weight_loader` with `shard_id="w1"` / `shard_id="w3"`
+- POST-LOAD CHECK genuinely passes: `w13_weight_scale_2` is a Parameter registered by `create_weights`, present before `process_weights_after_loading`
+- KERNEL CONFIG CHECK genuinely passes: `g1_alphas = a13_scale * w13_scale_2` is non-zero and non-NaN
+
+### Root Cause: Wrong MoE Backend for 2880 Hidden Size
+
+Backend selection order in `select_nvfp4_moe_backend` (`oracle/nvfp4.py` line 106):
+
+1. **FLASHINFER_TRTLLM** → **REJECTED** (`hidden_size=2880`, `2880 % 512 = 320 ≠ 0` at `is_supported_config_trtllm` line 98 of `flashinfer_fp4_moe.py`)
+2. **FLASHINFER_CUTEDSL** → selected if FlashInfer is installed (likely on this cluster)
+3. **FLASHINFER_CUTLASS** → selected if CUTEDSL is rejected
+4. **VLLM_CUTLASS** → `cutlass_scaled_mm_supports_fp4(10.0)` → True on B200 (family 100)
+5. **MARLIN** → fallback
+
+The selected backend is logged by `_log_nvfp4_kernel_config_check`:
+```
+[nvfp4] KERNEL CONFIG CHECK: all N NVFP4 MoE layers have valid kernel quant config ✓ (MoE backend=<name>, ...)
+```
+
+FLASHINFER_CUTEDSL or FLASHINFER_CUTLASS is likely selected and hangs or errors on B200 for `hidden_size=2880` (not aligned to FlashInfer tile size requirements).
+
+### Fix: Disable FlashInfer MoE FP4
+
+```bash
+export VLLM_USE_FLASHINFER_MOE_FP4=0
+```
+
+Setting this before launching vLLM forces the backend to fall through to **VLLM_CUTLASS** (the well-tested B200 path). `CutlassExpertsFp4._supports_current_device` (line 672 of `cutlass_moe.py`) accepts capability families 100/110/120, and B200 (10.0) is family 100.
+
+Add to `scripts/train_grpo_tdc_gpt_oss.sh` inside the `nvfp4)` case block, before the training command:
+```bash
+export VLLM_USE_FLASHINFER_MOE_FP4=0
+```
+
+### Fallback: Force Marlin
+
+If VLLM_CUTLASS still fails (isolates whether the issue is kernel vs format):
+```bash
+export VLLM_TEST_FORCE_FP8_MARLIN=1
+```
+
+### process_weights_after_loading Format Notes
+
+`ModelOptNvFp4FusedMoE.process_weights_after_loading` (line 1413 of `modelopt.py`):
+- Takes `w13_weight_scale_2[:, 0]` as the per-expert global scale
+- Routes to `convert_to_nvfp4_moe_kernel_format` → `prepare_nvfp4_moe_layer_for_fi_or_cutlass`
+- For FLASHINFER_CUTLASS only: `reorder_w1w3_to_w3w1` is applied (w1/w3 axis swapped)
+- For all non-TRTLLM backends: `swizzle_blockscale` applied to block scales
+- For VLLM_CUTLASS/CUTEDSL: no weight reordering, only scale swizzle
+
+Checkpoint shape `[E=32, out=5760, in//2=1440]` matches `w13_weight` param `[E, 2*intermediate, hidden//2] = [32, 5760, 1440]` ✓
+
+### Updated Failure Mode Reference
+
+| Symptom | Root cause | Fix |
+|---|---|---|
+| Model loads, inference hangs or garbage | FlashInfer CUTEDSL/CUTLASS selected for 2880 hidden | `VLLM_USE_FLASHINFER_MOE_FP4=0` |
+| Inference still fails with VLLM_CUTLASS | CUTLASS kernel format mismatch or CUDA error | `VLLM_TEST_FORCE_FP8_MARLIN=1` to isolate |
+| Activation quantization produces poor quality | `w13_input_scale` pre-filled with 1.0 (uncalibrated) | Calibrate from BF16 activation statistics |

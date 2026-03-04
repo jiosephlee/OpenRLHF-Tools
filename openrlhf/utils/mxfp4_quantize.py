@@ -27,14 +27,17 @@ E2M1_MAX = 6.0
 E2M1_BOUNDS = torch.tensor([0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5])
 
 
-@torch.compile(mode="reduce-overhead")
 def quantize_to_mxfp4(
     tensor: torch.Tensor,
     block_size: int = 32,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Quantize a tensor to MXFP4 (packing).
-    
-    If Triton is available, use the fused kernel for better performance.
+
+    Routes to the Triton fused kernel when available (already compiled; no
+    torch.compile wrapper needed or wanted — CUDA-graph pre-allocated buffers
+    become inference tensors when captured inside vLLM's inference_mode context,
+    causing replay failures during weight sync).  Falls back to the
+    torch.compile'd legacy path otherwise.
     """
     if _HAS_TRITON:
         return _quantize_to_mxfp4_triton(tensor, block_size)

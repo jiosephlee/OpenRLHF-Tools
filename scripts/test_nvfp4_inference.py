@@ -14,15 +14,38 @@ Usage:
 
     # Override model:
     MODEL=jiosephlee/gpt-oss-20B-NVFP4-packed-clean python scripts/test_nvfp4_inference.py
+
+Run on a GPU node with the CUDA module loaded, e.g.:
+    module load cuda/12.8.1
+    conda activate /vast/projects/myatskar/design-documents/conda_env/openrlhf
+    VLLM_USE_FLASHINFER_MOE_FP4=0 python scripts/test_nvfp4_inference.py
 """
 
 import os
+import subprocess
 import sys
 import time
 
 MODEL = os.environ.get("MODEL", "jiosephlee/gpt-oss-20B-NVFP4-packed-clean")
 MAX_NEW_TOKENS = int(os.environ.get("MAX_NEW_TOKENS", "50"))
 PROMPT = os.environ.get("PROMPT", "The capital of France is")
+
+# Preflight: check CUDA is actually accessible before spawning vLLM subprocesses.
+try:
+    import torch
+    if not torch.cuda.is_available():
+        raise RuntimeError("torch.cuda.is_available() returned False")
+    _ = torch.cuda.device_count()
+except Exception as _cuda_err:
+    print(
+        f"ERROR: CUDA not accessible ({_cuda_err}).\n"
+        "Make sure you are on a GPU node and have loaded the CUDA module:\n"
+        "  module load cuda/12.8.1\n"
+        "  conda activate /vast/projects/myatskar/design-documents/conda_env/openrlhf\n"
+        "  VLLM_USE_FLASHINFER_MOE_FP4=0 python scripts/test_nvfp4_inference.py",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 flashinfer_disabled = os.environ.get("VLLM_USE_FLASHINFER_MOE_FP4", "") == "0"
 print(f"[test_nvfp4_inference] Model: {MODEL}")

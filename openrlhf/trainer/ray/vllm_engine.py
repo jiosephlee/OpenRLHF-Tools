@@ -299,6 +299,7 @@ def create_vllm_engines(
     reduce_cuda_graph: bool = False,
     kv_cache_dtype: str = "auto",
     max_num_batched_tokens: Optional[int] = None,
+    max_num_seqs: Optional[int] = None,
 ):
     """Spin up a set of vLLM Ray actors with consistent placement."""
     vllm_engines = []
@@ -347,6 +348,9 @@ def create_vllm_engines(
 
         if max_num_batched_tokens is not None:
             actor_kwargs["max_num_batched_tokens"] = max_num_batched_tokens
+
+        if max_num_seqs is not None:
+            actor_kwargs["max_num_seqs"] = max_num_seqs
 
         if reduce_cuda_graph and not enforce_eager:
             from vllm.config import CompilationConfig, CompilationMode

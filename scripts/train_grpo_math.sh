@@ -45,9 +45,10 @@ LEARNING_RATE="1.5e-6"
 
 ### RUN CONFIG ###
 RUN_ID="baseline-grpo-math_$(date +%Y-%m-%d_%H-%M-%S)"
-SAVE_PATH="$PROJECT_ROOT/saves/baseline/$RUN_ID"
+LOCAL_SAVE_DIR="${LOCAL_SAVE_DIR:-/vast/projects/myatskar/design-documents/hf_home}"
+SAVE_PATH="$LOCAL_SAVE_DIR/$RUN_ID"
 HUB_REPO_ID="jiosephlee/grpo-baseline-math"
-mkdir -p "$PROJECT_ROOT/saves/baseline"
+mkdir -p "$LOCAL_SAVE_DIR"
 
 ### W&B ###
 WANDB_PROJECT="${WANDB_PROJECT:-openrlhf_baseline}"

@@ -70,6 +70,8 @@ TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
 GSPO="${GSPO:-0}"
 REDUCE_OPTIMIZER="${REDUCE_OPTIMIZER:-adam_offload}"
 MAX_EPOCHS="${MAX_EPOCHS:-1}"
+VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-256}"
+VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 ### UNIFIED CONSTANTS ###
@@ -77,7 +79,7 @@ AGENT_MAX_STEPS=30
 ZERO_STAGE=2
 PROMPT_MAX_LEN=12288 # Any responses longer than this will be truncated.
 N_SAMPLES_PER_PROMPT=12
-TRAIN_MAX_TOKENS_PER_GPU=32768 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
+TRAIN_MAX_TOKENS_PER_GPU=36864 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
 ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')
 
 COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-32}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
@@ -208,7 +210,8 @@ RUN_ID="${RUN_NAME}"
 HUB_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
 RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}"
 mkdir -p "$RUNS_DIR"
-SAVE_PATH="$PROJECT_ROOT/saves/tdc/$RUN_NAME"
+LOCAL_SAVE_DIR="${LOCAL_SAVE_DIR:-/vast/projects/myatskar/design-documents/hf_home}"
+SAVE_PATH="$LOCAL_SAVE_DIR/$RUN_NAME"
 HUB_REPO_ID="jiosephlee/${HUB_NAME}"
 
 ### TOOL-CALLING CONFIG ###
@@ -315,6 +318,8 @@ echo "Multi Stage Dispatch: $MULTI_STAGE_DISPATCH"
 echo "Liger GRPO Loss: $LIGER_GRPO_LOSS"
 echo "TIS: $TIS (type=$TIS_TYPE, thresholds=$TIS_THRESHOLDS)"
 echo "GSPO: $GSPO"
+echo "VLLM_MAX_NUM_SEQS: $VLLM_MAX_NUM_SEQS"
+echo "VLLM_MAX_NUM_BATCHED_TOKENS: $VLLM_MAX_NUM_BATCHED_TOKENS"
 echo "Tool Version: $TOOL_VERSION"
 echo "----------------------------------------"
 echo "Runs Dir: $RUNS_DIR"
@@ -378,7 +383,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size 1 \
     --kv_cache_dtype fp8 \
-    --max_num_batched_tokens 8192 \
+    --max_num_batched_tokens $VLLM_MAX_NUM_BATCHED_TOKENS \
     --vllm_gpu_memory_utilization $VLLM_GPU_MEM_UTIL \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
@@ -417,6 +422,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --agent_func_path "$AGENT_FUNC_PATH" \
     --agent_max_steps $AGENT_MAX_STEPS \
     --vllm_stop_strings "<|action_end|>" "<|im_end|>" \
+    --vllm_max_num_seqs $VLLM_MAX_NUM_SEQS \
     --chat_protocol "$CHAT_PROTOCOL" \
     --use_wandb 1 \
     --wandb_project "$WANDB_PROJECT" \

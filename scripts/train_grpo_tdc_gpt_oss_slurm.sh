@@ -22,7 +22,7 @@
 #   QUANT_METHOD=nvfp4 sbatch scripts/train_grpo_tdc_gpt_oss_slurm.sh
 #
 #   # Unsloth BF16:
-#   DEQUANT=unsloth sbatch scripts/train_grpo_tdc_gpt_oss_slurm.sh
+#   MULTI_STAGE_DISPATCH=1 TRAIN_MAX_TOKENS_PER_GPU=8192 DEQUANT=unsloth sbatch train_grpo_tdc_gpt_oss_slurm.sh
 #
 #   # Distributed:
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 sbatch scripts/train_grpo_tdc_gpt_oss_slurm.sh
@@ -61,13 +61,13 @@
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
 #SBATCH --qos=normal
-#SBATCH --gpus=2
+#SBATCH --gpus=4
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=768G
+#SBATCH --mem=1024G
 #SBATCH --gres-flags=enforce-binding
 #SBATCH --sockets-per-node=1
-#SBATCH --cpus-per-gpu=16
-#SBATCH --time=00-36:00:00
+#SBATCH --cpus-per-task=56
+#SBATCH --time=00-24:00:00
 
 ### PARCC PARAMETERS ###
 export OMP_NUM_THREADS=16
@@ -182,6 +182,8 @@ run_task() {
     KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-}"
     REDUCE_OPTIMIZER="${REDUCE_OPTIMIZER:-adam_offload}"
     MAX_EPOCHS="${MAX_EPOCHS:-1}"
+    VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-256}"
+    VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
     EXTRA_ARGS="${EXTRA_ARGS:-}"
 
     ### UNIFIED CONSTANTS ###
@@ -302,7 +304,8 @@ run_task() {
     HUB_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
     RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}"
     mkdir -p "$RUNS_DIR"
-    SAVE_PATH="$PROJECT_ROOT/saves/tdc/$RUN_NAME"
+    LOCAL_SAVE_DIR="${LOCAL_SAVE_DIR:-/vast/projects/myatskar/design-documents/hf_home}"
+    SAVE_PATH="$LOCAL_SAVE_DIR/$RUN_NAME"
     HUB_REPO_ID="jiosephlee/${HUB_NAME}"
 
     ### TOOL-CALLING CONFIG ###
@@ -436,6 +439,8 @@ run_task() {
     echo "TIS: $TIS (type=$TIS_TYPE, thresholds=$TIS_THRESHOLDS)"
     echo "GSPO: $GSPO"
     echo "KV Cache Dtype: ${KV_CACHE_DTYPE:-auto}"
+    echo "VLLM_MAX_NUM_SEQS: $VLLM_MAX_NUM_SEQS"
+    echo "VLLM_MAX_NUM_BATCHED_TOKENS: $VLLM_MAX_NUM_BATCHED_TOKENS"
     echo "Tool Version: $TOOL_VERSION"
     echo "----------------------------------------"
     echo "Runs Dir: $RUNS_DIR"
@@ -511,7 +516,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --vllm_num_engines $VLLM_NUM_ENGINES \
         --vllm_tensor_parallel_size 1 \
         --reduce_cuda_graph \
-        --max_num_batched_tokens 8192 \
+        --max_num_batched_tokens $VLLM_MAX_NUM_BATCHED_TOKENS \
         --vllm_gpu_memory_utilization $VLLM_GPU_MEM_UTIL \
         --advantage_estimator $ADVANTAGE_ESTIMATOR \
         --init_kl_coef 0 \
@@ -550,6 +555,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --agent_func_path "$AGENT_FUNC_PATH" \
         --agent_max_steps $AGENT_MAX_STEPS \
         --vllm_stop_strings "<|return|>" "<|call|>" \
+        --vllm_max_num_seqs $VLLM_MAX_NUM_SEQS \
         --chat_protocol "$CHAT_PROTOCOL" \
         --use_wandb 1 \
         --wandb_project "$WANDB_PROJECT" \

@@ -17,13 +17,13 @@
 # Usage:
 #   VLLM_GPU_MEM_UTIL=0.6
 #   # MXFP4 QAT (default):
-#   LIGER_GRPO_LOSS=1 TRAIN_MAX_TOKENS_PER_GPU=8192 REDUCE_OPTIMIZER=adam_8bit bash train_grpo_tdc_gpt_oss.sh
+#   TRAIN_MAX_TOKENS_PER_GPU=8192 QAT=fp4_fake_quantize bash train_grpo_tdc_gpt_oss.sh
 #
 #   # NVFP4 QAT:
 #   TRAIN_MAX_TOKENS_PER_GPU=1024 QUANT_METHOD=nvfp4 bash train_grpo_tdc_gpt_oss.sh
 #
 #   # Unsloth BF16:
-#   DEQUANT=unsloth bash scripts/train_grpo_tdc_gpt_oss.sh
+#   MULTI_STAGE_DISPATCH=1 TRAIN_MAX_TOKENS_PER_GPU=8192 DEQUANT=unsloth bash train_grpo_tdc_gpt_oss.sh
 #
 #   # Distributed:
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 bash scripts/train_grpo_tdc_gpt_oss.sh
@@ -54,7 +54,6 @@
 #   MAX_EPOCHS=2                         # Training epochs (default: 1)
 #   EXTRA_ARGS="..."                     # Additional CLI flags
 #
-
 ### QUANTIZATION MODE RESOLUTION ###
 QUANT_METHOD="${QUANT_METHOD:-mxfp4}"
 DEQUANT="${DEQUANT:-}"
@@ -86,6 +85,13 @@ else
             NVFP4_BASE="${NVFP4_BASE:-unsloth/gpt-oss-20b-BF16}"
             QUANT_FLAGS="--vllm_sync_fp4 nvfp4 --nvfp4_dequantize_base_model $NVFP4_BASE"
             QUANT_LABEL="nvfp4"
+            # All NVFP4 backends fail for hidden_size=2880 on B200:
+            #   FlashInfer CUTEDSL/CUTLASS: hangs (hidden_size not aligned to tile size)
+            #   VLLM_CUTLASS: W4A4 — uncalibrated a1_gscale=1.0 → garbage output
+            #   Marlin W4A16: crashes — group_size=16 not in supported tile configs
+            # TODO: either calibrate activation scales for VLLM_CUTLASS, or serve BF16.
+            # For now disable FlashInfer to at least avoid the hang (lands on VLLM_CUTLASS).
+            export VLLM_USE_FLASHINFER_MOE_FP4=0
             ;;
         *)
             echo "Error: QUANT_METHOD must be 'mxfp4' or 'nvfp4', got '$QUANT_METHOD'" >&2
@@ -130,6 +136,8 @@ QAT="${QAT:-}"
 KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-}"
 REDUCE_OPTIMIZER="${REDUCE_OPTIMIZER:-adam_offload}"
 MAX_EPOCHS="${MAX_EPOCHS:-1}"
+VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-256}"
+VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 ### UNIFIED CONSTANTS ###
@@ -264,7 +272,8 @@ RUN_ID="${RUN_NAME}"
 HUB_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
 RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}"
 mkdir -p "$RUNS_DIR"
-SAVE_PATH="$PROJECT_ROOT/saves/tdc/$RUN_NAME"
+LOCAL_SAVE_DIR="${LOCAL_SAVE_DIR:-/vast/projects/myatskar/design-documents/hf_home}"
+SAVE_PATH="$LOCAL_SAVE_DIR/$RUN_NAME"
 HUB_REPO_ID="jiosephlee/${HUB_NAME}"
 
 ### TOOL-CALLING CONFIG ###
@@ -373,6 +382,8 @@ echo "Liger GRPO Loss: $LIGER_GRPO_LOSS"
 echo "TIS: $TIS (type=$TIS_TYPE, thresholds=$TIS_THRESHOLDS)"
 echo "GSPO: $GSPO"
 echo "KV Cache Dtype: ${KV_CACHE_DTYPE:-auto}"
+echo "VLLM_MAX_NUM_SEQS: $VLLM_MAX_NUM_SEQS"
+echo "VLLM_MAX_NUM_BATCHED_TOKENS: $VLLM_MAX_NUM_BATCHED_TOKENS"
 echo "Tool Version: $TOOL_VERSION"
 echo "----------------------------------------"
 echo "Runs Dir: $RUNS_DIR"
@@ -442,12 +453,12 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size 1 \
     --reduce_cuda_graph \
-    --max_num_batched_tokens 8192 \
+    --max_num_batched_tokens $VLLM_MAX_NUM_BATCHED_TOKENS \
     --vllm_gpu_memory_utilization $VLLM_GPU_MEM_UTIL \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \
-    --eps_clip_low_high 0.2 0.272 \
+    --eps_clip_low_high 0.3 0.372 \
     --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
     --save_hf_ckpt \
     --disable_ds_ckpt \
@@ -481,6 +492,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --agent_func_path "$AGENT_FUNC_PATH" \
     --agent_max_steps $AGENT_MAX_STEPS \
     --vllm_stop_strings "<|return|>" "<|call|>" \
+    --vllm_max_num_seqs $VLLM_MAX_NUM_SEQS \
     --chat_protocol "$CHAT_PROTOCOL" \
     --use_wandb 1 \
     --wandb_project "$WANDB_PROJECT" \

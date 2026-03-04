@@ -615,6 +615,22 @@ class SamplesGenerator:
                 # Build Experience objects for each vLLM response returned from this worker.
                 responses = ray.get(ref)
                 total_episodes += len(responses)
+
+                if getattr(self, "rollout_trace_run_dir", None) and not getattr(self, "_has_saved_first_ever_trace", False):
+                    try:
+                        self._has_saved_first_ever_trace = True
+                        trace_path = os.path.join(self.rollout_trace_run_dir, "first_ever_trace.json")
+                        trace = responses[0]
+                        record = {
+                            "engine_idx": engine_idx,
+                            "trace": self._strip_token_ids(trace),
+                            "decoded": self._decode_trace(trace),
+                        }
+                        with open(trace_path, "w") as f:
+                            f.write(json.dumps(self._to_jsonable(record), ensure_ascii=True))
+                    except Exception as e:
+                        logger.error(f"Failed to save first ever trace: {e}")
+
                 # Only keep the first trace per step — _write_step_trace only uses [0].
                 # Holding ALL responses in episode_traces leaks hundreds of MB in
                 # multi-turn mode (each resp contains full observation_tokens + log_probs).

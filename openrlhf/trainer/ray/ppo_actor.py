@@ -52,7 +52,15 @@ def _build_vllm_sync_params(model, zero_stage: int):
         is_peft = False
 
     if not is_peft:
-        return list(model.named_parameters())
+        import re
+        result = []
+        for name, param in model.named_parameters():
+            # nn.utils.parametrize stores the original parameter under
+            # "module.parametrizations.PNAME.original" rather than "module.PNAME".
+            # Strip that so vLLM receives the canonical HF weight name.
+            name = re.sub(r'\.parametrizations\.([^.]+)\.original$', r'.\1', name)
+            result.append((name, param))
+        return result
 
     if zero_stage == 3:
         raise NotImplementedError(

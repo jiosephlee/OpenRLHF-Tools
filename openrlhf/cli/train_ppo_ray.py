@@ -105,6 +105,7 @@ def train(args):
             reduce_cuda_graph=args.reduce_cuda_graph,
             kv_cache_dtype=args.kv_cache_dtype,
             max_num_batched_tokens=args.max_num_batched_tokens,
+            max_num_seqs=args.vllm_max_num_seqs,
         )
 
     actor_model = RayActorGroup(
@@ -318,6 +319,12 @@ if __name__ == "__main__":
         type=int,
         default=None,
         help="Maximum number of batched tokens per iteration in vLLM",
+    )
+    parser.add_argument(
+        "--vllm_max_num_seqs",
+        type=int,
+        default=256,
+        help="Maximum number of concurrent sequences in vLLM",
     )
     # Your Efficient RL Framework Secretly Brings You Off-Policy RL Training: https://fengyao.notion.site/off-policy-rl
     parser.add_argument("--enable_vllm_is_correction", action="store_true", default=False)

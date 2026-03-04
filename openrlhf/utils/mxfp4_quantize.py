@@ -480,7 +480,17 @@ def register_mxfp4_qat_parametrization(model: nn.Module, block_size: int = 32) -
     logger.info(f"[QAT MXFP4] Registered fake-quantization on {count} expert weight layers.")
 
     if _prefetch_targets and _HAS_TRITON:
+        _last_weight_version = [None]  # mutable in closure; tracks optimizer steps
+
         def _batched_prefetch_hook(module_instance, inputs):
+            # Skip recompute if weights haven't changed (gradient accumulation).
+            # PyTorch's _version counter increments on in-place ops (optimizer.step).
+            ref_param = _prefetch_targets[0][0].parametrizations[_prefetch_targets[0][1]].original
+            current_version = ref_param._version
+            if _last_weight_version[0] == current_version:
+                return  # caches still valid from previous forward in this accumulation window
+            _last_weight_version[0] = current_version
+
             # Gather all expert weights, applying transpose where needed.
             # Skip ZeRO-3 shards (they'll fall through to the inline fallback).
             flat_parts = []

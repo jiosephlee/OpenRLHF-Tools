@@ -351,24 +351,9 @@ class _Mxfp4FakeQuant(nn.Module):
         self.block_size = block_size
         self.transpose = transpose
         self._dq_cache: torch.Tensor | None = None
-        self._stream: torch.cuda.Stream | None = None
-
-    def prefetch(self, weight: torch.Tensor) -> None:
-        """Launch fake-quant async on self._stream. Skips ZeRO-3 shards (ds_id)."""
-        if self._stream is None or not (_HAS_TRITON and weight.is_cuda and weight.dtype == torch.bfloat16):
-            return
-        if hasattr(weight, "ds_id"):
-            return
-        w = weight.detach()
-        if self.transpose:
-            w = w.transpose(-1, -2).contiguous()
-        with torch.no_grad(), torch.cuda.stream(self._stream):
-            self._dq_cache = _fake_quantize_mxfp4_triton(w, self.block_size)
 
     def forward(self, weight: torch.Tensor) -> torch.Tensor:
         if self._dq_cache is not None:
-            # Sync once; subsequent calls (gradient-checkpointing recompute) are no-ops
-            torch.cuda.current_stream().wait_stream(self._stream)
             dq = self._dq_cache
             # Do NOT clear — cache reused for gradient-checkpointing recomputes
             if self.transpose:
@@ -495,18 +480,47 @@ def register_mxfp4_qat_parametrization(model: nn.Module, block_size: int = 32) -
     logger.info(f"[QAT MXFP4] Registered fake-quantization on {count} expert weight layers.")
 
     if _prefetch_targets and _HAS_TRITON:
-        _NUM_STREAMS = min(len(_prefetch_targets), 8)
-        _stream_pool = [torch.cuda.Stream() for _ in range(_NUM_STREAMS)]
-        for i, (_, _, fq) in enumerate(_prefetch_targets):
-            fq._stream = _stream_pool[i % _NUM_STREAMS]
-
-        def _prefetch_hook(module_instance, inputs):
-            for _, _, fq in _prefetch_targets:
-                fq._dq_cache = None  # free previous step's cache
+        def _batched_prefetch_hook(module_instance, inputs):
+            # Gather all expert weights, applying transpose where needed.
+            # Skip ZeRO-3 shards (they'll fall through to the inline fallback).
+            flat_parts = []
+            part_sizes = []  # numel of each part for splitting later
+            active_fqs = []  # fq objects that have a valid part
             for mod, pname, fq in _prefetch_targets:
-                fq.prefetch(mod.parametrizations[pname].original)
+                w = mod.parametrizations[pname].original.detach()
+                if hasattr(w, "ds_id") or not (w.is_cuda and w.dtype == torch.bfloat16):
+                    fq._dq_cache = None
+                    continue
+                if fq.transpose:
+                    w = w.transpose(-1, -2).contiguous()
+                flat_parts.append(w.reshape(-1))
+                part_sizes.append(w.numel())
+                active_fqs.append(fq)
 
-        model.register_forward_pre_hook(_prefetch_hook)
-        logger.info(f"[QAT MXFP4] Async prefetch: {len(_prefetch_targets)} targets, {_NUM_STREAMS} streams.")
+            if not flat_parts:
+                return
+
+            # Single batched Triton kernel over all concatenated weights.
+            with torch.no_grad():
+                all_weights = torch.cat(flat_parts)
+                all_dq = _fake_quantize_mxfp4_triton(all_weights, fq.block_size)
+
+            # Split result back and store in each fq's cache.
+            splits = all_dq.split(part_sizes)
+            idx = 0
+            for mod, pname, fq in _prefetch_targets:
+                if fq in active_fqs:
+                    # Reshape to match the (possibly transposed) weight shape.
+                    w = mod.parametrizations[pname].original.detach()
+                    if fq.transpose:
+                        target_shape = w.transpose(-1, -2).shape
+                    else:
+                        target_shape = w.shape
+                    fq._dq_cache = splits[idx].reshape(target_shape)
+                    idx += 1
+                # ZeRO-3 skipped targets already have _dq_cache = None
+
+        model.register_forward_pre_hook(_batched_prefetch_hook)
+        logger.info(f"[QAT MXFP4] Batched prefetch: {len(_prefetch_targets)} targets, single Triton kernel.")
 
     return count

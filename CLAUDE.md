@@ -99,7 +99,7 @@ When the Actor trains in bf16 but vLLM serves with FP4-quantized weights (e.g. G
 ### 15. FP4 Quantization-Aware Training (QAT)
 **Files:** `openrlhf/utils/mxfp4_quantize.py`, `openrlhf/models/actor.py`, `openrlhf/trainer/ray/ppo_actor.py`, `openrlhf/cli/train_ppo_ray.py`
 
-Closes the train/inference distribution gap when vLLM serves with FP4-quantized MoE expert weights but the actor trains in bf16. We transitioned from traditional fake quantization to Gaussian noise injection (as proposed in QeRL) because fake quantization was too slow and consumed too much VRAM.
+Closes the train/inference distribution gap when vLLM serves with FP4-quantized MoE expert weights but the actor trains in bf16. Uses a batched Triton kernel prefetch: before each forward pass, all expert weights are concatenated and fake-quantized in a single kernel launch on the default stream, eliminating the previous multi-stream approach and its race conditions.
 
 - Only MoE expert projections are targeted (same name filter as `vllm_worker_wrap`: `"experts"` in path AND one of `gate_up_proj`/`down_proj`/`w13_weight`/`w2_weight`).
 - Weight sync unaffected: `named_parameters()` yields true bf16.
@@ -109,6 +109,10 @@ Closes the train/inference distribution gap when vLLM serves with FP4-quantized 
 **File:** `openrlhf/trainer/ppo_utils/experience_maker.py`
 
 `minimum_batch_num` was rounded down with floor division (`//`), which could produce 0 microbatches when `minimum_batch_num < effective_actor_num`, causing packed sequences to accidentally exceed `rollout_max_tokens_per_gpu`. Fix: use `math.ceil()` to round up, ensuring at least one microbatch per actor and respecting the token budget.
+
+### 17. Asymmetric PPO Clipping (Clip-Higher)
+
+Uses asymmetric `--eps_clip_low_high 0.3 0.372`, for instance, to give exploration tokens more room to increase probability per update (inspired by DAPO's Clip-Higher). GPT-OSS runs show ~24% clip ratio vs ~0.6% for smaller baselines, so wider bounds help avoid suppressing the gradient signal. Lower clip (ε=0.3) limits how aggressively bad actions are suppressed; upper clip (ε=0.372) limits reinforcement of good actions, with the asymmetry favoring exploration. Usual values are 0.2 and 0.272.
 
 ## Architecture
 

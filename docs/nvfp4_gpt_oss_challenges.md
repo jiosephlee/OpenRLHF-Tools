@@ -192,6 +192,56 @@ python scripts/inspect_nvfp4_checkpoint.py \
 
 ---
 
+## False Positive: "N NVFP4 params were NOT loaded"
+
+The warning fired by `_load_weights_nvfp4`:
+```
+[nvfp4] 102 NVFP4 params were NOT loaded (likely silent drop due to missing checkpoint key or mapper mismatch)
+```
+is **almost always a false positive**. Here's why.
+
+### Mechanism
+
+`_load_weights_nvfp4` ends with a diagnostic that compares `params_dict` (all 24 layers × 6 param types = 144 params) against `loaded_params` (what was added during this specific call's loading loop).
+
+`GptOssForCausalLM.load_weights` uses `AutoWeightsLoader`, which groups incoming weights by their top-level prefix using `itertools.groupby`. **`itertools.groupby` only groups consecutive elements.** If the checkpoint shard files yield keys in an order where the "model" prefix is interrupted:
+
+```
+model.layers.0.*    (shard 1)   ← "model" group #1
+...
+model.layers.16.*   (shard 1)
+lm_head.weight      (shard 1)   ← "lm_head" breaks the consecutive run
+model.layers.17.*   (shard 2)   ← "model" group #2 — new group!
+...
+model.layers.23.*   (shard 2)
+```
+
+`GptOssModel.load_weights` → `_load_weights_nvfp4` is called **once per group**, each time with a fresh `loaded_params = set()`. The diagnostic at the end of each call sees only the partial set of layers loaded so far.
+
+### The Complementary Counts
+
+With 24 layers × 6 param types = 144 total:
+- Call 1 (layers 0–16, 17 layers): `loaded_params` has 102 entries → warning "**102** NOT loaded" (layers 17–23 not yet seen)
+- Call 2 (layers 17–23, 7 layers): `loaded_params` has 42 entries → warning "**42** NOT loaded" (layers 0–16 done in call 1)
+
+Note 42 + 102 = 144 — they're perfectly complementary. Both warnings fire on the same run; which one you see depends on which log line you happen to notice.
+
+### Why It's Actually Fine
+
+`_log_nvfp4_post_load_check` is called from `GptOssForCausalLM.load_weights` **after** `AutoWeightsLoader` finishes processing all shard groups. At that point all 24 layers have their weights correctly loaded. The POST-LOAD CHECK is the authoritative diagnostic:
+```
+[nvfp4] POST-LOAD CHECK: all 24 MoE layers have valid non-zero w13+w2 scale_2 AND non-zero packed weights ✓
+```
+If this passes, ignore the "N params were NOT loaded" warnings entirely.
+
+### When the Warning IS Real
+
+The warning would indicate a genuine problem only if:
+1. The POST-LOAD CHECK also fails (zero or NaN scales after loading), **or**
+2. The listed unloaded params don't follow the complementary pattern (e.g., the same 6 params repeatedly across all 24 layers → suggests a mapper key mismatch)
+
+---
+
 ## Failure Mode Reference
 
 | Symptom | Root cause | Fix |
@@ -325,12 +375,16 @@ Add to `scripts/train_grpo_tdc_gpt_oss.sh` inside the `nvfp4)` case block, befor
 export VLLM_USE_FLASHINFER_MOE_FP4=0
 ```
 
-### Fallback: Force Marlin
+### Fallback: Force Marlin — DOES NOT WORK for group_size=16
 
-If VLLM_CUTLASS still fails (isolates whether the issue is kernel vs format):
-```bash
-export VLLM_TEST_FORCE_FP8_MARLIN=1
+`VLLM_TEST_FORCE_FP8_MARLIN=1` selects the `moe_wna16_marlin_gemm` kernel (W4A16, BF16 activations), which is conceptually correct for a W4A16 checkpoint. However it crashes with:
+
 ```
+RuntimeError: Invalid thread config: thread_m_blocks=4, thread_k=-1, thread_n=-1, num_threads=-1
+    for MKN=[65536, 2880, 2880] and num_bits=4, group_size=16
+```
+
+`thread_k=-1` means the kernel's tile-config selector found no valid config for `group_size=16`. Marlin's `moe_wna16_marlin_gemm` only supports group sizes ≥ 32 (typical: 128, 64, 32). NVFP4's block size is 16 — not in the supported set. **Do not use this flag for NVFP4 checkpoints.**
 
 ### process_weights_after_loading Format Notes
 
@@ -343,10 +397,37 @@ export VLLM_TEST_FORCE_FP8_MARLIN=1
 
 Checkpoint shape `[E=32, out=5760, in//2=1440]` matches `w13_weight` param `[E, 2*intermediate, hidden//2] = [32, 5760, 1440]` ✓
 
+### Full Backend Status for GPT-OSS 20B (hidden_size=2880, B200)
+
+All four NVFP4 MoE backends have been tested and all fail:
+
+| Backend | Env var | Result | Root cause |
+|---|---|---|---|
+| FlashInfer TRTLLM | (auto) | rejected at init | `hidden_size=2880`, `2880 % 512 ≠ 0` |
+| FlashInfer CUTEDSL | (auto) | hangs at inference | tile alignment requirement on B200 |
+| FlashInfer CUTLASS | (auto) | hangs at inference | tile alignment requirement on B200 |
+| VLLM_CUTLASS | `VLLM_USE_FLASHINFER_MOE_FP4=0` | garbage output | W4A4 kernel; `a1_gscale=1.0` (uncalibrated) saturates activations |
+| Marlin W4A16 | `VLLM_TEST_FORCE_FP8_MARLIN=1` | crashes | `moe_wna16_marlin_gemm` doesn't support `group_size=16` |
+
+### Paths Forward
+
+**Option A — Calibrate activation scales for VLLM_CUTLASS (proper W4A4 fix)**
+
+Run the BF16 model on a calibration dataset and compute per-expert activation statistics. Store calibrated `w13_input_scale` / `w2_input_scale` in the checkpoint. With accurate `a1_gscale`, VLLM_CUTLASS should produce correct output. This is the "right" fix but requires calibration infrastructure.
+
+**Option B — Serve BF16 in vLLM (bypasses all FP4 kernel issues)**
+
+Load `unsloth/gpt-oss-20b-BF16` as the vLLM model (not the NVFP4 checkpoint). Actor still initializes from the NVFP4 checkpoint + `--nvfp4_dequantize_base_model` for correct weights. Weight sync becomes BF16→BF16 (no quantization for vLLM). Requires either a separate `--vllm_pretrain` arg or passing the BF16 path as `PRETRAIN_PATH` and having the actor load from `NVFP4_BASE` separately. Memory cost: vLLM uses ~40 GB for BF16 vs ~10 GB for FP4.
+
+**Option C — Use MXFP4 for vLLM instead**
+
+Convert the workflow to MXFP4 format (load BF16 base in vLLM + on-the-fly MXFP4 quantization during weight sync via `--vllm_sync_fp4 mxfp4`). MXFP4 uses a different kernel path that may support hidden_size=2880 on B200.
+
 ### Updated Failure Mode Reference
 
 | Symptom | Root cause | Fix |
 |---|---|---|
-| Model loads, inference hangs or garbage | FlashInfer CUTEDSL/CUTLASS selected for 2880 hidden | `VLLM_USE_FLASHINFER_MOE_FP4=0` |
-| Inference still fails with VLLM_CUTLASS | CUTLASS kernel format mismatch or CUDA error | `VLLM_TEST_FORCE_FP8_MARLIN=1` to isolate |
-| Activation quantization produces poor quality | `w13_input_scale` pre-filled with 1.0 (uncalibrated) | Calibrate from BF16 activation statistics |
+| Model loads, inference hangs | FlashInfer CUTEDSL/CUTLASS selected for 2880 hidden | `VLLM_USE_FLASHINFER_MOE_FP4=0` (forces VLLM_CUTLASS) |
+| VLLM_CUTLASS produces garbage output | W4A4 kernel; `a1_gscale=1.0` saturates uncalibrated activations | Calibrate `w13_input_scale` from BF16 activation statistics |
+| `VLLM_TEST_FORCE_FP8_MARLIN=1` crashes | Marlin `moe_wna16_marlin_gemm` doesn't support `group_size=16` | Don't use Marlin for NVFP4; NVFP4 block size (16) is too small |
+| No working NVFP4 kernel for this shape | All four backends fail for hidden_size=2880 + group_size=16 | Serve BF16 in vLLM (Option B) or calibrate for VLLM_CUTLASS (Option A) |

@@ -336,6 +336,24 @@ def fake_quantize_mxfp4(weight: torch.Tensor, block_size: int = 32) -> torch.Ten
     return weight + (dequantized - weight).detach()
 
 
+class _StraightThrough(torch.autograd.Function):
+    """Straight-through estimator: forward returns pre-quantized dq, backward is identity.
+
+    Compared to `weight + (dq - weight).detach()`, this avoids allocating the
+    (dq - weight) temporary tensor and the subsequent addition — zero tensor ops
+    in the cached path. Critical for gradient-checkpointing recomputation, which
+    re-runs forward (and thus this function) for every layer during backward.
+    """
+
+    @staticmethod
+    def forward(ctx, weight: torch.Tensor, dq: torch.Tensor) -> torch.Tensor:
+        return dq
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        return grad_output, None  # identity for weight; dq is detached, no grad needed
+
+
 class _Mxfp4FakeQuant(nn.Module):
     """Parametrization that applies MXFP4 fake-quantization to a weight.
 
@@ -354,9 +372,10 @@ class _Mxfp4FakeQuant(nn.Module):
 
     def forward(self, weight: torch.Tensor) -> torch.Tensor:
         if self._dq_cache is not None:
-            dq = self._dq_cache  # same shape as weight (original space)
-            # Do NOT clear — cache reused for gradient-checkpointing recomputes
-            return weight + (dq - weight).detach()
+            # Do NOT clear — cache reused for gradient-checkpointing recomputes.
+            # _StraightThrough returns dq directly: zero tensor ops vs the old
+            # `weight + (dq - weight).detach()` pattern (2 full-weight ops).
+            return _StraightThrough.apply(weight, self._dq_cache)
 
         # Inline fallback: first step before any prefetch, ZeRO-3, or no stream
         if self.transpose:

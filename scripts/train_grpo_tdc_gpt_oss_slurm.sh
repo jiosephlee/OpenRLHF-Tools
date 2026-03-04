@@ -22,7 +22,7 @@
 #   QUANT_METHOD=nvfp4 sbatch scripts/train_grpo_tdc_gpt_oss_slurm.sh
 #
 #   # Unsloth BF16:
-#   MULTI_STAGE_DISPATCH=1 TRAIN_MAX_TOKENS_PER_GPU=8192 DEQUANT=unsloth sbatch train_grpo_tdc_gpt_oss_slurm.sh
+#   LEARNING_RATE=5e-7 MULTI_STAGE_DISPATCH=1 TRAIN_MAX_TOKENS_PER_GPU=32768 VLLM_GPU_MEM_UTIL=0.71 DEQUANT=unsloth sbatch train_grpo_tdc_gpt_oss_slurm.sh
 #
 #   # Distributed:
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 sbatch scripts/train_grpo_tdc_gpt_oss_slurm.sh
@@ -189,8 +189,8 @@ run_task() {
     ### UNIFIED CONSTANTS ###
     AGENT_MAX_STEPS=30
     ZERO_STAGE=2
-    PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-8192}"
-    N_SAMPLES_PER_PROMPT=8
+    PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-6144}"
+    N_SAMPLES_PER_PROMPT=12
     TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-4096}"
     ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.25" | bc | awk '{print int($1)}')}"
 
@@ -317,8 +317,8 @@ run_task() {
     DYNAMIC_FILTERING_REWARD_RANGE="0 1"
 
     WANDB_PROJECT="${WANDB_PROJECT:-openrlhf_tdc_grpo}"
-    TEMPERATURE=0.7
-    TOP_P=0.95
+    TEMPERATURE=1.0
+    TOP_P=0.9
 
     ### RAY TMPDIR ###
     export RAY_TMPDIR="/tmp/ray_${USER}/${SLURM_JOB_ID}"
@@ -521,7 +521,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --advantage_estimator $ADVANTAGE_ESTIMATOR \
         --init_kl_coef 0 \
         --kl_estimator k1 \
-        --eps_clip_low_high 0.2 0.272 \
+        --eps_clip_low_high 0.3 0.362 \
         --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
         --save_hf_ckpt \
         --disable_ds_ckpt \
@@ -539,7 +539,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --prompt_data "$TRAIN_DATA" \
         --eval_dataset "$EVAL_DATA" \
         --eval_steps $EVAL_STEPS \
-        --eval_temperature $TEMPERATURE \
+        --eval_temperature 0.1 \
         --eval_n_samples_per_prompt 1 \
         --input_key messages \
         --label_key answer \

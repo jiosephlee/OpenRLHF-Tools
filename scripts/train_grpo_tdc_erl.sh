@@ -41,7 +41,7 @@ if [ "$ERL_MEMORY" = "1" ]; then
 fi
 
 if [ "$(echo "$ERL_DISTILL_COEF > 0" | bc -l)" = "1" ]; then
-    ERL_FLAGS+=" --erl_distill_coef $ERL_DISTILL_COEF"
+    ERL_FLAGS+=" --distill_coef $ERL_DISTILL_COEF"
 fi
 
 ### OVERRIDE DEFAULTS FOR ERL ###

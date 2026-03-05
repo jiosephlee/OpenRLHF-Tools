@@ -55,7 +55,6 @@ class _VLLMStatsPoller:
         self._kv_cache_vals: List[float] = []
         self._running_vals: List[int] = []
         self._waiting_vals: List[int] = []
-        self._hit_rate_vals: List[float] = []
 
         self._thread = threading.Thread(target=self._poll_loop, daemon=True)
         self._stop = threading.Event()
@@ -65,19 +64,34 @@ class _VLLMStatsPoller:
     # -- polling loop --------------------------------------------------
 
     def _read_scheduler_stats(self):
-        """Read the latest SchedulerStats from vLLM's output processor.
+        """Read the latest SchedulerStats from vLLM.
 
-        vLLM V1's AsyncLLM stores an OutputProcessor which receives
-        SchedulerStats with every EngineCoreOutput batch.  We read the
-        most-recent snapshot.  Returns None if stats aren't available yet.
+        In current vLLM V1, OutputProcessor.update_scheduler_stats() only
+        forwards to lora_states — it does NOT store ``scheduler_stats`` as
+        an attribute.  The stats are instead persisted by
+        LoggingStatLogger.record() as ``last_scheduler_stats``.
+
+        We read from logger_manager first, falling back to output_processor
+        for compatibility with older vLLM versions.  Returns None when no
+        real stats have been recorded yet (step_counter == 0).
         """
         try:
+            # Primary: logger_manager → stat_loggers → last_scheduler_stats
+            lm = getattr(self._llm, "logger_manager", None)
+            if lm is not None:
+                for sl in getattr(lm, "stat_loggers", []):
+                    stats = getattr(sl, "last_scheduler_stats", None)
+                    if stats is not None and getattr(stats, "step_counter", 0) > 0:
+                        return stats
+
+            # Fallback: older vLLM versions that store on output_processor.
             op = getattr(self._llm, "output_processor", None)
-            if op is None:
-                return None
-            # OutputProcessor stores latest scheduler stats.
-            stats = getattr(op, "scheduler_stats", None)
-            return stats
+            if op is not None:
+                stats = getattr(op, "scheduler_stats", None)
+                if stats is not None:
+                    return stats
+
+            return None
         except Exception:
             return None
 
@@ -93,14 +107,6 @@ class _VLLMStatsPoller:
             running = getattr(stats, "num_running_reqs", 0)
             waiting = getattr(stats, "num_waiting_reqs", 0)
 
-            prefix_stats = getattr(stats, "prefix_cache_stats", None)
-            hit_rate = 0.0
-            if prefix_stats is not None:
-                hit_rate = getattr(prefix_stats, "hit_rate", 0.0)
-                if callable(hit_rate):
-                    # Some versions expose hit_rate as a property.
-                    pass  # already resolved by property access
-
             sample = {
                 "t": time_mod.time(),
                 "global_step": self._current_global_step,
@@ -108,7 +114,6 @@ class _VLLMStatsPoller:
                 "kv_cache_usage": round(kv, 4),
                 "num_running": running,
                 "num_waiting": waiting,
-                "prefix_hit_rate": round(hit_rate, 4),
             }
 
             with self._lock:
@@ -116,7 +121,6 @@ class _VLLMStatsPoller:
                 self._kv_cache_vals.append(kv)
                 self._running_vals.append(running)
                 self._waiting_vals.append(waiting)
-                self._hit_rate_vals.append(hit_rate)
 
     # -- public API ----------------------------------------------------
 
@@ -142,13 +146,11 @@ class _VLLMStatsPoller:
             kv = self._kv_cache_vals
             running = self._running_vals
             waiting = self._waiting_vals
-            hit_rate = self._hit_rate_vals
 
             self._samples = []
             self._kv_cache_vals = []
             self._running_vals = []
             self._waiting_vals = []
-            self._hit_rate_vals = []
 
         n = len(kv)
         if n == 0:
@@ -169,7 +171,6 @@ class _VLLMStatsPoller:
                 "mean": round(sum(waiting) / n, 2),
                 "max": max(waiting),
             },
-            "prefix_cache_hit_rate": round(sum(hit_rate) / n, 4),
             "raw_samples": samples,
         }
 

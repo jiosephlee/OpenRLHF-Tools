@@ -422,7 +422,7 @@ class SamplesGenerator:
 
         # Aggregate raw samples from all engines.
         all_raw_samples = []
-        all_kv, all_running, all_waiting, all_hit = [], [], [], []
+        all_kv, all_running, all_waiting = [], [], []
         total_poll_samples = 0
 
         for stats in per_engine:
@@ -434,7 +434,6 @@ class SamplesGenerator:
                 all_kv.append(kv["mean"])
                 all_running.append(stats["num_running_reqs"]["mean"])
                 all_waiting.append(stats["num_waiting_reqs"]["mean"])
-                all_hit.append(stats["prefix_cache_hit_rate"])
 
         if not all_kv:
             return {"num_engines": len(self.vllm_engines), "num_poll_samples": 0, "raw_samples": all_raw_samples}
@@ -457,7 +456,6 @@ class SamplesGenerator:
                 "mean": round(sum(all_waiting) / ne, 2),
                 "max": max(s["num_waiting_reqs"]["max"] for s in per_engine if s.get("num_samples", 0) > 0),
             },
-            "prefix_cache_hit_rate": round(sum(all_hit) / ne, 4),
             "raw_samples": all_raw_samples,
         }
 
@@ -540,8 +538,6 @@ class SamplesGenerator:
         if "num_waiting_reqs" in engine_stats:
             flat["vllm_num_waiting_reqs_mean"] = engine_stats["num_waiting_reqs"]["mean"]
             flat["vllm_num_waiting_reqs_max"] = engine_stats["num_waiting_reqs"]["max"]
-        if "prefix_cache_hit_rate" in engine_stats:
-            flat["vllm_prefix_cache_hit_rate"] = engine_stats["prefix_cache_hit_rate"]
 
         self.last_vllm_stats = flat
 
@@ -1079,9 +1075,9 @@ class SamplesGenerator:
                 value = value.flatten()[0].item()
             info[key] = torch.tensor([value])
 
-        # ERL distillation mask: True for successful retry experiences (r2 == 1)
-        is_erl_distill = extra_logs.get("erl_gated", 0) == 1 and (reward_val is not None and reward_val >= 1.0)
-        info["erl_distill_mask"] = torch.tensor([float(is_erl_distill)])
+        # Generic distillation mask: any executor can tag extra_logs["distill"] = 1
+        # to request SFT loss on this experience's action tokens.
+        info["distill_mask"] = torch.tensor([float(extra_logs.get("distill", 0))])
 
         return Experience(
             sequences=sequences.unsqueeze(0),

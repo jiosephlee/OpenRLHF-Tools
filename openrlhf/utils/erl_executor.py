@@ -202,6 +202,10 @@ class ERLExecutor(AgentExecutorBase):
             rr.setdefault("extra_logs", {})["erl_gated"] = 1
             rr["extra_logs"]["erl_hard_prompt"] = 1
             rr["extra_logs"]["erl_r2"] = rr.get("reward", 0)
+            # Generic distillation signal: any executor can set this to
+            # request SFT loss on this experience's action tokens.
+            if rr.get("reward", 0) >= 1.0:
+                rr["extra_logs"]["distill"] = 1
 
         logger.info(
             "[ERL] Hard prompt: avg_r1=%.2f, r2_rewards=%s, group_size=%d",

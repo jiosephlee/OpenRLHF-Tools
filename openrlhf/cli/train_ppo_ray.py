@@ -739,11 +739,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--erl_max_reflection_tokens", type=int, default=512, help="Max tokens for reflection generation"
     )
+    # Distillation loss (generic — any executor can tag experiences for SFT)
     parser.add_argument(
-        "--erl_distill_coef",
+        "--distill_coef",
         type=float,
         default=0.0,
-        help="Distillation loss coefficient for successful retries where r2==1 (0=disabled)",
+        help="Distillation loss coefficient for experiences tagged with distill_mask (0=disabled)",
     )
 
     # TensorBoard parameters

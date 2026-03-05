@@ -124,7 +124,7 @@ Based on [Experiential Reinforcement Learning](https://arxiv.org/abs/2602.13949)
 - **k diverse reflections**: k reflection+retry pairs per hard prompt, each conditioned on a different failed attempt
 - **Variable group sizes**: Hard prompt groups expand from n to n+k; advantage computation uses dynamic `torch.split` instead of fixed reshape
 - **Reflection injection**: `ChatProtocol.inject_reflection()` inserts reflection into system message (implemented for InternS1Protocol and Qwen3Protocol)
-- **Distillation loss**: Optional SFT loss (`--erl_distill_coef`) on successful retry action tokens (r2==1 only)
+- **Distillation loss**: Optional SFT loss (`--distill_coef`) on experiences tagged with `extra_logs["distill"] = 1` (generic — any executor can use)
 - **Per-task memory**: Optional (`OPENRLHF_ERL_MEMORY=1`) cross-episode reflection storage keyed by TDC task name
 - **Training script**: `scripts/train_grpo_tdc_erl.sh` sets ERL env vars + `AGENT_FUNC_PATH` and delegates to intern_s1 script
 

@@ -479,15 +479,15 @@ class ActorPPOTrainer(ABC):
                 if self.args.entropy_loss_coef != 0:
                     loss -= entropy_loss * self.args.entropy_loss_coef
 
-        # ERL distillation loss: SFT signal on successful retry experiences (r2 == 1)
-        erl_distill_coef = getattr(self.args, "erl_distill_coef", 0.0)
-        if erl_distill_coef > 0 and not self.use_liger_grpo_loss:
-            erl_distill_mask = experience.info.get("erl_distill_mask")
-            if erl_distill_mask is not None and erl_distill_mask.any():
-                # Weighted NLL on action tokens of successful retry experiences
-                distill_mask = erl_distill_mask.unsqueeze(-1) * experience.action_mask
-                distill_loss = -masked_mean(action_log_probs, distill_mask)
-                loss = loss + erl_distill_coef * distill_loss
+        # Distillation loss: SFT signal on experiences tagged with distill_mask.
+        # Any executor can request this by setting extra_logs["distill"] = 1.
+        distill_coef = getattr(self.args, "distill_coef", 0.0)
+        if distill_coef > 0 and not self.use_liger_grpo_loss:
+            distill_mask = experience.info.get("distill_mask")
+            if distill_mask is not None and distill_mask.any():
+                distill_action_mask = distill_mask.unsqueeze(-1) * experience.action_mask
+                distill_loss = -masked_mean(action_log_probs, distill_action_mask)
+                loss = loss + distill_coef * distill_loss
 
         if self.args.use_dynamic_batch:
             loss = loss * self.replay_buffer.dynamic_loss_scale[step]

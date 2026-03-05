@@ -43,7 +43,7 @@ class _VLLMStatsPoller:
     sample for time-series export.  Thread-safe via a simple lock.
     """
 
-    def __init__(self, llm_engine, engine_id: int = 0, poll_interval: float = 5.0):
+    def __init__(self, llm_engine, engine_id: int = 0, poll_interval: float = 30.0):
         self._llm = llm_engine
         self._engine_id = engine_id
         self._poll_interval = poll_interval
@@ -122,6 +122,18 @@ class _VLLMStatsPoller:
 
     def set_global_step(self, step: int):
         self._current_global_step = step
+
+    def flush_raw_samples(self) -> List[Dict]:
+        """Drain and return the raw sample list without touching aggregated stats.
+
+        Called periodically to write timeseries to disk and free memory in the
+        Ray actor.  Aggregated vals (_kv_cache_vals etc.) remain intact so that
+        collect_and_reset() can still produce a correct per-step summary.
+        """
+        with self._lock:
+            samples = self._samples
+            self._samples = []
+        return samples
 
     def collect_and_reset(self) -> Dict:
         """Return accumulated stats + raw samples, then reset."""
@@ -261,7 +273,9 @@ class LLMRayActor:
                     os.environ.pop(alloc_var, None)
 
         if version.parse(vllm.__version__) <= version.parse("0.8.5"):
-            logger.warning("vLLM version %s may be older than 0.8.5; proceeding anyway (custom build assumed)", vllm.__version__)
+            logger.warning(
+                "vLLM version %s may be older than 0.8.5; proceeding anyway (custom build assumed)", vllm.__version__
+            )
 
         # Prevent inheriting trainer process-group rendezvous env into vLLM workers.
         # vLLM V1 initializes its own distributed context and can collide on MASTER_PORT.
@@ -299,7 +313,9 @@ class LLMRayActor:
             args=(name, dtype, shape, empty_cache, fp4_quantize_format),
         )
 
-    async def update_weight_cuda_ipc(self, name, dtype, shape, ipc_handles, empty_cache=False, fp4_quantize_format=None):
+    async def update_weight_cuda_ipc(
+        self, name, dtype, shape, ipc_handles, empty_cache=False, fp4_quantize_format=None
+    ):
         return await self.llm.collective_rpc(
             "update_weight_cuda_ipc",
             args=(name, dtype, shape, ipc_handles, empty_cache, fp4_quantize_format),
@@ -325,6 +341,7 @@ class LLMRayActor:
         self._stats_poller.pause()
         await self.llm.sleep(level=level)
         import torch
+
         torch.cuda.empty_cache()
 
     async def wake_up(self, tags=["weights", "kv_cache"]):
@@ -373,6 +390,15 @@ class LLMRayActor:
     def get_vllm_stats(self) -> Dict:
         """Return accumulated scheduler stats + raw samples, then reset."""
         return self._stats_poller.collect_and_reset()
+
+    def get_and_flush_raw_samples(self) -> List[Dict]:
+        """Drain raw timeseries samples from memory without resetting summary stats.
+
+        Called periodically (end of eval, end of global_step) to write samples
+        to disk and free Ray actor RAM without disrupting the per-step summary
+        that collect_and_reset() produces at the end of generation.
+        """
+        return self._stats_poller.flush_raw_samples()
 
     async def gc_collect(self):
         """Force garbage collection and return freed pages to the OS.
@@ -450,7 +476,6 @@ class LLMRayActor:
         return results
 
 
-
 def create_vllm_engines(
     num_engines: int,
     tensor_parallel_size: int,
@@ -471,6 +496,7 @@ def create_vllm_engines(
     chat_protocol: str = "glm_flash",
     tool_version: Optional[str] = None,
     reduce_cuda_graph: bool = False,
+    vllm_cudagraph_max_capture_size: Optional[int] = None,
     kv_cache_dtype: str = "auto",
     max_num_batched_tokens: Optional[int] = None,
     max_num_seqs: Optional[int] = None,
@@ -545,12 +571,27 @@ def create_vllm_engines(
         if reduce_cuda_graph and not enforce_eager:
             from vllm.config import CompilationConfig, CompilationMode
 
+            max_capture = vllm_cudagraph_max_capture_size if vllm_cudagraph_max_capture_size is not None else 128
+            cudagraph_sizes = list(range(1, 9)) + [s for s in range(16, max_capture + 1, 8) if s <= max_capture]
+            if max_capture not in cudagraph_sizes and max_capture >= 16:
+                cudagraph_sizes.append(max_capture)
             actor_kwargs["compilation_config"] = CompilationConfig(
                 mode=CompilationMode.VLLM_COMPILE,
-                cudagraph_capture_sizes=list(range(1, 9)) + list(range(16, 136, 8)),
+                cudagraph_capture_sizes=sorted(set(cudagraph_sizes)),
                 pass_config={"fuse_allreduce_rms": True, "eliminate_noops": True, "fuse_attn_quant": True},
             )
             actor_kwargs["async_scheduling"] = True
+        elif vllm_cudagraph_max_capture_size is not None and not enforce_eager:
+            from vllm.config import CompilationConfig, CompilationMode
+
+            max_capture = vllm_cudagraph_max_capture_size
+            cudagraph_sizes = list(range(1, 9)) + [s for s in range(16, max_capture + 1, 8) if s <= max_capture]
+            if max_capture not in cudagraph_sizes and max_capture >= 16:
+                cudagraph_sizes.append(max_capture)
+            actor_kwargs["compilation_config"] = CompilationConfig(
+                mode=CompilationMode.VLLM_COMPILE,
+                cudagraph_capture_sizes=sorted(set(cudagraph_sizes)),
+            )
 
         actor_kwargs.update(
             {
@@ -566,9 +607,9 @@ def create_vllm_engines(
         if logprobs_mode:
             actor_kwargs["logprobs_mode"] = logprobs_mode
             actor_kwargs["max_logprobs"] = 1
-            assert version.parse(vllm.__version__) > version.parse(
-                "0.10.0"
-            ), "vLLM > 0.10.0 is required for logprobs_mode"
+            assert version.parse(vllm.__version__) > version.parse("0.10.0"), (
+                "vLLM > 0.10.0 is required for logprobs_mode"
+            )
 
         vllm_engines.append(
             LLMRayActor.options(

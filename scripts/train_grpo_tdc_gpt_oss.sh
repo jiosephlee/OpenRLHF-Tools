@@ -137,6 +137,7 @@ MAX_EPOCHS="${MAX_EPOCHS:-1}"
 VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-256}"
 VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
+VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE="${VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE:-}"
 
 ### UNIFIED CONSTANTS ###
 AGENT_MAX_STEPS=30
@@ -436,6 +437,9 @@ fi
 if [ -n "$KV_CACHE_DTYPE" ]; then
     OPTIONAL_FLAGS+=" --kv_cache_dtype $KV_CACHE_DTYPE"
 fi
+if [ -n "$VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE" ]; then
+    OPTIONAL_FLAGS+=" --vllm_cudagraph_max_capture_size $VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE"
+fi
 
 ### TRAINING ###
 RUN_LOG="$RUNS_DIR/run_${QUANT_LABEL}.log"
@@ -450,7 +454,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --actor_num_gpus_per_node $ACTOR_GPUS \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size 1 \
-    --reduce_cuda_graph \
+    --optimal_flags_b200_gpt_oss \
     --max_num_batched_tokens $VLLM_MAX_NUM_BATCHED_TOKENS \
     --vllm_gpu_memory_utilization $VLLM_GPU_MEM_UTIL \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
@@ -461,6 +465,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_hf_ckpt \
     --disable_ds_ckpt \
     --logging_steps 1 \
+    --micro_train_batch_size 1 \
+    --micro_rollout_batch_size 2 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $ROLLOUT_BATCH_SIZE \
@@ -483,7 +489,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --tdc_tools "$TDC_TOOLS_JSON" \
     --tool_version "$TOOL_VERSION" \
     --gradient_checkpointing \
-    --packing_samples \
     --vllm_sync_backend $VLLM_SYNC_BACKEND \
     --top_p $TOP_P \
     --temperature $TEMPERATURE \
@@ -499,13 +504,11 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_path "$SAVE_PATH" \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
-    --use_dynamic_batch \
-    --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
-    --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \
     --constant_lr_with_warm_up \
     --warmup_steps $WARMUP_STEPS \
     --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
     --skip_eval_step_zero \
+    --attn_implementation eager \
     $QUANT_FLAGS \
     $MODE_FLAGS \
     $OPTIONAL_FLAGS \

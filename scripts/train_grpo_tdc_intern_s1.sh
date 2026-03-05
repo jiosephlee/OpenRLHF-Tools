@@ -9,10 +9,10 @@
 #
 # Usage:
 #   # Colocated (default — actor and vLLM share GPUs via sleep mode):
-#   bash scripts/train_grpo_tdc_intern_s1.sh
+#   MULTI_STAGE_DISPATCH=1 SMART_REPLAY=1 bash train_grpo_tdc_intern_s1.sh
 #
 #   # Distributed (actor and vLLM on separate GPUs):
-#   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 bash scripts/train_grpo_tdc_intern_s1.sh
+#   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 bash train_grpo_tdc_intern_s1.sh
 #
 #   # Distributed with extra flags:
 #   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 SMART_REPLAY=1 \
@@ -91,7 +91,7 @@ if [ "$MODE" = "colocated" ]; then
     VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
     ROLLOUT_BATCH_SIZE=$(( EFFECTIVE_ROLLOUT_BATCH_SIZE * ASYNC_ADVANTAGE ))
     MINI_GRADIENT_STEPS=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
-    VLLM_GPU_MEM_UTIL=0.825
+    VLLM_GPU_MEM_UTIL=0.83
     VLLM_SYNC_BACKEND=nccl
     EVAL_STEPS="${EVAL_STEPS:-$COLO_EVAL_STEPS}"
 elif [ "$MODE" = "distributed" ]; then
@@ -135,11 +135,12 @@ else
 fi
 
 ### WARMUP LOGIC ###
-WARMUP_STEPS=20
+WARMUP_STEPS=10
 WARM_STEPS_MULTIPLIER=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
 
 ### MULTI-TASK ###
-TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
+#TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
+TASK_NAMES=(BBB_Martins)
 TASK_LABEL="Base"
 
 ### NCCL / IB / NETWORK CONFIG ###
@@ -392,7 +393,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \
-    --eps_clip_low_high 0.2 0.272 \
+    --eps_clip_low_high 0.2 0.282 \
     --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
     --save_hf_ckpt \
     --disable_ds_ckpt \
@@ -442,7 +443,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --constant_lr_with_warm_up \
     --warmup_steps $WARMUP_STEPS \
     --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
-    --skip_training \
     $MODE_FLAGS \
     $AUTOTP_FLAGS \
     $OPTIONAL_FLAGS \

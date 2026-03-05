@@ -56,13 +56,13 @@
 #SBATCH --error=logs/grpo-tdc-s1_%j.err
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
-#SBATCH --gpus=4
+#SBATCH --gpus=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres-flags=enforce-binding
-#SBATCH --mem=1024G
+#SBATCH --mem=768G
 #SBATCH --cpus-per-task=56
 #SBATCH --sockets-per-node=1
-#SBATCH --time=0-36:00:00
+#SBATCH --time=0-16:00:00
 #SBATCH --account=myatskar-lab
 
 ### PARCC PARAMETERS ###
@@ -138,7 +138,7 @@ run_task() {
         VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
         ROLLOUT_BATCH_SIZE=$(( EFFECTIVE_ROLLOUT_BATCH_SIZE * ASYNC_ADVANTAGE ))
         MINI_GRADIENT_STEPS=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
-        VLLM_GPU_MEM_UTIL=0.8275
+        VLLM_GPU_MEM_UTIL=0.83
         VLLM_SYNC_BACKEND=nccl
         EVAL_STEPS="${EVAL_STEPS:-$COLO_EVAL_STEPS}"
     elif [ "$MODE" = "distributed" ]; then
@@ -182,14 +182,14 @@ run_task() {
     fi
 
     ### WARMUP LOGIC ###
-    WARMUP_STEPS=20
+    WARMUP_STEPS=10
     # Given the ratio invariant, WARM_STEPS_MULTIPLIER = MINI * (EFFECTIVE_ROLLOUT * ASYNC_ADVANTAGE) / ROLLOUT
     # = EFFECTIVE_MINI * ASYNC_ADVANTAGE in both modes.
     WARM_STEPS_MULTIPLIER=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
 
     ### MULTI-TASK ###
-    TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
-    #TASK_NAMES=(BBB_Martins)
+    #TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
+    TASK_NAMES=(BBB_Martins)
     TASK_LABEL="Base"
 
     ### W&B ###
@@ -439,7 +439,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --advantage_estimator $ADVANTAGE_ESTIMATOR \
         --init_kl_coef 0 \
         --kl_estimator k1 \
-        --eps_clip_low_high 0.2 0.272 \
+        --eps_clip_low_high 0.2 0.282 \
         --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
         --save_hf_ckpt \
         --disable_ds_ckpt \

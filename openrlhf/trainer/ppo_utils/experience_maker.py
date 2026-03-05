@@ -772,34 +772,19 @@ class SamplesGenerator:
             engine_indices.append(engine_idx)
             heapq.heappush(engine_heap, (current_load + n_samples_per_prompt, engine_idx))
 
-        erl_threshold = getattr(self.args, "erl_hard_threshold", None)
-        erl_k = getattr(self.args, "erl_k", 4)
-
         refs = []
         for idx, (prompt, label) in enumerate(zip(prompts, labels)):
             # Spread work across engines/workers in load-aware order.
             engine_idx = engine_indices[idx]
             llm_engine = self.vllm_engines[engine_idx]
-            if erl_threshold is not None:
-                ref = llm_engine.generate_responses_with_erl.remote(
-                    prompt=prompt,
-                    label=label,
-                    sampling_params=sampling_params,
-                    max_length=truncate_length,
-                    num_samples=n_samples_per_prompt,
-                    hard_threshold=erl_threshold,
-                    erl_k=erl_k,
-                    log_trajectory=(idx == 0),
-                )
-            else:
-                ref = llm_engine.generate_responses.remote(
-                    prompt=prompt,
-                    label=label,
-                    sampling_params=sampling_params,
-                    max_length=truncate_length,
-                    num_samples=n_samples_per_prompt,
-                    log_trajectory=(idx == 0),
-                )
+            ref = llm_engine.generate_responses.remote(
+                prompt=prompt,
+                label=label,
+                sampling_params=sampling_params,
+                max_length=truncate_length,
+                num_samples=n_samples_per_prompt,
+                log_trajectory=(idx == 0),
+            )
             refs.append((ref, engine_idx))
 
         return refs

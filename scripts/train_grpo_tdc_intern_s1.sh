@@ -215,7 +215,7 @@ SAVE_PATH="$LOCAL_SAVE_DIR/$RUN_NAME"
 HUB_REPO_ID="jiosephlee/${HUB_NAME}"
 
 ### TOOL-CALLING CONFIG ###
-AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
+AGENT_FUNC_PATH="${AGENT_FUNC_PATH:-$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py}"
 
 ### GRPO CONFIG ###
 ADVANTAGE_ESTIMATOR="group_norm"

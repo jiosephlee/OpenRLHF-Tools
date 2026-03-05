@@ -114,17 +114,19 @@ Closes the train/inference distribution gap when vLLM serves with FP4-quantized 
 Uses asymmetric `--eps_clip_low_high 0.3 0.372`, for instance, to give exploration tokens more room to increase probability per update (inspired by DAPO's Clip-Higher). GPT-OSS runs show ~24% clip ratio vs ~0.6% for smaller baselines, so wider bounds help avoid suppressing the gradient signal. Lower clip (ε=0.3) limits how aggressively bad actions are suppressed; upper clip (ε=0.372) limits reinforcement of good actions, with the asymmetry favoring exploration. Usual values are 0.2 and 0.272.
 
 ### 18. ERL: Experiential Reinforcement Learning (EXPERIMENTAL — not yet tested)
-**Files:** `openrlhf/trainer/ray/vllm_engine.py`, `openrlhf/utils/chat_protocol.py`, `openrlhf/trainer/ppo_utils/experience_maker.py`, `openrlhf/trainer/ray/ppo_actor.py`, `openrlhf/cli/train_ppo_ray.py`
+**Files:** `openrlhf/utils/erl_executor.py`, `openrlhf/utils/erl_tdc_agent.py`, `openrlhf/utils/chat_protocol.py`, `openrlhf/trainer/ppo_utils/experience_maker.py`, `openrlhf/trainer/ray/ppo_actor.py`
 
 Based on [Experiential Reinforcement Learning](https://arxiv.org/abs/2602.13949) (Shi et al., Feb 2026). For hard prompts where all samples fail (avg reward < threshold), generates structured reflections from failed attempts and retries with reflection-augmented prompts. Key components:
 
-- **Prompt-level gating**: Only hard prompts (avg r1 < `--erl_hard_threshold`) trigger reflection+retry; easy prompts use standard path
-- **k diverse reflections**: `--erl_k` reflection+retry pairs per hard prompt, each conditioned on a different failed attempt
+- **`ERLExecutor`** (`openrlhf/utils/erl_executor.py`): Wraps any `AgentExecutorBase` with ERL reflection+retry logic. Loaded via `--agent_func_path` pointing to an agent .py that exports it as `AgentExecutor` (see `erl_tdc_agent.py`). Implements `execute_batch()` which `LLMRayActor.generate_responses()` calls when available, returning variable-size result lists. Config read from env vars (`OPENRLHF_ERL_HARD_THRESHOLD`, `OPENRLHF_ERL_K`, etc.).
+- **`erl_tdc_agent.py`**: Agent file for TDC tasks — exports `ERLExecutor(ToolCallingTurn executor)` as `AgentExecutor`. Point `--agent_func_path` here (or set `AGENT_FUNC_PATH` env var before running the training script).
+- **Prompt-level gating**: Only hard prompts (avg r1 < threshold) trigger reflection+retry; easy prompts use standard path
+- **k diverse reflections**: k reflection+retry pairs per hard prompt, each conditioned on a different failed attempt
 - **Variable group sizes**: Hard prompt groups expand from n to n+k; advantage computation uses dynamic `torch.split` instead of fixed reshape
-- **Reflection injection**: `ChatProtocol.inject_reflection()` inserts reflection into system message (implemented for InternS1Protocol)
+- **Reflection injection**: `ChatProtocol.inject_reflection()` inserts reflection into system message (implemented for InternS1Protocol and Qwen3Protocol)
 - **Distillation loss**: Optional SFT loss (`--erl_distill_coef`) on successful retry action tokens (r2==1 only)
-- **Per-task memory**: Optional (`--erl_memory`) cross-episode reflection storage keyed by TDC task name
-- **Training script**: `scripts/train_grpo_tdc_erl.sh` wraps intern_s1 script with ERL defaults (threshold=0.2, k=4, n=4, distill=0.1)
+- **Per-task memory**: Optional (`OPENRLHF_ERL_MEMORY=1`) cross-episode reflection storage keyed by TDC task name
+- **Training script**: `scripts/train_grpo_tdc_erl.sh` sets ERL env vars + `AGENT_FUNC_PATH` and delegates to intern_s1 script
 
 ## Architecture
 
@@ -195,6 +197,7 @@ GRPO Training Loop
 - `--save_steps <int>`: Save checkpoint every N steps
 
 **ERL (Experimental):**
+- `--agent_func_path <path>`: Point to `openrlhf/utils/erl_tdc_agent.py` to enable ERL
 - `--erl_hard_threshold <float>`: Avg reward threshold for hard prompt gating (None=disabled, 0.2 recommended for TDC)
 - `--erl_k <int>`: Number of reflection+retry pairs per hard prompt (default: 4)
 - `--erl_memory`: Enable cross-episode reflection memory (off by default)
@@ -219,6 +222,8 @@ Debug flags:
 |---|---|
 | `openrlhf/utils/chat_protocol.py` | New: ChatProtocol ABC, GLMFlashProtocol, InternS1Protocol, Qwen3Protocol, GPTOSSProtocol, `inject_reflection()` for ERL |
 | `openrlhf/utils/tool_calling_turn.py` | New: ToolCallingTurn agent class; injectable `reward_fn` param; `_default_reward_fn` fallback |
+| `openrlhf/utils/erl_executor.py` | New: ERLExecutor wrapping AgentExecutorBase with `execute_batch()`, reflection+retry, memory, protocol handling |
+| `openrlhf/utils/erl_tdc_agent.py` | New: Agent file exporting ERLExecutor(ToolCallingTurn) as AgentExecutor for --agent_func_path |
 | `openrlhf/utils/fp4_config.py` | New: FP4Config dataclass consolidating vllm_sync_fp4/qat/dequantize_base flags |
 | `openrlhf/utils/tdc_reward_model.py` | New: binary answer extractor for TDC eval |
 | `openrlhf/datasets/tdc_loader.py` | New: TDCDatasetLoader |
@@ -226,7 +231,7 @@ Debug flags:
 | `openrlhf/trainer/ppo_utils/experience_maker.py` | Deferred dispatch (75/25 via `--deferred_dispatch`), trace logging, filtered count logging, ERL variable group sizes |
 | `openrlhf/trainer/ppo_trainer.py` | evaluate() in BasePPOTrainer, step-0 eval, macro-F1, hub push |
 | `openrlhf/trainer/ppo_trainer_async.py` | Eval wired into async trainer, missing logging/cleanup fixes |
-| `openrlhf/trainer/ray/vllm_engine.py` | Passes chat_protocol env var to Ray actors, reduced CUDA graphs, MXFP4 weight sync, ERL reflection+retry loop |
+| `openrlhf/trainer/ray/vllm_engine.py` | Passes chat_protocol env var to Ray actors, reduced CUDA graphs, MXFP4 weight sync, `execute_batch()` dispatch in `generate_responses()` |
 | `openrlhf/trainer/ray/vllm_worker_wrap.py` | On-the-fly bf16→MXFP4 quantization for vLLM weight sync |
 | `openrlhf/utils/mxfp4_quantize.py` | MXFP4 quantization utility + QAT: `fake_quantize_mxfp4`, `_Mxfp4FakeQuant`, `register_mxfp4_qat_parametrization` |
 | `openrlhf/trainer/ray/ppo_actor.py` | NaN guard assertions; `fp4_config` forwarded to Actor(); weight sync reads `fp4_config.sync_format`; ERL distillation loss |

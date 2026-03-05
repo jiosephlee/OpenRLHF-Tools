@@ -5,6 +5,8 @@ Versions (incremental):
   - v2: v1 + remove_salts (standardize_tools)
   - v3: v2 + predict_pka + estimate_logd + get_3d_exposed_polar_surface
   - v4: v2 + predict_pka + estimate_logd + score_structural_alerts (no 3DEPSA)
+  - v5: v4 + predict_synthesizability (RAscore) + predict_metabolic_sites (SyGMa)
+         + predict_electronic_properties (GFN2-xTB)
 
 Usage::
 
@@ -115,6 +117,27 @@ except ImportError:
     PKA_TOOL = None
     LOGD_TOOL = None
 
+# Optional: RAscore (may fail if RAscore not installed)
+try:
+    from tools.rascore_tools import predict_synthesizability, RASCORE_TOOL
+except ImportError:
+    predict_synthesizability = None
+    RASCORE_TOOL = None
+
+# Optional: SyGMa metabolism (may fail if sygma not installed)
+try:
+    from tools.metabolism_tools import predict_metabolic_sites, METABOLISM_TOOL
+except ImportError:
+    predict_metabolic_sites = None
+    METABOLISM_TOOL = None
+
+# Optional: Electronic properties (may fail if xtb-python not installed)
+try:
+    from tools.electronic_tools import predict_electronic_properties, ELECTRONIC_TOOL
+except ImportError:
+    predict_electronic_properties = None
+    ELECTRONIC_TOOL = None
+
 # ---------------------------------------------------------------------------
 # Shared callables (RDKit basic + AccFG + task-specific)
 # ---------------------------------------------------------------------------
@@ -215,6 +238,22 @@ if estimate_logd is not None:
     _V4_CALLABLES["estimate_logd"] = estimate_logd
 _V4_CALLABLES.update({k: v for k, v in HAYDN_CALLABLES.items() if k in _V4_HAYDN_NAMES})
 
+# v5: v4 + RAscore + SyGMa metabolism + GFN2-xTB electronic properties
+_V5_EXTRA_SCHEMAS: List[Dict[str, Any]] = []
+for _tool_schema in [RASCORE_TOOL, METABOLISM_TOOL, ELECTRONIC_TOOL]:
+    if _tool_schema is not None:
+        _V5_EXTRA_SCHEMAS.append(_tool_schema)
+_V5_SCHEMAS: List[Dict[str, Any]] = _V4_SCHEMAS + _V5_EXTRA_SCHEMAS
+
+_V5_CALLABLES: Dict[str, Callable] = dict(_V4_CALLABLES)
+for _name, _fn in [
+    ("predict_synthesizability", predict_synthesizability),
+    ("predict_metabolic_sites", predict_metabolic_sites),
+    ("predict_electronic_properties", predict_electronic_properties),
+]:
+    if _fn is not None:
+        _V5_CALLABLES[_name] = _fn
+
 # ---------------------------------------------------------------------------
 # Public registry
 # ---------------------------------------------------------------------------
@@ -238,6 +277,11 @@ TOOL_VERSIONS: Dict[str, Dict[str, Any]] = {
         "basic_schemas": _V4_SCHEMAS,
         "task_specific_map": TDC_RDKIT_SPECIFIC_OPENAI_TOOLS_MAP,
         "callables": _V4_CALLABLES,
+    },
+    "v5": {
+        "basic_schemas": _V5_SCHEMAS,
+        "task_specific_map": TDC_RDKIT_SPECIFIC_OPENAI_TOOLS_MAP,
+        "callables": _V5_CALLABLES,
     },
 }
 

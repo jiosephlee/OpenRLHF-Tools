@@ -245,20 +245,36 @@ class LLMRayActor:
         num_samples: int = 1,
         log_trajectory: bool = False,
     ):
-        """Generate N samples for a single prompt. log_trajectory: log init + trajectory only for first prompt in episode."""
-        tasks = [
-            self.executor.execute(
+        """Generate N samples for a single prompt. log_trajectory: log init + trajectory only for first prompt in episode.
+
+        If the executor implements execute_batch(), delegates to it (supports
+        variable-size output, e.g. ERL retries). Otherwise loops N times.
+        """
+        if hasattr(self.executor, "execute_batch"):
+            results = await self.executor.execute_batch(
                 prompt=prompt,
                 label=label,
                 sampling_params=sampling_params,
                 max_length=max_length,
+                num_samples=num_samples,
                 hf_tokenizer=self.hf_tokenizer,
                 llm_engine=self,
                 log_trajectory=log_trajectory,
             )
-            for _ in range(num_samples)
-        ]
-        results = await asyncio.gather(*tasks)
+        else:
+            tasks = [
+                self.executor.execute(
+                    prompt=prompt,
+                    label=label,
+                    sampling_params=sampling_params,
+                    max_length=max_length,
+                    hf_tokenizer=self.hf_tokenizer,
+                    llm_engine=self,
+                    log_trajectory=log_trajectory,
+                )
+                for _ in range(num_samples)
+            ]
+            results = await asyncio.gather(*tasks)
 
         # Periodically return freed pages to OS.  Each prompt generates many
         # intermediate objects across N samples × T turns; without malloc_trim
@@ -275,6 +291,7 @@ class LLMRayActor:
                 pass
 
         return results
+
 
 
 def create_vllm_engines(
@@ -300,8 +317,24 @@ def create_vllm_engines(
     kv_cache_dtype: str = "auto",
     max_num_batched_tokens: Optional[int] = None,
     max_num_seqs: Optional[int] = None,
+    # ERL config — propagated as env vars to Ray workers
+    erl_hard_threshold: Optional[float] = None,
+    erl_k: int = 4,
+    erl_memory: bool = False,
+    erl_max_memory: int = 5,
+    erl_max_reflection_tokens: int = 512,
 ):
     """Spin up a set of vLLM Ray actors with consistent placement."""
+    # Propagate ERL config via env vars so ERLExecutor can read them
+    # inside the Ray worker (set before LLMRayActor.__init__ calls
+    # _load_agent_executor).
+    if erl_hard_threshold is not None:
+        os.environ["OPENRLHF_ERL_HARD_THRESHOLD"] = str(erl_hard_threshold)
+        os.environ["OPENRLHF_ERL_K"] = str(erl_k)
+        os.environ["OPENRLHF_ERL_MEMORY"] = "1" if erl_memory else "0"
+        os.environ["OPENRLHF_ERL_MAX_MEMORY"] = str(erl_max_memory)
+        os.environ["OPENRLHF_ERL_MAX_REFLECTION_TOKENS"] = str(erl_max_reflection_tokens)
+
     vllm_engines = []
     distributed_executor_backend = "uni" if tensor_parallel_size == 1 else "ray"
     use_hybrid_engine = shared_pg is not None

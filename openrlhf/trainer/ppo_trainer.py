@@ -743,6 +743,9 @@ class PPOTrainer(BasePPOTrainer):
 
                 self._empty_all_model_caches()
 
+                # Flush accumulated timeseries samples from Ray actor memory to disk.
+                self.samples_generator.flush_timeseries_to_disk(global_step=global_step)
+
             # Log episode stats for this replay round.
             if self.wandb_logger:
                 self.wandb_logger.log_episode(
@@ -1039,6 +1042,8 @@ class PPOTrainer(BasePPOTrainer):
         # --skip_training: exit after step-0 eval without entering the training loop.
         if getattr(self.args, "skip_training", False):
             logger.info("--skip_training is set: skipping training loop and exiting after step-0 eval.")
+            # Flush any accumulated timeseries samples before exit.
+            self.samples_generator.flush_timeseries_to_disk(global_step=global_step)
             self._write_run_summary(global_step)
             self._write_scheduler_timeseries_plot()
             self._write_final_tool_usage_plot()
@@ -1127,6 +1132,9 @@ class PPOTrainer(BasePPOTrainer):
                     pass
 
                 self._empty_all_model_caches()
+
+                # Flush accumulated timeseries samples from Ray actor memory to disk.
+                self.samples_generator.flush_timeseries_to_disk(global_step=global_step)
 
             # --- Save discarded prompts for offline analysis ---
             self.samples_generator.save_discarded_indices(episode)

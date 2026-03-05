@@ -22,7 +22,7 @@
 #   QUANT_METHOD=nvfp4 sbatch scripts/train_grpo_tdc_gpt_oss_slurm.sh
 #
 #   # Unsloth BF16:
-#   LEARNING_RATE=5e-7 MULTI_STAGE_DISPATCH=1 TRAIN_MAX_TOKENS_PER_GPU=32768 VLLM_GPU_MEM_UTIL=0.71 DEQUANT=unsloth sbatch train_grpo_tdc_gpt_oss_slurm.sh
+#   LEARNING_RATE=1e-6 MULTI_STAGE_DISPATCH=1 TRAIN_MAX_TOKENS_PER_GPU=36864 VLLM_GPU_MEM_UTIL=0.715 DEQUANT=unsloth sbatch train_grpo_tdc_gpt_oss_slurm.sh
 #
 #   # Distributed:
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 sbatch scripts/train_grpo_tdc_gpt_oss_slurm.sh
@@ -187,6 +187,7 @@ run_task() {
     VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-256}"
     VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
     EXTRA_ARGS="${EXTRA_ARGS:-}"
+    VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE="${VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE:-}"
 
     ### UNIFIED CONSTANTS ###
     AGENT_MAX_STEPS=30
@@ -497,6 +498,9 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
     if [ -n "$KV_CACHE_DTYPE" ]; then
         OPTIONAL_FLAGS+=" --kv_cache_dtype $KV_CACHE_DTYPE"
     fi
+    if [ -n "$VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE" ]; then
+        OPTIONAL_FLAGS+=" --vllm_cudagraph_max_capture_size $VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE"
+    fi
 
     ### RENAME SLURM LOGS ###
     if [ -n "${SLURM_JOB_ID:-}" ]; then
@@ -517,7 +521,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --actor_num_gpus_per_node $ACTOR_GPUS \
         --vllm_num_engines $VLLM_NUM_ENGINES \
         --vllm_tensor_parallel_size 1 \
-        --reduce_cuda_graph \
+        --optimal_flags_b200_gpt_oss \
         --max_num_batched_tokens $VLLM_MAX_NUM_BATCHED_TOKENS \
         --vllm_gpu_memory_utilization $VLLM_GPU_MEM_UTIL \
         --advantage_estimator $ADVANTAGE_ESTIMATOR \
@@ -531,6 +535,8 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
         --train_batch_size $TRAIN_BATCH_SIZE \
         --rollout_batch_size $ROLLOUT_BATCH_SIZE \
+        --micro_train_batch_size 1 \
+        --micro_rollout_batch_size 2 \
         --num_episodes $MAX_EPOCHS \
         --prompt_max_len $PROMPT_MAX_LEN \
         --generate_max_len 2048 \
@@ -550,7 +556,6 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --tool_version "$TOOL_VERSION" \
         --enable_prefix_caching \
         --gradient_checkpointing \
-        --packing_samples \
         --vllm_sync_backend $VLLM_SYNC_BACKEND \
         --top_p $TOP_P \
         --temperature $TEMPERATURE \
@@ -566,12 +571,12 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --save_path "$SAVE_PATH" \
         --push_to_hub "$HUB_REPO_ID" \
         --delete_local_after_push \
-        --use_dynamic_batch \
         --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
         --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \
         --constant_lr_with_warm_up \
         --warmup_steps $WARMUP_STEPS \
         --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
+        --attn_implementation eager \
         $QUANT_FLAGS \
         $MODE_FLAGS \
         $OPTIONAL_FLAGS \

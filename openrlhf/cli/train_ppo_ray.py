@@ -103,7 +103,8 @@ def train(args):
             vllm_stop_strings=args.vllm_stop_strings,
             chat_protocol=args.chat_protocol,
             tool_version=args.tool_version,
-            reduce_cuda_graph=args.reduce_cuda_graph,
+            reduce_cuda_graph=args.optimal_flags_b200_gpt_oss,
+            vllm_cudagraph_max_capture_size=args.vllm_cudagraph_max_capture_size,
             kv_cache_dtype=args.kv_cache_dtype,
             max_num_batched_tokens=args.max_num_batched_tokens,
             max_num_seqs=args.vllm_max_num_seqs,
@@ -297,10 +298,17 @@ if __name__ == "__main__":
     parser.add_argument("--enable_prefix_caching", action="store_true", default=False)
     parser.add_argument("--enforce_eager", action="store_true", default=False, help="Disable CUDA graph in vLLM")
     parser.add_argument(
-        "--reduce_cuda_graph",
+        "--optimal_flags_b200_gpt_oss",
         action="store_true",
         default=False,
-        help="Reduce CUDAGraph capture sizes to [1,2,4,8,16,32] to lower GPU memory during vLLM init",
+        help="Apply optimal B200/GPT-OSS vLLM flags: reduced CUDAGraph capture sizes and async scheduling to lower GPU memory during vLLM init",
+    )
+    parser.add_argument(
+        "--vllm_cudagraph_max_capture_size",
+        type=int,
+        default=None,
+        help="Maximum sequence length to capture in vLLM CUDAGraphs. When set, overrides the default capture size range. "
+        "Corresponds to vLLM's compilation_config.cudagraph_capture_sizes upper bound.",
     )
     parser.add_argument(
         "--vllm_enable_sleep",

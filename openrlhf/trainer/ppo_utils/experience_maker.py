@@ -554,6 +554,45 @@ class SamplesGenerator:
             f"waiting={engine_stats.get('num_waiting_reqs', {}).get('mean', 0):.1f}"
         )
 
+    def flush_timeseries_to_disk(self, global_step: int = -1) -> None:
+        """Drain raw scheduler samples from all engine actors and append to disk.
+
+        Unlike _collect_and_write_vllm_stats (called at end of generation), this
+        only flushes the raw timeseries samples without touching the aggregated
+        per-step summary that collect_and_reset() produces.  Call this:
+          - after every eval
+          - at the end of every global_step
+          - before skip_training exits
+        to keep Ray actor RAM bounded (samples accumulate every 30s during
+        generation and would otherwise pile up until end-of-generation flush).
+        """
+        if not self.vllm_engines:
+            return
+        try:
+            refs = [engine.get_and_flush_raw_samples.remote() for engine in self.vllm_engines]
+            per_engine_samples = ray.get(refs)
+        except Exception as e:
+            logger.warning(f"Failed to flush timeseries from engines: {e}")
+            return
+
+        all_samples = []
+        for samples in per_engine_samples:
+            all_samples.extend(samples)
+
+        if not all_samples:
+            return
+
+        timeseries_path = os.path.join(self.vllm_stats_dir, "scheduler_timeseries.jsonl")
+        try:
+            with open(timeseries_path, "a") as f:
+                for sample in all_samples:
+                    f.write(json.dumps(sample) + "\n")
+        except Exception as e:
+            logger.warning(f"Failed to flush timeseries to {timeseries_path}: {e}")
+            return
+
+        logger.debug(f"Flushed {len(all_samples)} timeseries samples to disk (step {global_step})")
+
     # ── eval ──────────────────────────────────────────────────────────
 
     @torch.no_grad()

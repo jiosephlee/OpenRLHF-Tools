@@ -120,6 +120,7 @@ run_task() {
     VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-256}"
     VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
     EXTRA_ARGS="${EXTRA_ARGS:-}"
+    VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE="${VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE:-}"
 
     ### UNIFIED CONSTANTS ###
     AGENT_MAX_STEPS=30
@@ -415,6 +416,9 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
     fi
     if [ "$GSPO" = "1" ]; then
         OPTIONAL_FLAGS+=" --policy_loss_type gspo"
+    fi
+    if [ -n "$VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE" ]; then
+        OPTIONAL_FLAGS+=" --vllm_cudagraph_max_capture_size $VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE"
     fi
 
     ### TRAINING ###

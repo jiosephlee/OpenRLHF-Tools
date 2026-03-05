@@ -1,5 +1,6 @@
 import heapq
 from collections import defaultdict
+from datetime import datetime
 import json
 import os
 import time
@@ -275,6 +276,13 @@ class SamplesGenerator:
         os.makedirs(self.rollout_trace_run_dir, exist_ok=True)
         logger.info(f"Rollout traces enabled at: {self.rollout_trace_run_dir}")
 
+        # vLLM stats persistence directory.
+        self.vllm_stats_dir = os.path.join(self.runs_dir, "vllm_stats")
+        os.makedirs(self.vllm_stats_dir, exist_ok=True)
+
+        # Last collected vLLM stats (for W&B logging from the trainer).
+        self.last_vllm_stats: dict = {}
+
         # Smart replay: accumulate dataset indices by filter outcome across the episode.
         self._replay_hard_indices: set = set()
         self._replay_kept_indices: set = set()
@@ -399,6 +407,149 @@ class SamplesGenerator:
         with open(trace_path, "w") as f:
             f.write(json.dumps(self._to_jsonable(record), ensure_ascii=True))
 
+    # ── vLLM stats collection ──────────────────────────────────────────
+
+    def _collect_vllm_engine_stats(self) -> dict:
+        """Collect and aggregate SchedulerStats from all vLLM engines."""
+        if not self.vllm_engines:
+            return {}
+        try:
+            refs = [engine.get_vllm_stats.remote() for engine in self.vllm_engines]
+            per_engine = ray.get(refs)
+        except Exception as e:
+            logger.warning(f"Failed to collect vLLM stats: {e}")
+            return {}
+
+        # Aggregate raw samples from all engines.
+        all_raw_samples = []
+        all_kv, all_running, all_waiting, all_hit = [], [], [], []
+        total_poll_samples = 0
+
+        for stats in per_engine:
+            n = stats.get("num_samples", 0)
+            total_poll_samples += n
+            all_raw_samples.extend(stats.get("raw_samples", []))
+            if n > 0:
+                kv = stats["kv_cache_usage_pct"]
+                all_kv.append(kv["mean"])
+                all_running.append(stats["num_running_reqs"]["mean"])
+                all_waiting.append(stats["num_waiting_reqs"]["mean"])
+                all_hit.append(stats["prefix_cache_hit_rate"])
+
+        if not all_kv:
+            return {"num_engines": len(self.vllm_engines), "num_poll_samples": 0, "raw_samples": all_raw_samples}
+
+        ne = len(all_kv)
+        return {
+            "num_engines": len(self.vllm_engines),
+            "num_poll_samples": total_poll_samples,
+            "kv_cache_usage_pct": {
+                "mean": round(sum(all_kv) / ne, 4),
+                "max": round(max(s["kv_cache_usage_pct"]["max"] for s in per_engine if s.get("num_samples", 0) > 0), 4),
+            },
+            "num_running_reqs": {
+                "mean": round(sum(all_running) / ne, 2),
+                "max": max(s["num_running_reqs"]["max"] for s in per_engine if s.get("num_samples", 0) > 0),
+            },
+            "num_waiting_reqs": {
+                "mean": round(sum(all_waiting) / ne, 2),
+                "max": max(s["num_waiting_reqs"]["max"] for s in per_engine if s.get("num_samples", 0) > 0),
+            },
+            "prefix_cache_hit_rate": round(sum(all_hit) / ne, 4),
+            "raw_samples": all_raw_samples,
+        }
+
+    def _compute_token_throughput(self, experiences: List[Experience], wall_time: float) -> dict:
+        """Compute decode/prefill token counts and throughput from experiences."""
+        total_decode = 0
+        total_prefill = 0
+        for exp in experiences:
+            if exp.action_mask is not None:
+                total_decode += exp.action_mask.sum().item()
+            if exp.attention_mask is not None and exp.action_mask is not None:
+                total_prefill += exp.attention_mask.sum().item() - exp.action_mask.sum().item()
+
+        result = {
+            "total_decode_tokens": int(total_decode),
+            "total_prefill_tokens": int(total_prefill),
+            "generation_wall_time_sec": round(wall_time, 2),
+        }
+        if wall_time > 0:
+            result["decode_tokens_per_sec"] = round(total_decode / wall_time, 1)
+            result["prefill_tokens_per_sec"] = round(total_prefill / wall_time, 1)
+        return result
+
+    def _collect_and_write_vllm_stats(
+        self, global_step: int, experiences: List[Experience], generation_wall_time: float,
+        total_prompts: int, stats_type: str = "rollout",
+    ):
+        """Collect stats from engines, compute throughput, write JSONL and timeseries."""
+        engine_stats = self._collect_vllm_engine_stats()
+        throughput = self._compute_token_throughput(experiences, generation_wall_time)
+
+        # Build the summary record.
+        record = {
+            "global_step": global_step,
+            "timestamp": datetime.now().isoformat(),
+            "total_prompts": total_prompts,
+            **throughput,
+        }
+        # Merge engine stats (excluding raw_samples, which go to timeseries).
+        raw_samples = engine_stats.pop("raw_samples", [])
+        record.update(engine_stats)
+
+        # Write to the appropriate JSONL file.
+        stats_file = "rollout_stats.jsonl" if stats_type == "rollout" else "eval_stats.jsonl"
+        stats_path = os.path.join(self.vllm_stats_dir, stats_file)
+        try:
+            with open(stats_path, "a") as f:
+                f.write(json.dumps(record) + "\n")
+        except Exception as e:
+            logger.warning(f"Failed to write vLLM stats to {stats_path}: {e}")
+
+        # Append raw scheduler time-series samples.
+        if raw_samples:
+            timeseries_path = os.path.join(self.vllm_stats_dir, "scheduler_timeseries.jsonl")
+            try:
+                with open(timeseries_path, "a") as f:
+                    for sample in raw_samples:
+                        f.write(json.dumps(sample) + "\n")
+            except Exception as e:
+                logger.warning(f"Failed to write scheduler timeseries: {e}")
+
+        # Store for W&B logging (flat keys for the trainer to prefix with vllm_).
+        flat = {
+            "vllm_generation_wall_time_sec": throughput.get("generation_wall_time_sec", 0),
+            "vllm_decode_tokens_per_sec": throughput.get("decode_tokens_per_sec", 0),
+            "vllm_prefill_tokens_per_sec": throughput.get("prefill_tokens_per_sec", 0),
+            "vllm_total_decode_tokens": throughput.get("total_decode_tokens", 0),
+            "vllm_total_prefill_tokens": throughput.get("total_prefill_tokens", 0),
+        }
+        if "kv_cache_usage_pct" in engine_stats:
+            flat["vllm_kv_cache_usage_pct_mean"] = engine_stats["kv_cache_usage_pct"]["mean"]
+            flat["vllm_kv_cache_usage_pct_max"] = engine_stats["kv_cache_usage_pct"]["max"]
+        if "num_running_reqs" in engine_stats:
+            flat["vllm_num_running_reqs_mean"] = engine_stats["num_running_reqs"]["mean"]
+            flat["vllm_num_running_reqs_max"] = engine_stats["num_running_reqs"]["max"]
+        if "num_waiting_reqs" in engine_stats:
+            flat["vllm_num_waiting_reqs_mean"] = engine_stats["num_waiting_reqs"]["mean"]
+            flat["vllm_num_waiting_reqs_max"] = engine_stats["num_waiting_reqs"]["max"]
+        if "prefix_cache_hit_rate" in engine_stats:
+            flat["vllm_prefix_cache_hit_rate"] = engine_stats["prefix_cache_hit_rate"]
+
+        self.last_vllm_stats = flat
+
+        logger.info(
+            f"vLLM stats (step {global_step}, {stats_type}): "
+            f"decode={throughput.get('decode_tokens_per_sec', 0):.0f} tok/s, "
+            f"prefill={throughput.get('prefill_tokens_per_sec', 0):.0f} tok/s, "
+            f"kv_cache={engine_stats.get('kv_cache_usage_pct', {}).get('mean', 0):.1%}, "
+            f"running={engine_stats.get('num_running_reqs', {}).get('mean', 0):.1f}, "
+            f"waiting={engine_stats.get('num_waiting_reqs', {}).get('mean', 0):.1f}"
+        )
+
+    # ── eval ──────────────────────────────────────────────────────────
+
     @torch.no_grad()
     def generate_eval_samples(self, **generate_kwargs) -> Tuple[List[Experience], Optional[float], int, bool]:
         if getattr(self, "_eval_dataloader_iter", None) is None:
@@ -422,6 +573,16 @@ class SamplesGenerator:
             int(generate_kwargs.get("global_step", 0)),
             getattr(self, "_last_episode_trace", None),
             getattr(self, "_last_total_episodes", 0),
+        )
+
+        # Collect vLLM stats for eval.
+        global_step = int(generate_kwargs.get("global_step", 0))
+        self._collect_and_write_vllm_stats(
+            global_step=global_step,
+            experiences=experiences,
+            generation_wall_time=getattr(self, "_last_generation_wall_time", 0.0),
+            total_prompts=prompts_consumed,
+            stats_type="eval",
         )
 
         # Reclaim host RAM in vLLM engine workers accumulated during generation.
@@ -516,6 +677,16 @@ class SamplesGenerator:
         )
         self._step_prompts_consumed = prompts_consumed
 
+        # Collect vLLM stats and write JSONL.
+        global_step = int(generate_kwargs.get("global_step", trace_step_idx))
+        self._collect_and_write_vllm_stats(
+            global_step=global_step,
+            experiences=experiences,
+            generation_wall_time=getattr(self, "_last_generation_wall_time", 0.0),
+            total_prompts=prompts_consumed,
+            stats_type="rollout",
+        )
+
         # Reclaim host RAM in vLLM engine workers accumulated during generation.
         batch_vllm_engine_call(self.vllm_engines, "gc_collect")
 
@@ -538,10 +709,18 @@ class SamplesGenerator:
     ) -> Tuple[List[Experience], int, bool]:
         """Generate a batch of Experiences with optional reward filtering."""
         step_idx = int(generate_kwargs.get("trace_step_idx", generate_kwargs.get("global_step", 0)))
+
+        # Set global step on all engines for time-series labeling.
+        for engine in self.vllm_engines:
+            engine.set_current_global_step.remote(step_idx)
+
+        generation_start_time = time.time()
+
         prompts_consumed = 0
         dataset_indices, prompts, labels, exhausted = _collect_prompt_batch(dataloader_iter, num_prompts)
         # Stop early if the prompt source is fully consumed.
         if exhausted and not prompts:
+            self._last_generation_wall_time = 0.0
             return [], prompts_consumed, exhausted
 
         smart_replay = getattr(self.args, "smart_replay", False)
@@ -713,6 +892,8 @@ class SamplesGenerator:
         self._last_total_episodes = total_episodes
         if generate_kwargs.get("log_step_trace", True):
             self._write_step_trace(step_idx, episode_traces, prompts_consumed, filtered_count, total_episodes)
+
+        self._last_generation_wall_time = time.time() - generation_start_time
 
         if smart_replay and not exhausted_during_refill:
             logger.info(

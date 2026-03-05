@@ -81,16 +81,14 @@ else
             QUANT_LABEL="mxfp4"
             ;;
         nvfp4)
-            PRETRAIN_PATH="${PRETRAIN_PATH:-jiosephlee/gpt-oss-20B-NVFP4-packed-clean}"
+            PRETRAIN_PATH="${PRETRAIN_PATH:-jiosephlee/gpt-oss-20B-NVFP4-calibrated}"
             NVFP4_BASE="${NVFP4_BASE:-unsloth/gpt-oss-20b-BF16}"
             QUANT_FLAGS="--vllm_sync_fp4 nvfp4 --nvfp4_dequantize_base_model $NVFP4_BASE"
             QUANT_LABEL="nvfp4"
-            # All NVFP4 backends fail for hidden_size=2880 on B200:
-            #   FlashInfer CUTEDSL/CUTLASS: hangs (hidden_size not aligned to tile size)
-            #   VLLM_CUTLASS: W4A4 — uncalibrated a1_gscale=1.0 → garbage output
-            #   Marlin W4A16: crashes — group_size=16 not in supported tile configs
-            # TODO: either calibrate activation scales for VLLM_CUTLASS, or serve BF16.
-            # For now disable FlashInfer to at least avoid the hang (lands on VLLM_CUTLASS).
+            # FlashInfer CUTEDSL/CUTLASS hang for hidden_size=2880 (not tile-aligned).
+            # Marlin crashes (group_size=16 unsupported).
+            # Use VLLM_CUTLASS with calibrated activation scales (w13/w2_input_scale).
+            # Run scripts/calibrate_nvfp4_activations.py to regenerate calibrated checkpoint.
             export VLLM_USE_FLASHINFER_MOE_FP4=0
             ;;
         *)

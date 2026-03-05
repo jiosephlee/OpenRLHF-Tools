@@ -26,7 +26,7 @@ import subprocess
 import sys
 import time
 
-MODEL = os.environ.get("MODEL", "jiosephlee/gpt-oss-20B-NVFP4-packed-clean")
+MODEL = os.environ.get("MODEL", "jiosephlee/gpt-oss-20B-NVFP4-calibrated")
 MAX_NEW_TOKENS = int(os.environ.get("MAX_NEW_TOKENS", "50"))
 PROMPT = os.environ.get("PROMPT", "The capital of France is")
 

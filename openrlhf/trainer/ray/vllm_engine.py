@@ -1,7 +1,9 @@
 import asyncio
 import os
+import threading
+import time as time_mod
 from copy import deepcopy
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 import ray
 import vllm
@@ -32,6 +34,143 @@ def _load_agent_executor(agent_func_path: str) -> AgentExecutorBase:
     agent_executor_cls = agent_module.AgentExecutor
     assert issubclass(agent_executor_cls, AgentExecutorBase), "AgentExecutor must inherit from AgentExecutorBase"
     return agent_executor_cls()
+
+
+class _VLLMStatsPoller:
+    """Background thread that reads vLLM V1 SchedulerStats every ~5 seconds.
+
+    Accumulates min/max/mean for per-step summaries and stores every raw
+    sample for time-series export.  Thread-safe via a simple lock.
+    """
+
+    def __init__(self, llm_engine, engine_id: int = 0, poll_interval: float = 5.0):
+        self._llm = llm_engine
+        self._engine_id = engine_id
+        self._poll_interval = poll_interval
+        self._lock = threading.Lock()
+        self._current_global_step: int = -1
+
+        # Accumulated stats since last collection.
+        self._samples: List[Dict] = []
+        self._kv_cache_vals: List[float] = []
+        self._running_vals: List[int] = []
+        self._waiting_vals: List[int] = []
+        self._hit_rate_vals: List[float] = []
+
+        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
+        self._stop = threading.Event()
+        self._paused = threading.Event()  # When set, polling is paused.
+        self._thread.start()
+
+    # -- polling loop --------------------------------------------------
+
+    def _read_scheduler_stats(self):
+        """Read the latest SchedulerStats from vLLM's output processor.
+
+        vLLM V1's AsyncLLM stores an OutputProcessor which receives
+        SchedulerStats with every EngineCoreOutput batch.  We read the
+        most-recent snapshot.  Returns None if stats aren't available yet.
+        """
+        try:
+            op = getattr(self._llm, "output_processor", None)
+            if op is None:
+                return None
+            # OutputProcessor stores latest scheduler stats.
+            stats = getattr(op, "scheduler_stats", None)
+            return stats
+        except Exception:
+            return None
+
+    def _poll_loop(self):
+        while not self._stop.wait(self._poll_interval):
+            if self._paused.is_set():
+                continue
+            stats = self._read_scheduler_stats()
+            if stats is None:
+                continue
+
+            kv = getattr(stats, "kv_cache_usage", 0.0)
+            running = getattr(stats, "num_running_reqs", 0)
+            waiting = getattr(stats, "num_waiting_reqs", 0)
+
+            prefix_stats = getattr(stats, "prefix_cache_stats", None)
+            hit_rate = 0.0
+            if prefix_stats is not None:
+                hit_rate = getattr(prefix_stats, "hit_rate", 0.0)
+                if callable(hit_rate):
+                    # Some versions expose hit_rate as a property.
+                    pass  # already resolved by property access
+
+            sample = {
+                "t": time_mod.time(),
+                "global_step": self._current_global_step,
+                "engine": self._engine_id,
+                "kv_cache_usage": round(kv, 4),
+                "num_running": running,
+                "num_waiting": waiting,
+                "prefix_hit_rate": round(hit_rate, 4),
+            }
+
+            with self._lock:
+                self._samples.append(sample)
+                self._kv_cache_vals.append(kv)
+                self._running_vals.append(running)
+                self._waiting_vals.append(waiting)
+                self._hit_rate_vals.append(hit_rate)
+
+    # -- public API ----------------------------------------------------
+
+    def set_global_step(self, step: int):
+        self._current_global_step = step
+
+    def collect_and_reset(self) -> Dict:
+        """Return accumulated stats + raw samples, then reset."""
+        with self._lock:
+            samples = self._samples
+            kv = self._kv_cache_vals
+            running = self._running_vals
+            waiting = self._waiting_vals
+            hit_rate = self._hit_rate_vals
+
+            self._samples = []
+            self._kv_cache_vals = []
+            self._running_vals = []
+            self._waiting_vals = []
+            self._hit_rate_vals = []
+
+        n = len(kv)
+        if n == 0:
+            return {"num_samples": 0, "raw_samples": []}
+
+        return {
+            "num_samples": n,
+            "kv_cache_usage_pct": {
+                "mean": round(sum(kv) / n, 4),
+                "max": round(max(kv), 4),
+                "min": round(min(kv), 4),
+            },
+            "num_running_reqs": {
+                "mean": round(sum(running) / n, 2),
+                "max": max(running),
+            },
+            "num_waiting_reqs": {
+                "mean": round(sum(waiting) / n, 2),
+                "max": max(waiting),
+            },
+            "prefix_cache_hit_rate": round(sum(hit_rate) / n, 4),
+            "raw_samples": samples,
+        }
+
+    def pause(self):
+        """Pause polling (e.g. when engine is sleeping)."""
+        self._paused.set()
+
+    def resume(self):
+        """Resume polling (e.g. when engine wakes up)."""
+        self._paused.clear()
+
+    def stop(self):
+        self._stop.set()
 
 
 @ray.remote
@@ -85,6 +224,10 @@ class LLMRayActor:
         engine_args = vllm.AsyncEngineArgs(*args, **self.kwargs)
         self.llm = vllm.AsyncLLMEngine.from_engine_args(engine_args)
         await self.llm.is_sleeping()
+
+        # Background stats poller (reads SchedulerStats every ~5s).
+        # engine_id is set later by create_vllm_engines via set_engine_id.
+        self._stats_poller = _VLLMStatsPoller(self.llm, engine_id=0)
 
     def _configure_device_env(self, backend, bundle_indices, num_gpus):
         if backend == "ray":
@@ -179,6 +322,7 @@ class LLMRayActor:
 
     async def sleep(self, level=1):
         logger.info(f"vLLM sleep requested (level={level})")
+        self._stats_poller.pause()
         await self.llm.sleep(level=level)
         import torch
         torch.cuda.empty_cache()
@@ -198,6 +342,7 @@ class LLMRayActor:
         # a few rollouts due to GPU memory fragmentation).
         for tag in tags:
             await self.llm.wake_up(tags=[tag])
+        self._stats_poller.resume()
 
     async def generate(self, prompt_token_ids, sampling_params):
         """Token-level generation for rollout executors."""
@@ -216,6 +361,18 @@ class LLMRayActor:
     def get_num_unfinished_requests(self) -> int:
         """Number of unfinished requests in vLLM engine."""
         return self.llm.output_processor.get_num_unfinished_requests()
+
+    def set_engine_id(self, engine_id: int):
+        """Set this engine's index (for time-series labeling)."""
+        self._stats_poller._engine_id = engine_id
+
+    def set_current_global_step(self, step: int):
+        """Update the global step used in time-series samples."""
+        self._stats_poller.set_global_step(step)
+
+    def get_vllm_stats(self) -> Dict:
+        """Return accumulated scheduler stats + raw samples, then reset."""
+        return self._stats_poller.collect_and_reset()
 
     async def gc_collect(self):
         """Force garbage collection and return freed pages to the OS.
@@ -421,6 +578,10 @@ def create_vllm_engines(
                 max_concurrency=1000,
             ).remote(**actor_kwargs)
         )
+
+    # Assign engine IDs for time-series labeling.
+    for i, engine in enumerate(vllm_engines):
+        ray.get(engine.set_engine_id.remote(i))
 
     if vllm_enable_sleep:
         batch_vllm_engine_call(vllm_engines, "sleep")

@@ -5,7 +5,7 @@ import os
 import time
 from abc import ABC
 from collections import defaultdict
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Dict, Tuple
 
 import ray
@@ -822,6 +822,190 @@ class PPOTrainer(BasePPOTrainer):
                 f.write(all_samples[0][1])
             logger.info(f"[DataloaderLog] Wrote full system prompt of sample 0 to {sample_prompt_path}")
 
+    def _get_vllm_stats_dir(self):
+        """Return the vllm_stats directory path (lazily created)."""
+        stats_dir = getattr(self.samples_generator, "vllm_stats_dir", None)
+        if stats_dir is None:
+            run_name = getattr(self.args, "wandb_run_name", "run").replace("/", "_")
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            stats_dir = os.path.join(project_root, "runs", run_name, "vllm_stats")
+            os.makedirs(stats_dir, exist_ok=True)
+        return stats_dir
+
+    def _write_training_timing(self, global_step: int, rollout_wall_sec: float,
+                               train_wall_sec: float, total_step_wall_sec: float,
+                               vllm_stats: dict):
+        """Append one line to training_timing.jsonl."""
+        record = {
+            "global_step": global_step,
+            "timestamp": datetime.now().isoformat(),
+            "rollout_wall_sec": round(rollout_wall_sec, 2),
+            "train_wall_sec": round(train_wall_sec, 2),
+            "total_step_wall_sec": round(total_step_wall_sec, 2),
+            "decode_tokens": vllm_stats.get("vllm_total_decode_tokens", 0),
+            "prefill_tokens": vllm_stats.get("vllm_total_prefill_tokens", 0),
+            "decode_tok_per_sec": vllm_stats.get("vllm_decode_tokens_per_sec", 0),
+            "prefill_tok_per_sec": vllm_stats.get("vllm_prefill_tokens_per_sec", 0),
+        }
+        timing_path = os.path.join(self._get_vllm_stats_dir(), "training_timing.jsonl")
+        try:
+            with open(timing_path, "a") as f:
+                f.write(json.dumps(record) + "\n")
+        except Exception as e:
+            logger.warning(f"Failed to write training timing: {e}")
+
+    def _write_run_summary(self, total_steps: int):
+        """Read training_timing.jsonl and write run_summary.json with averages."""
+        timing_path = os.path.join(self._get_vllm_stats_dir(), "training_timing.jsonl")
+        if not os.path.exists(timing_path):
+            return
+
+        try:
+            records = []
+            with open(timing_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        records.append(json.loads(line))
+
+            if not records:
+                return
+
+            n = len(records)
+            total_wall = sum(r["total_step_wall_sec"] for r in records)
+            summary = {
+                "total_steps": n,
+                "total_wall_time_sec": round(total_wall, 1),
+                "avg_rollout_wall_sec": round(sum(r["rollout_wall_sec"] for r in records) / n, 2),
+                "avg_train_wall_sec": round(sum(r["train_wall_sec"] for r in records) / n, 2),
+                "avg_total_step_wall_sec": round(total_wall / n, 2),
+                "avg_decode_tok_per_sec": round(sum(r["decode_tok_per_sec"] for r in records) / n, 1),
+                "avg_prefill_tok_per_sec": round(sum(r["prefill_tok_per_sec"] for r in records) / n, 1),
+                "total_decode_tokens": sum(r["decode_tokens"] for r in records),
+                "total_prefill_tokens": sum(r["prefill_tokens"] for r in records),
+            }
+
+            # Read rollout_stats.jsonl for KV cache averages if available.
+            rollout_path = os.path.join(self._get_vllm_stats_dir(), "rollout_stats.jsonl")
+            if os.path.exists(rollout_path):
+                rollout_records = []
+                with open(rollout_path) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            rollout_records.append(json.loads(line))
+                if rollout_records:
+                    kv_means = [r["kv_cache_usage_pct"]["mean"] for r in rollout_records if "kv_cache_usage_pct" in r]
+                    running_means = [r["num_running_reqs"]["mean"] for r in rollout_records if "num_running_reqs" in r]
+                    if kv_means:
+                        summary["avg_kv_cache_usage_pct"] = round(sum(kv_means) / len(kv_means), 4)
+                    if running_means:
+                        summary["avg_num_running_reqs"] = round(sum(running_means) / len(running_means), 2)
+
+            summary_path = os.path.join(self._get_vllm_stats_dir(), "run_summary.json")
+            with open(summary_path, "w") as f:
+                json.dump(summary, f, indent=2)
+            logger.info(f"Wrote run summary to {summary_path}")
+
+        except Exception as e:
+            logger.warning(f"Failed to write run summary: {e}")
+
+    def _write_scheduler_timeseries_plot(self):
+        """Generate a 4-panel matplotlib figure from scheduler_timeseries.jsonl.
+
+        X-axis: equally-spaced global steps.  Within each step, samples are
+        spread across the step's x-range proportionally by their relative
+        timestamp.  Per-engine lines are overlaid, and each step gets a
+        distinct alternating background shade for visual grouping.
+        """
+        timeseries_path = os.path.join(self._get_vllm_stats_dir(), "scheduler_timeseries.jsonl")
+        if not os.path.exists(timeseries_path):
+            return
+
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            import matplotlib.cm as cm
+
+            records = []
+            with open(timeseries_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        records.append(json.loads(line))
+
+            if not records:
+                return
+
+            # Group by global_step, sorted.
+            from collections import OrderedDict
+            step_groups = OrderedDict()
+            for r in records:
+                gs = r["global_step"]
+                step_groups.setdefault(gs, []).append(r)
+
+            sorted_steps = sorted(step_groups.keys())
+            engines = sorted(set(r["engine"] for r in records))
+
+            # Assign each step an equal-width x-range: [i, i+1).
+            # Within each step, samples are placed proportionally by their
+            # timestamp offset within the step's time span.
+            for r in records:
+                gs = r["global_step"]
+                step_idx = sorted_steps.index(gs)
+                group = step_groups[gs]
+                t_min = min(s["t"] for s in group)
+                t_max = max(s["t"] for s in group)
+                t_span = t_max - t_min if t_max > t_min else 1.0
+                r["x"] = step_idx + (r["t"] - t_min) / t_span * 0.9  # leave small gap
+
+            fig, axes = plt.subplots(4, 1, figsize=(14, 12), sharex=True)
+            titles = ["KV Cache Usage %", "Running Requests", "Waiting Requests", "Prefix Cache Hit Rate"]
+            keys = ["kv_cache_usage", "num_running", "num_waiting", "prefix_hit_rate"]
+
+            # Alternating background shading per step.
+            for ax in axes:
+                for i, gs in enumerate(sorted_steps):
+                    color = "#f0f0f0" if i % 2 == 0 else "#ffffff"
+                    ax.axvspan(i, i + 1, facecolor=color, alpha=0.5)
+
+            for ax, title, key in zip(axes, titles, keys):
+                for eng in engines:
+                    eng_records = sorted([r for r in records if r["engine"] == eng], key=lambda r: r["x"])
+                    xs = [r["x"] for r in eng_records]
+                    vals = [r[key] for r in eng_records]
+                    ax.plot(xs, vals, label=f"Engine {eng}", alpha=0.7, linewidth=0.8, marker=".", markersize=2)
+                ax.set_title(title, fontsize=11)
+                ax.set_ylabel(title)
+                ax.legend(fontsize=8)
+                ax.grid(True, alpha=0.3, axis="y")
+
+            # X-axis: show step labels at the center of each step range.
+            tick_positions = [i + 0.45 for i in range(len(sorted_steps))]
+            tick_labels = [str(gs) for gs in sorted_steps]
+            # Show at most 30 labels to avoid crowding.
+            if len(tick_labels) > 30:
+                step_size = max(1, len(tick_labels) // 30)
+                tick_positions = tick_positions[::step_size]
+                tick_labels = tick_labels[::step_size]
+            axes[-1].set_xticks(tick_positions)
+            axes[-1].set_xticklabels(tick_labels, fontsize=8, rotation=45)
+            axes[-1].set_xlabel("Global Step")
+
+            fig.suptitle("vLLM Scheduler Stats per Step", fontsize=13)
+            fig.tight_layout()
+
+            plot_path = os.path.join(self._get_vllm_stats_dir(), "scheduler_timeseries.png")
+            fig.savefig(plot_path, dpi=150)
+            plt.close(fig)
+            logger.info(f"Wrote scheduler timeseries plot to {plot_path}")
+
+        except ImportError:
+            logger.warning("matplotlib not available, skipping timeseries plot")
+        except Exception as e:
+            logger.warning(f"Failed to write scheduler timeseries plot: {e}")
+
     def fit(self) -> None:
         checkpoint_states = self.init_checkpoint_states()
         # Restore step and start_epoch
@@ -855,25 +1039,46 @@ class PPOTrainer(BasePPOTrainer):
             while True:
                 # Draw one mini-batch of prompts; stop when loader is exhausted.
                 log_step_trace = global_step % 2 == 0
+                step_start_time = time.time()
                 rollout_samples, filter_pass_rate, prompts_consumed, is_exhausted = (
                     self.samples_generator.generate_samples(
                         global_step=global_step, log_step_trace=log_step_trace, **self.generate_kwargs
                     )
                 )
+                rollout_wall_sec = time.time() - step_start_time
                 total_consumed_prompts += prompts_consumed
                 if is_exhausted:
                     break
 
                 # Run PPO update on this batch and bump the global step counter.
+                train_start_time = time.time()
                 status, global_step = self.train_step(rollout_samples, global_step)
+                train_wall_sec = time.time() - train_start_time
+                total_step_wall_sec = time.time() - step_start_time
 
                 # Add generated samples to status dictionary
                 if self.args.dynamic_filtering:
                     status["dynamic_filtering_pass_rate"] = filter_pass_rate
                     status["too_easy_pct"] = self.samples_generator.step_too_easy_pct
                     status["too_hard_pct"] = self.samples_generator.step_too_hard_pct
+
+                # Merge vLLM stats into status for W&B logging.
+                vllm_stats = getattr(self.samples_generator, "last_vllm_stats", {})
+                status.update(vllm_stats)
+                status["vllm_rollout_wall_sec"] = round(rollout_wall_sec, 2)
+                status["vllm_train_wall_sec"] = round(train_wall_sec, 2)
+
                 log_status = {k: v for k, v in status.items() if k not in ["generated_samples"]}
                 logger.info(f"✨ Global step {global_step}: {log_status}")
+
+                # Write training timing JSONL.
+                self._write_training_timing(
+                    global_step=global_step,
+                    rollout_wall_sec=rollout_wall_sec,
+                    train_wall_sec=train_wall_sec,
+                    total_step_wall_sec=total_step_wall_sec,
+                    vllm_stats=vllm_stats,
+                )
 
                 # logs/checkpoints
                 client_states = {
@@ -931,6 +1136,10 @@ class PPOTrainer(BasePPOTrainer):
             ctypes.CDLL("libc.so.6").malloc_trim(0)
         except Exception:
             pass
+
+        # Write run summary and timeseries plot.
+        self._write_run_summary(global_step)
+        self._write_scheduler_timeseries_plot()
 
         # Close trackers
         self._write_final_tool_usage_plot()

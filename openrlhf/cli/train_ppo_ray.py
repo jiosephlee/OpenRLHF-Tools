@@ -356,6 +356,13 @@ if __name__ == "__main__":
     # Checkpoints
     parser.add_argument("--eval_steps", type=int, default=-1)
     parser.add_argument("--skip_eval_step_zero", action="store_true", default=False)
+    parser.add_argument(
+        "--skip_training",
+        action="store_true",
+        default=False,
+        help="Run only the initial step-0 evaluation (if eval_dataset is set) and exit. "
+        "Useful for benchmarking evaluation speed and efficiency reports without running training.",
+    )
     parser.add_argument("--save_steps", type=int, default=-1)
     parser.add_argument("--logging_steps", type=int, default=1)
     parser.add_argument("--ckpt_path", type=str, default="./ckpt/checkpoints_ppo_ray")
@@ -711,9 +718,14 @@ if __name__ == "__main__":
         default=None,
         help="Avg reward threshold for hard prompt gating. None=disabled. 0.2 recommended for TDC.",
     )
-    parser.add_argument("--erl_k", type=int, default=4, help="Number of diverse reflection+retry pairs per hard prompt")
     parser.add_argument(
-        "--erl_memory", action="store_true", default=False, help="Enable cross-episode reflection memory (off by default)"
+        "--erl_k", type=int, default=4, help="Number of diverse reflection+retry pairs per hard prompt"
+    )
+    parser.add_argument(
+        "--erl_memory",
+        action="store_true",
+        default=False,
+        help="Enable cross-episode reflection memory (off by default)",
     )
     parser.add_argument("--erl_max_memory", type=int, default=5, help="Max reflections per task in memory")
     parser.add_argument(

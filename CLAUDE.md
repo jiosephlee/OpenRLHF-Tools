@@ -186,6 +186,7 @@ GRPO Training Loop
 
 **Eval:**
 - `--skip_eval_step_zero`: Skip evaluation at step 0
+- `--skip_training`: Run only the step-0 eval and exit (skips training loop, for benchmarking eval speed and efficiency reports)
 
 **Dispatch:**
 - `--deferred_dispatch`: Dispatch 75% upfront, hold 25% as reserve until any engine drops to ≤4 pending

@@ -832,9 +832,14 @@ class PPOTrainer(BasePPOTrainer):
             os.makedirs(stats_dir, exist_ok=True)
         return stats_dir
 
-    def _write_training_timing(self, global_step: int, rollout_wall_sec: float,
-                               train_wall_sec: float, total_step_wall_sec: float,
-                               vllm_stats: dict):
+    def _write_training_timing(
+        self,
+        global_step: int,
+        rollout_wall_sec: float,
+        train_wall_sec: float,
+        total_step_wall_sec: float,
+        vllm_stats: dict,
+    ):
         """Append one line to training_timing.jsonl."""
         record = {
             "global_step": global_step,
@@ -924,6 +929,7 @@ class PPOTrainer(BasePPOTrainer):
 
         try:
             import matplotlib
+
             matplotlib.use("Agg")
             import matplotlib.pyplot as plt
             import matplotlib.cm as cm
@@ -940,6 +946,7 @@ class PPOTrainer(BasePPOTrainer):
 
             # Group by global_step, sorted.
             from collections import OrderedDict
+
             step_groups = OrderedDict()
             for r in records:
                 gs = r["global_step"]
@@ -1028,6 +1035,18 @@ class PPOTrainer(BasePPOTrainer):
             eval_generate_kwargs["temperature"] = self.args.eval_temperature
             eval_generate_kwargs["n_samples_per_prompt"] = self.args.eval_n_samples_per_prompt
             self.evaluate(global_step, **eval_generate_kwargs)
+
+        # --skip_training: exit after step-0 eval without entering the training loop.
+        if getattr(self.args, "skip_training", False):
+            logger.info("--skip_training is set: skipping training loop and exiting after step-0 eval.")
+            self._write_run_summary(global_step)
+            self._write_scheduler_timeseries_plot()
+            self._write_final_tool_usage_plot()
+            if self.wandb_logger:
+                self.wandb_logger.close()
+            if self.tensorboard_logger:
+                self.tensorboard_logger.close()
+            return
 
         for episode in range(start_episode, self.args.num_episodes):
             dataset_length = len(self.prompts_dataloader)

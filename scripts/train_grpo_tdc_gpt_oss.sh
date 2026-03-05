@@ -144,7 +144,7 @@ EXTRA_ARGS="${EXTRA_ARGS:-}"
 AGENT_MAX_STEPS=30
 ZERO_STAGE=2
 PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-8192}"
-N_SAMPLES_PER_PROMPT=8
+N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-8}"
 TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-4096}"
 ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')}"
 
@@ -194,7 +194,7 @@ else
 fi
 
 ### WARMUP LOGIC ###
-WARMUP_STEPS=20
+WARMUP_STEPS=10
 WARM_STEPS_MULTIPLIER=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
 
 ### MULTI-TASK ###
@@ -285,8 +285,8 @@ DYNAMIC_FILTERING=true
 DYNAMIC_FILTERING_REWARD_RANGE="0 1"
 
 WANDB_PROJECT="${WANDB_PROJECT:-openrlhf_tdc_grpo}"
-TEMPERATURE=0.7
-TOP_P=0.95
+TEMPERATURE=1.0
+TOP_P=0.85
 
 ### ENVIRONMENT VARIABLES ###
 export RAY_TMPDIR="${RAY_TMPDIR:-/tmp/ray_${USER}}"
@@ -421,7 +421,7 @@ if [ "$CURRICULUM_BALANCED" = "1" ]; then
     OPTIONAL_FLAGS+=" --curriculum_balanced"
 fi
 if [ "$MULTI_STAGE_DISPATCH" = "1" ]; then
-    OPTIONAL_FLAGS+=" --multi_stage_dispatch"
+    OPTIONAL_FLAGS+=" --deferred_dispatch"
 fi
 if [ "$LIGER_GRPO_LOSS" = "1" ]; then
     OPTIONAL_FLAGS+=" --use_liger_grpo_loss"
@@ -477,7 +477,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --prompt_data "$TRAIN_DATA" \
     --eval_dataset "$EVAL_DATA" \
     --eval_steps $EVAL_STEPS \
-    --eval_temperature $TEMPERATURE \
+    --eval_temperature 0.1 \
     --eval_n_samples_per_prompt 1 \
     --input_key messages \
     --label_key answer \

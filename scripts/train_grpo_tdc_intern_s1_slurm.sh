@@ -125,7 +125,7 @@ run_task() {
     AGENT_MAX_STEPS=30
     ZERO_STAGE=2
     PROMPT_MAX_LEN=12288 # Any responses longer than this will be truncated.
-    N_SAMPLES_PER_PROMPT=12
+    N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-8}"
     TRAIN_MAX_TOKENS_PER_GPU=36864 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
     ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')
 
@@ -259,8 +259,8 @@ run_task() {
     DYNAMIC_FILTERING_REWARD_RANGE="0 1"
 
     WANDB_PROJECT="${WANDB_PROJECT:-openrlhf_tdc_grpo}"
-    TEMPERATURE=0.7
-    TOP_P=0.95
+    TEMPERATURE=1.0
+    TOP_P=0.85
 
     ### RAY TMPDIR ###
     export RAY_TMPDIR="/tmp/ray_${USER}/${SLURM_JOB_ID}"
@@ -405,7 +405,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         OPTIONAL_FLAGS+=" --curriculum_balanced"
     fi
     if [ "$MULTI_STAGE_DISPATCH" = "1" ]; then
-        OPTIONAL_FLAGS+=" --multi_stage_dispatch"
+        OPTIONAL_FLAGS+=" --deferred_dispatch"
     fi
     if [ "$LIGER_GRPO_LOSS" = "1" ]; then
         OPTIONAL_FLAGS+=" --use_liger_grpo_loss"
@@ -454,7 +454,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --prompt_data "$TRAIN_DATA" \
         --eval_dataset "$EVAL_DATA" \
         --eval_steps $EVAL_STEPS \
-        --eval_temperature $TEMPERATURE \
+        --eval_temperature 0.1 \
         --eval_n_samples_per_prompt 1 \
         --input_key messages \
         --label_key answer \

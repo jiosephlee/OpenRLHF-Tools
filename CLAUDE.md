@@ -26,15 +26,14 @@ This fork extends OpenRLHF with multi-turn tool-calling support for GRPO trainin
 
 Detects transformers major version at import time and branches on `batch_decode` (v4) vs `decode` (v5). `requirements.txt` allows either version.
 
-### 2. Multi-Stage GPU Dispatch (3-Stage Deferred Dispatch)
+### 2. Deferred Dispatch (75/25)
 **File:** `openrlhf/trainer/ppo_utils/experience_maker.py`
 
-Upstream dispatches all prompts to vLLM engines at once. We split into 3 stages (50/25/25):
-- Stage 1 (50%): dispatched immediately
-- Stage 2 (25%): dispatched when any engine's pending count drops to <=1
-- Stage 3 (25%): same trigger
+Enabled via `--deferred_dispatch`. Upstream dispatches all prompts at once; with this flag we split into 2 stages (75/25):
+- Stage 1 (75%): dispatched immediately via heap-balanced `_dispatch_prompts_to_vllm`
+- Stage 2 (25%): held as reserve, dispatched when any engine's pending count drops to ≤4
 
-This dramatically improves GPU utilization when generation times vary (common with multi-turn tool calling). Uses heap-based balancer with per-engine pending counts.
+Improves GPU utilization when generation times vary (common with multi-turn tool calling). Uses heap-based balancer with per-engine pending counts.
 
 ### 3. DeepSpeed AutoTP OOM Fix
 **File:** `openrlhf/utils/deepspeed/deepspeed.py`
@@ -114,6 +113,19 @@ Closes the train/inference distribution gap when vLLM serves with FP4-quantized 
 
 Uses asymmetric `--eps_clip_low_high 0.3 0.372`, for instance, to give exploration tokens more room to increase probability per update (inspired by DAPO's Clip-Higher). GPT-OSS runs show ~24% clip ratio vs ~0.6% for smaller baselines, so wider bounds help avoid suppressing the gradient signal. Lower clip (ε=0.3) limits how aggressively bad actions are suppressed; upper clip (ε=0.372) limits reinforcement of good actions, with the asymmetry favoring exploration. Usual values are 0.2 and 0.272.
 
+### 18. ERL: Experiential Reinforcement Learning (EXPERIMENTAL — not yet tested)
+**Files:** `openrlhf/trainer/ray/vllm_engine.py`, `openrlhf/utils/chat_protocol.py`, `openrlhf/trainer/ppo_utils/experience_maker.py`, `openrlhf/trainer/ray/ppo_actor.py`, `openrlhf/cli/train_ppo_ray.py`
+
+Based on [Experiential Reinforcement Learning](https://arxiv.org/abs/2602.13949) (Shi et al., Feb 2026). For hard prompts where all samples fail (avg reward < threshold), generates structured reflections from failed attempts and retries with reflection-augmented prompts. Key components:
+
+- **Prompt-level gating**: Only hard prompts (avg r1 < `--erl_hard_threshold`) trigger reflection+retry; easy prompts use standard path
+- **k diverse reflections**: `--erl_k` reflection+retry pairs per hard prompt, each conditioned on a different failed attempt
+- **Variable group sizes**: Hard prompt groups expand from n to n+k; advantage computation uses dynamic `torch.split` instead of fixed reshape
+- **Reflection injection**: `ChatProtocol.inject_reflection()` inserts reflection into system message (implemented for InternS1Protocol)
+- **Distillation loss**: Optional SFT loss (`--erl_distill_coef`) on successful retry action tokens (r2==1 only)
+- **Per-task memory**: Optional (`--erl_memory`) cross-episode reflection storage keyed by TDC task name
+- **Training script**: `scripts/train_grpo_tdc_erl.sh` wraps intern_s1 script with ERL defaults (threshold=0.2, k=4, n=4, distill=0.1)
+
 ## Architecture
 
 ### Tool-Calling Components
@@ -133,8 +145,8 @@ Abstract interface for model-specific tool-call formats.
 **Implementations:**
 - `GLMFlashProtocol`: XML format (`<tool_call>func<arg_key>k</arg_key><arg_value>v</arg_value></tool_call>`)
 - `InternS1Protocol`: JSON format with `<|action_start|><|plugin|>` delimiters, includes SMILES-safe JSON escape repair
+- `Qwen3Protocol`: JSON format with `<tool_call>` / `</tool_call>` delimiters, `<|im_start|>tool` observation wrappers (subclass of `InternS1Protocol`)
 - `GPTOSSProtocol`: Harmony-format parser for `gpt_oss` using generated token IDs
-- Qwen3 support via `--chat_protocol qwen3`
 
 Selected via `OPENRLHF_CHAT_PROTOCOL` env var (propagated by `vllm_engine.py`).
 
@@ -151,7 +163,7 @@ actor_loss = -(log_probs * advantages * loss_mask).sum() / loss_mask.sum()
 ### Multi-Turn Flow
 ```
 GRPO Training Loop
-  -> Experience Maker (3-stage dispatch)
+  -> Experience Maker (deferred dispatch 75/25)
     -> vLLM Engine (LLMRayActor)
       -> MultiTurnAgentExecutor (agent.py, tracks action_ranges)
         -> ToolCallingTurn (tool_calling_turn.py)
@@ -173,11 +185,22 @@ GRPO Training Loop
 **Eval:**
 - `--skip_eval_step_zero`: Skip evaluation at step 0
 
+**Dispatch:**
+- `--deferred_dispatch`: Dispatch 75% upfront, hold 25% as reserve until any engine drops to ≤4 pending
+
 **Checkpointing:**
 - `--push_to_hub <repo_id>`: Upload checkpoints to HF Hub
 - `--push_to_hub_private`: Make repo private
 - `--delete_local_after_push`: Delete local checkpoint after upload
 - `--save_steps <int>`: Save checkpoint every N steps
+
+**ERL (Experimental):**
+- `--erl_hard_threshold <float>`: Avg reward threshold for hard prompt gating (None=disabled, 0.2 recommended for TDC)
+- `--erl_k <int>`: Number of reflection+retry pairs per hard prompt (default: 4)
+- `--erl_memory`: Enable cross-episode reflection memory (off by default)
+- `--erl_max_memory <int>`: Max reflections per task in memory (default: 5)
+- `--erl_max_reflection_tokens <int>`: Max tokens for reflection generation (default: 512)
+- `--erl_distill_coef <float>`: Distillation loss coefficient for successful retries (0=disabled)
 
 **Environment Variables:**
 Set automatically by vllm_engine.py:
@@ -194,27 +217,28 @@ Debug flags:
 
 | File | Changes |
 |---|---|
-| `openrlhf/utils/chat_protocol.py` | New: ChatProtocol ABC, GLMFlashProtocol, InternS1Protocol, GPTOSSProtocol |
-| `openrlhf/utils/tool_calling_turn.py` | New: ToolCallingTurn agent class |
+| `openrlhf/utils/chat_protocol.py` | New: ChatProtocol ABC, GLMFlashProtocol, InternS1Protocol, Qwen3Protocol, GPTOSSProtocol, `inject_reflection()` for ERL |
+| `openrlhf/utils/tool_calling_turn.py` | New: ToolCallingTurn agent class; injectable `reward_fn` param; `_default_reward_fn` fallback |
+| `openrlhf/utils/fp4_config.py` | New: FP4Config dataclass consolidating vllm_sync_fp4/qat/dequantize_base flags |
 | `openrlhf/utils/tdc_reward_model.py` | New: binary answer extractor for TDC eval |
 | `openrlhf/datasets/tdc_loader.py` | New: TDCDatasetLoader |
 | `openrlhf/datasets/prompts_dataset.py` | Per-task tool schema injection via tools_map |
-| `openrlhf/trainer/ppo_utils/experience_maker.py` | 3-stage dispatch, trace logging, filtered count logging |
+| `openrlhf/trainer/ppo_utils/experience_maker.py` | Deferred dispatch (75/25 via `--deferred_dispatch`), trace logging, filtered count logging, ERL variable group sizes |
 | `openrlhf/trainer/ppo_trainer.py` | evaluate() in BasePPOTrainer, step-0 eval, macro-F1, hub push |
 | `openrlhf/trainer/ppo_trainer_async.py` | Eval wired into async trainer, missing logging/cleanup fixes |
-| `openrlhf/trainer/ray/vllm_engine.py` | Passes chat_protocol env var to Ray actors, reduced CUDA graphs, MXFP4 weight sync |
+| `openrlhf/trainer/ray/vllm_engine.py` | Passes chat_protocol env var to Ray actors, reduced CUDA graphs, MXFP4 weight sync, ERL reflection+retry loop |
 | `openrlhf/trainer/ray/vllm_worker_wrap.py` | On-the-fly bf16→MXFP4 quantization for vLLM weight sync |
 | `openrlhf/utils/mxfp4_quantize.py` | MXFP4 quantization utility + QAT: `fake_quantize_mxfp4`, `_Mxfp4FakeQuant`, `register_mxfp4_qat_parametrization` |
-| `openrlhf/trainer/ray/ppo_actor.py` | NaN guard assertions; `qat_mxfp4` forwarded to Actor() |
-| `openrlhf/models/actor.py` | torch.where NaN fix, logit diagnostics; `qat_mxfp4` param + registration block |
+| `openrlhf/trainer/ray/ppo_actor.py` | NaN guard assertions; `fp4_config` forwarded to Actor(); weight sync reads `fp4_config.sync_format`; ERL distillation loss |
+| `openrlhf/models/actor.py` | torch.where NaN fix, logit diagnostics; `fp4_config: FP4Config` param replaces `qat`/`qat_fp4_format` |
 | `openrlhf/models/utils.py` | torch.where in masked_mean |
 | `openrlhf/utils/deepspeed/deepspeed.py` | Recreate optimizer after AutoTP to free pre-sharded weights |
 | `openrlhf/utils/distributed_util.py` | NCCL diagnostic logging |
 | `openrlhf/utils/logging_utils.py` | eval/global_step W&B axis |
 | `openrlhf/cli/batch_inference.py` | Transformers v4/v5 compat |
 | `openrlhf/cli/interactive_chat.py` | Transformers v4/v5 compat |
-| `openrlhf/cli/train_ppo_ray.py` | New CLI args for tools, eval, checkpointing, `--qat_fp4` |
-| `openrlhf/utils/agent.py` | Pass hf_tokenizer through to agent instance |
+| `openrlhf/cli/train_ppo_ray.py` | New CLI args for tools, eval, checkpointing, `--deferred_dispatch`, ERL args; validation builds `args.fp4_config` |
+| `openrlhf/utils/agent.py` | Pass hf_tokenizer + `**agent_kwargs` through to agent instance |
 
 ## Storage Guidelines
 

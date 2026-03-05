@@ -20,7 +20,7 @@ from transformers import AutoTokenizer
 
 from openrlhf.utils.tool_versions import get_version
 from openrlhf.utils.agent import AgentInstanceBase, MultiTurnAgentExecutor
-from openrlhf.utils.chat_protocol import GLMFlashProtocol, GPTOSSProtocol, InternS1Protocol
+from openrlhf.utils.chat_protocol import GLMFlashProtocol, GPTOSSProtocol, InternS1Protocol, Qwen3Protocol
 
 
 class ToolCallingTurn(AgentInstanceBase):
@@ -36,7 +36,7 @@ class ToolCallingTurn(AgentInstanceBase):
       - ``render_tool_feedback``: produce the bridge text between turns
     """
 
-    def __init__(self, hf_tokenizer=None):
+    def __init__(self, hf_tokenizer=None, reward_fn=None):
         # ---- tokenizer (needed by protocol parsers) ----
         if hf_tokenizer is not None:
             self.tokenizer = hf_tokenizer
@@ -46,13 +46,20 @@ class ToolCallingTurn(AgentInstanceBase):
                 raise ValueError("OPENRLHF_MODEL_PATH environment variable must be set")
             self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
+        # ---- optional injectable reward function ----
+        # Signature: (generated_text: str, label: str) -> float
+        # Falls back to _default_reward_fn (A/B letter extraction) when None.
+        self._reward_fn = reward_fn
+
         # ---- protocol (parse + feedback only, not initial rendering) ----
         protocol_name = os.environ.get("OPENRLHF_CHAT_PROTOCOL", "glm_flash")
         if protocol_name == "intern_s1":
             self.protocol = InternS1Protocol(self.tokenizer)
         elif protocol_name == "gpt_oss":
             self.protocol = GPTOSSProtocol(self.tokenizer)
-        elif protocol_name in {"glm_flash", "qwen3"}:
+        elif protocol_name == "qwen3":
+            self.protocol = Qwen3Protocol(self.tokenizer)
+        elif protocol_name == "glm_flash":
             self.protocol = GLMFlashProtocol(self.tokenizer)
         else:
             raise ValueError(f"Unsupported chat protocol: {protocol_name}")
@@ -121,7 +128,11 @@ class ToolCallingTurn(AgentInstanceBase):
             }
 
         # No tool calls → final answer
-        reward = self._compute_reward(action.get("content", ""), label)
+        generated_text = action.get("content", "")
+        if self._reward_fn is not None:
+            reward = self._reward_fn(generated_text, label)
+        else:
+            reward = self._default_reward_fn(generated_text, label)
         return {
             "environment_feedback": "",
             "rewards": torch.tensor(reward),
@@ -163,8 +174,8 @@ class ToolCallingTurn(AgentInstanceBase):
     _ANSWER_RE = re.compile(r"Answer\s*:\s*\(?\s*([A-Za-z])\s*\)?")
     _PAREN_ANSWER_RE = re.compile(r"\(\s*([A-Za-z])\s*\)")
 
-    def _compute_reward(self, generated_text: str, label: Optional[str]) -> float:
-        """Reward = 1.0 iff the model's Answer: (X) after </think> matches the label."""
+    def _default_reward_fn(self, generated_text: str, label: Optional[str]) -> float:
+        """Default reward: 1.0 iff the model's Answer: (X) after </think> matches the label."""
         if not label:
             return 0.0
 
@@ -202,8 +213,8 @@ class ToolCallingTurn(AgentInstanceBase):
 # Executor (required name for vllm_engine._load_agent_executor)
 # ---------------------------------------------------------------------------
 class AgentExecutor(MultiTurnAgentExecutor):
-    def __init__(self):
-        super().__init__(ToolCallingTurn)
+    def __init__(self, reward_fn=None):
+        super().__init__(ToolCallingTurn, reward_fn=reward_fn)
 
 
 __all__ = ["ToolCallingTurn", "AgentExecutor"]

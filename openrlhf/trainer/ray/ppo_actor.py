@@ -479,6 +479,16 @@ class ActorPPOTrainer(ABC):
                 if self.args.entropy_loss_coef != 0:
                     loss -= entropy_loss * self.args.entropy_loss_coef
 
+        # ERL distillation loss: SFT signal on successful retry experiences (r2 == 1)
+        erl_distill_coef = getattr(self.args, "erl_distill_coef", 0.0)
+        if erl_distill_coef > 0 and not self.use_liger_grpo_loss:
+            erl_distill_mask = experience.info.get("erl_distill_mask")
+            if erl_distill_mask is not None and erl_distill_mask.any():
+                # Weighted NLL on action tokens of successful retry experiences
+                distill_mask = erl_distill_mask.unsqueeze(-1) * experience.action_mask
+                distill_loss = -masked_mean(action_log_probs, distill_mask)
+                loss = loss + erl_distill_coef * distill_loss
+
         if self.args.use_dynamic_batch:
             loss = loss * self.replay_buffer.dynamic_loss_scale[step]
 
@@ -554,7 +564,8 @@ class ActorPPOTrainer(ABC):
                     if (self.strategy.args.zero_stage == 3 and hasattr(param, "ds_shape"))
                     else param.shape
                 )
-                fp4_format = getattr(self.strategy.args, "vllm_sync_fp4", None)
+                _fp4_cfg = getattr(self.strategy.args, "fp4_config", None)
+                fp4_format = _fp4_cfg.sync_format if _fp4_cfg is not None else None
                 refs = [
                     engine.update_weight.remote(
                         name,
@@ -594,7 +605,8 @@ class ActorPPOTrainer(ABC):
                     if (self.strategy.args.zero_stage == 3 and hasattr(param, "ds_shape"))
                     else param.shape
                 )
-                fp4_format = getattr(self.strategy.args, "vllm_sync_fp4", None)
+                _fp4_cfg = getattr(self.strategy.args, "fp4_config", None)
+                fp4_format = _fp4_cfg.sync_format if _fp4_cfg is not None else None
                 refs = [
                     engine.update_weight_cuda_ipc.remote(
                         name,
@@ -611,7 +623,8 @@ class ActorPPOTrainer(ABC):
 
         # Initialize layerwise reload on vLLM workers before syncing weights.
         # This prepares the model for deferred per-layer processing.
-        if getattr(self.strategy.args, "vllm_sync_fp4", None) and torch.distributed.get_rank() == 0:
+        _fp4_cfg_init = getattr(self.strategy.args, "fp4_config", None)
+        if _fp4_cfg_init is not None and _fp4_cfg_init.sync_format and torch.distributed.get_rank() == 0:
             init_refs = [engine.initialize_weight_reload.remote() for engine in self.vllm_engines]
             ray.get(init_refs)
 
@@ -647,7 +660,8 @@ class ActorPPOTrainer(ABC):
 
         # After all weights are synced, trigger post-load processing
         # (MXFP4 swizzling, kernel prep, etc.) via vLLM's canonical API.
-        if getattr(self.strategy.args, "vllm_sync_fp4", None) and torch.distributed.get_rank() == 0:
+        _fp4_cfg_post = getattr(self.strategy.args, "fp4_config", None)
+        if _fp4_cfg_post is not None and _fp4_cfg_post.sync_format and torch.distributed.get_rank() == 0:
             post_sync_refs = [engine.post_weight_sync.remote() for engine in self.vllm_engines]
             ray.get(post_sync_refs)
 
@@ -686,8 +700,7 @@ class PolicyModelActor(BaseModelActor):
             temperature=strategy.args.temperature,
             use_liger_kernel=strategy.args.use_liger_kernel,
             mxfp4_dequantize=getattr(strategy.args, "mxfp4_dequantize", False),
-            qat=getattr(strategy.args, "qat", None),
-            qat_fp4_format=getattr(strategy.args, "qat_fp4_format", None),
+            fp4_config=getattr(strategy.args, "fp4_config", None),
         )
         strategy.print(actor)
 

@@ -190,7 +190,7 @@ run_task() {
     AGENT_MAX_STEPS=30
     ZERO_STAGE=2
     PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-6144}"
-    N_SAMPLES_PER_PROMPT=12
+    N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-8}"
     TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-4096}"
     ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.25" | bc | awk '{print int($1)}')}"
 
@@ -240,7 +240,7 @@ run_task() {
     fi
 
     ### WARMUP LOGIC ###
-    WARMUP_STEPS=20
+    WARMUP_STEPS=10
     WARM_STEPS_MULTIPLIER=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
 
     ### MULTI-TASK ###
@@ -318,7 +318,7 @@ run_task() {
 
     WANDB_PROJECT="${WANDB_PROJECT:-openrlhf_tdc_grpo}"
     TEMPERATURE=1.0
-    TOP_P=0.9
+    TOP_P=0.85
 
     ### RAY TMPDIR ###
     export RAY_TMPDIR="/tmp/ray_${USER}/${SLURM_JOB_ID}"
@@ -478,7 +478,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         OPTIONAL_FLAGS+=" --curriculum_balanced"
     fi
     if [ "$MULTI_STAGE_DISPATCH" = "1" ]; then
-        OPTIONAL_FLAGS+=" --multi_stage_dispatch"
+        OPTIONAL_FLAGS+=" --deferred_dispatch"
     fi
     if [ "$LIGER_GRPO_LOSS" = "1" ]; then
         OPTIONAL_FLAGS+=" --use_liger_grpo_loss"
@@ -521,7 +521,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --advantage_estimator $ADVANTAGE_ESTIMATOR \
         --init_kl_coef 0 \
         --kl_estimator k1 \
-        --eps_clip_low_high 0.3 0.362 \
+        --eps_clip_low_high 0.5 0.5 \
         --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
         --save_hf_ckpt \
         --disable_ds_ckpt \

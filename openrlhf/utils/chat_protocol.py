@@ -69,6 +69,24 @@ class ChatProtocol(ABC):
         """
         return None
 
+    def inject_reflection(self, formatted_prompt: str, reflection: str) -> str:
+        """Insert reflection guidance into a formatted prompt's system message.
+
+        Used by ERL (Experiential Reinforcement Learning) to inject reflection
+        text from a failed attempt into the prompt before a retry episode.
+
+        Args:
+            formatted_prompt: The fully formatted prompt string (already chat-templated)
+            reflection: The reflection text to inject
+
+        Returns:
+            Modified prompt with reflection inserted into the system message
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support inject_reflection(). "
+            "Implement it or use a supported protocol."
+        )
+
 
 class GLMFlashProtocol(ChatProtocol):
     """GLM Flash XML format protocol.
@@ -293,6 +311,53 @@ class InternS1Protocol(ChatProtocol):
         for tr in tool_results:
             feedback += f"<|im_start|>environment name=<|plugin|>\n\n{tr['content']}<|im_end|>\n"
         feedback += "<|im_start|>assistant\n\n<think>\n"
+        return feedback
+
+    def inject_reflection(self, formatted_prompt: str, reflection: str) -> str:
+        """Insert reflection into the system message of an Intern-S1 formatted prompt.
+
+        Finds the first <|im_end|> (end of system message) and inserts the
+        reflection text just before it.
+        """
+        marker = "<|im_end|>"
+        idx = formatted_prompt.find(marker)
+        if idx == -1:
+            # Fallback: prepend reflection as a separate system-like block
+            return formatted_prompt
+        insert = f"\n\n[Reflection from previous attempt]:\n{reflection}"
+        return formatted_prompt[:idx] + insert + formatted_prompt[idx:]
+
+
+class Qwen3Protocol(InternS1Protocol):
+    """Qwen3 JSON tool calling format protocol.
+
+    Tool call format:
+        <tool_call>
+        {"name": "tool_name", "arguments": {"key": "value"}}
+        </tool_call>
+
+    Observation format:
+        <|im_start|>tool
+        <tool_response>
+        {tool_result}
+        </tool_response>
+        <|im_end|>
+
+    Generation prompt ends with ``<|im_start|>assistant\\n``.
+    """
+
+    _START = "<tool_call>"
+    _END = "</tool_call>"
+
+    _START_RE = re.compile(r"<tool_call>")
+    _END_RE = re.compile(r"</tool_call>")
+
+    def render_tool_feedback(self, tool_results: List[Dict[str, str]]) -> str:
+        """Qwen3 bridge: close assistant turn + tool responses + open next turn."""
+        feedback = "\n<|im_end|>\n"
+        for tr in tool_results:
+            feedback += f"<|im_start|>tool\n<tool_response>\n{tr['content']}\n</tool_response>\n<|im_end|>\n"
+        feedback += "<|im_start|>assistant\n"
         return feedback
 
 
@@ -553,4 +618,4 @@ class GPTOSSProtocol(ChatProtocol):
 
 
 # Export public API
-__all__ = ["ChatProtocol", "GLMFlashProtocol", "InternS1Protocol", "GPTOSSProtocol"]
+__all__ = ["ChatProtocol", "GLMFlashProtocol", "InternS1Protocol", "Qwen3Protocol", "GPTOSSProtocol"]

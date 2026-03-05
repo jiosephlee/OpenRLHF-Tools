@@ -538,6 +538,7 @@ class SamplesGenerator:
     ) -> Tuple[List[Experience], int, bool]:
         """Generate a batch of Experiences with optional reward filtering."""
         step_idx = int(generate_kwargs.get("trace_step_idx", generate_kwargs.get("global_step", 0)))
+        self._current_step_group_sizes = []  # Reset per-prompt group sizes for ERL
         prompts_consumed = 0
         dataset_indices, prompts, labels, exhausted = _collect_prompt_batch(dataloader_iter, num_prompts)
         # Stop early if the prompt source is fully consumed.
@@ -546,11 +547,11 @@ class SamplesGenerator:
 
         smart_replay = getattr(self.args, "smart_replay", False)
 
-        multi_stage = getattr(self.args, "multi_stage_dispatch", False)
+        multi_stage = getattr(self.args, "deferred_dispatch", False)
         n = len(prompts)
 
         if multi_stage:
-            # Single-stage deferred dispatch: send 75% upfront, hold 25% as
+            # Deferred dispatch (75/25): send 75% upfront, hold 25% as
             # reserve.  The reserve is dispatched as one bulk batch when any
             # engine drops to ≤4 pending requests.
             RESERVE_THRESHOLD = 4
@@ -596,7 +597,7 @@ class SamplesGenerator:
                 ds_idx = ref_to_dataset_idx.pop(ref, None)
                 engine_pending[engine_idx] -= 1
 
-                # Single-stage reserve dispatch: when any engine drops to
+                # Deferred dispatch reserve: when any engine drops to
                 # ≤RESERVE_THRESHOLD pending, dispatch all reserve prompts at once.
                 if (
                     multi_stage
@@ -684,6 +685,10 @@ class SamplesGenerator:
                 # Accept experiences and stop once enough have been gathered.
                 if experiences:
                     accepted_experiences.extend(experiences)
+                    # Track per-prompt group size for variable-size ERL groups.
+                    if not hasattr(self, "_current_step_group_sizes"):
+                        self._current_step_group_sizes = []
+                    self._current_step_group_sizes.append(len(experiences))
                     pbar.set_postfix({"prompts_consumed": prompts_consumed})
                     pbar.update()
 
@@ -767,19 +772,34 @@ class SamplesGenerator:
             engine_indices.append(engine_idx)
             heapq.heappush(engine_heap, (current_load + n_samples_per_prompt, engine_idx))
 
+        erl_threshold = getattr(self.args, "erl_hard_threshold", None)
+        erl_k = getattr(self.args, "erl_k", 4)
+
         refs = []
         for idx, (prompt, label) in enumerate(zip(prompts, labels)):
             # Spread work across engines/workers in load-aware order.
             engine_idx = engine_indices[idx]
             llm_engine = self.vllm_engines[engine_idx]
-            ref = llm_engine.generate_responses.remote(
-                prompt=prompt,
-                label=label,
-                sampling_params=sampling_params,
-                max_length=truncate_length,
-                num_samples=n_samples_per_prompt,
-                log_trajectory=(idx == 0),
-            )
+            if erl_threshold is not None:
+                ref = llm_engine.generate_responses_with_erl.remote(
+                    prompt=prompt,
+                    label=label,
+                    sampling_params=sampling_params,
+                    max_length=truncate_length,
+                    num_samples=n_samples_per_prompt,
+                    hard_threshold=erl_threshold,
+                    erl_k=erl_k,
+                    log_trajectory=(idx == 0),
+                )
+            else:
+                ref = llm_engine.generate_responses.remote(
+                    prompt=prompt,
+                    label=label,
+                    sampling_params=sampling_params,
+                    max_length=truncate_length,
+                    num_samples=n_samples_per_prompt,
+                    log_trajectory=(idx == 0),
+                )
             refs.append((ref, engine_idx))
 
         return refs
@@ -845,6 +865,13 @@ class SamplesGenerator:
             if isinstance(value, torch.Tensor):
                 value = value.flatten()[0].item()
             info[key] = torch.tensor([value])
+
+        # ERL distillation mask: True for successful retry experiences (r2 == 1)
+        is_erl_distill = (
+            extra_logs.get("erl_gated", 0) == 1
+            and (reward_val is not None and reward_val >= 1.0)
+        )
+        info["erl_distill_mask"] = torch.tensor([float(is_erl_distill)])
 
         return Experience(
             sequences=sequences.unsqueeze(0),
@@ -1132,28 +1159,64 @@ class RemoteExperienceMaker:
         rewards = torch.empty_like(raw_rewards)
         rewards[indices] = raw_rewards  # sorted
 
-        rewards = rewards.reshape(-1, args.n_samples_per_prompt)
+        # Check if we have variable group sizes (ERL mode)
+        prompt_group_sizes = getattr(self, "_current_step_group_sizes", None)
+        use_variable_groups = (
+            prompt_group_sizes
+            and len(prompt_group_sizes) > 0
+            and any(gs != args.n_samples_per_prompt for gs in prompt_group_sizes)
+        )
 
-        # log group reward std
-        if args.n_samples_per_prompt > 1:
-            group_reward_stds = (
-                rewards.std(-1, keepdim=True).repeat(1, args.n_samples_per_prompt).reshape(-1)[indices].split(exp_len)
-            )
+        if use_variable_groups:
+            # Variable group sizes (ERL mode): split rewards by per-prompt group sizes
+            reward_groups = list(torch.split(rewards, prompt_group_sizes))
+
+            # Log group reward std per experience
+            group_std_flat = []
+            for group in reward_groups:
+                std_val = group.std().item() if len(group) > 1 else 0.0
+                group_std_flat.extend([std_val] * len(group))
+            group_reward_stds = torch.tensor(group_std_flat)[indices].split(exp_len)
             for experience, group_reward_std in zip(experiences, group_reward_stds):
                 experience.info["group_reward_std"] = group_reward_std
 
-        # reward shaping
-        if args.advantage_estimator == "rloo":
-            baseline = (rewards.sum(-1, keepdim=True) - rewards) / (args.n_samples_per_prompt - 1)
-            rewards = rewards - baseline
-        elif args.advantage_estimator in ["reinforce_baseline", "dr_grpo"]:
-            # REINFORCE++-baseline and Dr. GRPO removed the `/std` in GRPO as `/ std` is not needed in RL variance reduction theory.
-            # And `k3 KL` has a larger variance than `k1 KL` under a categorical distribution.
-            rewards = rewards - rewards.mean(-1, keepdim=True)
-        elif args.advantage_estimator == "group_norm":
-            rewards = (rewards - rewards.mean(-1, keepdim=True)) / (rewards.std(-1, keepdim=True) + 1e-9)
+            # Reward shaping per group
+            shaped_groups = []
+            for group in reward_groups:
+                n = len(group)
+                if args.advantage_estimator == "rloo":
+                    baseline = (group.sum() - group) / max(n - 1, 1)
+                    shaped_groups.append(group - baseline)
+                elif args.advantage_estimator in ["reinforce_baseline", "dr_grpo"]:
+                    shaped_groups.append(group - group.mean())
+                elif args.advantage_estimator == "group_norm":
+                    std = group.std() + 1e-9 if n > 1 else torch.tensor(1.0)
+                    shaped_groups.append((group - group.mean()) / std)
+                else:
+                    shaped_groups.append(group)
+            rewards = torch.cat(shaped_groups)[indices].split(exp_len)
+        else:
+            # Fixed group sizes (standard mode)
+            rewards = rewards.reshape(-1, args.n_samples_per_prompt)
 
-        rewards = rewards.reshape(-1)[indices].split(exp_len)
+            # log group reward std
+            if args.n_samples_per_prompt > 1:
+                group_reward_stds = (
+                    rewards.std(-1, keepdim=True).repeat(1, args.n_samples_per_prompt).reshape(-1)[indices].split(exp_len)
+                )
+                for experience, group_reward_std in zip(experiences, group_reward_stds):
+                    experience.info["group_reward_std"] = group_reward_std
+
+            # reward shaping
+            if args.advantage_estimator == "rloo":
+                baseline = (rewards.sum(-1, keepdim=True) - rewards) / (args.n_samples_per_prompt - 1)
+                rewards = rewards - baseline
+            elif args.advantage_estimator in ["reinforce_baseline", "dr_grpo"]:
+                rewards = rewards - rewards.mean(-1, keepdim=True)
+            elif args.advantage_estimator == "group_norm":
+                rewards = (rewards - rewards.mean(-1, keepdim=True)) / (rewards.std(-1, keepdim=True) + 1e-9)
+
+            rewards = rewards.reshape(-1)[indices].split(exp_len)
 
         # calculate return and advantages
         for experience, reward in zip(experiences, rewards):

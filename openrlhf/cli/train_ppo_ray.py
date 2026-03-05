@@ -15,6 +15,7 @@ from openrlhf.trainer.ray.launcher import (
 from openrlhf.trainer.ray.ppo_actor import PolicyModelActor
 from openrlhf.trainer.ray.ppo_critic import CriticModelActor
 from openrlhf.utils import get_strategy
+from openrlhf.utils.fp4_config import FP4Config
 
 
 def _strip_quantization_config(pretrain_path: str) -> None:
@@ -106,6 +107,11 @@ def train(args):
             kv_cache_dtype=args.kv_cache_dtype,
             max_num_batched_tokens=args.max_num_batched_tokens,
             max_num_seqs=args.vllm_max_num_seqs,
+            erl_hard_threshold=args.erl_hard_threshold,
+            erl_k=args.erl_k,
+            erl_memory=args.erl_memory,
+            erl_max_memory=args.erl_max_memory,
+            erl_max_reflection_tokens=args.erl_max_reflection_tokens,
         )
 
     actor_model = RayActorGroup(
@@ -691,12 +697,33 @@ if __name__ == "__main__":
         help="Evenly interleave samples from each dataset across training",
     )
     parser.add_argument(
-        "--multi_stage_dispatch",
+        "--deferred_dispatch",
         action="store_true",
         default=False,
-        help="Enable single-stage deferred dispatch for vLLM generation. "
-        "Dispatches 75%% upfront, holds 25%% as reserve, dispatches "
-        "reserve in one batch when any engine drops to ≤4 pending.",
+        help="Dispatches 75%% of prompts upfront, holds 25%% as reserve. "
+        "Dispatches reserve when any engine drops to ≤4 pending requests.",
+    )
+
+    # ERL (Experiential Reinforcement Learning)
+    parser.add_argument(
+        "--erl_hard_threshold",
+        type=float,
+        default=None,
+        help="Avg reward threshold for hard prompt gating. None=disabled. 0.2 recommended for TDC.",
+    )
+    parser.add_argument("--erl_k", type=int, default=4, help="Number of diverse reflection+retry pairs per hard prompt")
+    parser.add_argument(
+        "--erl_memory", action="store_true", default=False, help="Enable cross-episode reflection memory (off by default)"
+    )
+    parser.add_argument("--erl_max_memory", type=int, default=5, help="Max reflections per task in memory")
+    parser.add_argument(
+        "--erl_max_reflection_tokens", type=int, default=512, help="Max tokens for reflection generation"
+    )
+    parser.add_argument(
+        "--erl_distill_coef",
+        type=float,
+        default=0.0,
+        help="Distillation loss coefficient for successful retries where r2==1 (0=disabled)",
     )
 
     # TensorBoard parameters
@@ -710,21 +737,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Derive QAT FP4 format from --vllm_sync_fp4 when --qat fp4_fake_quantize is used
-    if args.qat == "fp4_fake_quantize":
-        if not args.vllm_sync_fp4:
-            raise ValueError(
-                "--qat fp4_fake_quantize requires --vllm_sync_fp4 to be set (mxfp4 or nvfp4) "
-                "so the FP4 format for fake quantization is known."
-            )
-        args.qat_fp4_format = args.vllm_sync_fp4
-        if args.qat_fp4_format == "mxfp4" and not args.mxfp4_dequantize:
-            raise ValueError(
-                "--qat fp4_fake_quantize with mxfp4 requires --mxfp4_dequantize. The model must be "
-                "loaded with Mxfp4Config(dequantize=True) so expert weights are in bf16."
-            )
-    else:
-        args.qat_fp4_format = None
+    # Build and validate FP4 configuration
+    args.fp4_config = FP4Config.from_args(args)
+    args.fp4_config.validate()
 
     # Validate arguments
     if args.eps_clip_low_high is None:

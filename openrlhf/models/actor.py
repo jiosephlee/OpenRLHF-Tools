@@ -16,6 +16,7 @@ except ImportError:
     Mxfp4Config = None
 from transformers.integrations.deepspeed import HfDeepSpeedConfig
 
+from openrlhf.utils.fp4_config import FP4Config
 from .ring_attn_utils import gather_and_pad_tensor, unpad_and_slice_tensor
 from .utils import compute_entropy, log_probs_from_logits
 
@@ -60,8 +61,7 @@ class Actor(nn.Module):
         temperature=1.0,
         use_liger_kernel=False,
         mxfp4_dequantize=False,
-        qat=None,
-        qat_fp4_format=None,
+        fp4_config: Optional["FP4Config"] = None,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -168,28 +168,24 @@ class Actor(nn.Module):
                                 module = module.to(torch.bfloat16)
 
             # QAT: fake-quantize MoE expert weights during training forward passes (STE)
-            if qat == "fp4_fake_quantize":
-                if qat_fp4_format == "mxfp4":
-                    assert mxfp4_dequantize, (
+            if fp4_config is not None and fp4_config.qat_enabled:
+                if fp4_config.sync_format == "mxfp4":
+                    assert fp4_config.dequantize_base, (
                         "MXFP4 QAT requires --mxfp4_dequantize. The model must be loaded "
                         "with Mxfp4Config(dequantize=True) so expert weights are in bf16."
                     )
                     from openrlhf.utils.mxfp4_quantize import register_mxfp4_qat_parametrization
-                    # Update internal usage of mxfp4 parametrization to use the optimal router?
-                    # The parametrization currently calls fake_quantize_mxfp4 directly in mxfp4_quantize.py.
-                    # As requested by the user, we swap out the usage of `fake_quantize_mxfp4` directly if possible.
-                    # It's cleaner to patch `fake_quantize_mxfp4` dynamically or just continue using the router in places
-                    # like `vllm_worker_wrap.py`. No change strictly needed here as `register_*_qat_parametrization` sets it up.
+
                     n = register_mxfp4_qat_parametrization(self.model)
                     logger.info(f"[QAT fp4_fake_quantize/mxfp4] Applied to {n} expert weight layers in actor.")
-                elif qat_fp4_format == "nvfp4":
+                elif fp4_config.sync_format == "nvfp4":
                     from openrlhf.utils.nvfp4_quantize import register_nvfp4_qat_parametrization
 
                     n = register_nvfp4_qat_parametrization(self.model)
                     logger.info(f"[QAT fp4_fake_quantize/nvfp4] Applied to {n} expert weight layers in actor.")
                 else:
                     raise ValueError(
-                        f"--qat fp4_fake_quantize requires --vllm_sync_fp4 (mxfp4 or nvfp4), got '{qat_fp4_format}'"
+                        f"--qat fp4_fake_quantize requires --vllm_sync_fp4 (mxfp4 or nvfp4), got '{fp4_config.sync_format}'"
                     )
 
             # MoE - balancing loss

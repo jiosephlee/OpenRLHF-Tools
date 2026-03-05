@@ -204,7 +204,7 @@ GRPO Training Loop
 - `--erl_memory`: Enable cross-episode reflection memory (off by default)
 - `--erl_max_memory <int>`: Max reflections per task in memory (default: 5)
 - `--erl_max_reflection_tokens <int>`: Max tokens for reflection generation (default: 512)
-- `--erl_distill_coef <float>`: Distillation loss coefficient for successful retries (0=disabled)
+- `--distill_coef <float>`: Distillation loss coefficient for tagged experiences (generic, 0=disabled)
 
 **Environment Variables:**
 Set automatically by vllm_engine.py:

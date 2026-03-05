@@ -522,9 +522,11 @@ class ActorPPOTrainer(ABC):
         # every key.  Tool counts are only consumed during eval, not training.
         # NOTE: parse_method__* keys are also sparse but are normalized
         # across ranks via all_gather_object in ppo_train() before all_reduce.
+        # Keys that are internal signals, not metrics to log.
+        _SKIP_INFO_KEYS = {"distill_mask"}
         for k in sorted(experience.info.keys()):
             v = experience.info[k]
-            if k.startswith("tool_count__"):
+            if k in _SKIP_INFO_KEYS or k.startswith("tool_count__"):
                 continue
             if isinstance(v, list):
                 status[k] = torch.tensor(v, dtype=torch.float).mean().item()

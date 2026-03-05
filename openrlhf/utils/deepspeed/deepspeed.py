@@ -500,8 +500,13 @@ class DeepspeedStrategy(ABC):
             if dist.is_initialized():
                 gathered_keys = [None] * self.world_size
                 dist.all_gather_object(gathered_keys, keys)
-                if any(peer_keys != keys for peer_keys in gathered_keys):
-                    raise RuntimeError(f"all_reduce dict key mismatch across ranks: {gathered_keys}")
+                # Union all keys across ranks; zero-fill missing ones so
+                # every rank participates in the same set of all_reduce calls.
+                all_keys = sorted(set().union(*gathered_keys))
+                for missing_k in all_keys:
+                    if missing_k not in data:
+                        data[missing_k] = 0.0
+                keys = all_keys
             for k in keys:
                 v = data[k]
                 ret[k] = self.all_reduce(v, op)

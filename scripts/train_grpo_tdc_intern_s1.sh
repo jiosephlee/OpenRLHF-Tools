@@ -226,7 +226,7 @@ DYNAMIC_FILTERING_REWARD_RANGE="0 1"
 
 WANDB_PROJECT="${WANDB_PROJECT:-openrlhf_tdc_grpo}"
 TEMPERATURE=1.0
-TOP_P=0.85
+TOP_P=0.95
 
 ### ENVIRONMENT VARIABLES ###
 export RAY_TMPDIR="${RAY_TMPDIR:-/tmp/ray_${USER}}"
@@ -387,7 +387,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --actor_num_gpus_per_node $ACTOR_GPUS \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size 1 \
-    --kv_cache_dtype fp8 \
     --max_num_batched_tokens $VLLM_MAX_NUM_BATCHED_TOKENS \
     --vllm_gpu_memory_utilization $VLLM_GPU_MEM_UTIL \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \

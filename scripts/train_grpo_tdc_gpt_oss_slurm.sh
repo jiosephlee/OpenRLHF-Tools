@@ -22,7 +22,7 @@
 #   QUANT_METHOD=nvfp4 sbatch scripts/train_grpo_tdc_gpt_oss_slurm.sh
 #
 #   # Unsloth BF16:
-#   LEARNING_RATE=1e-6 MULTI_STAGE_DISPATCH=1 TRAIN_MAX_TOKENS_PER_GPU=36864 VLLM_GPU_MEM_UTIL=0.715 DEQUANT=unsloth sbatch train_grpo_tdc_gpt_oss_slurm.sh
+#   LEARNING_RATE=1e-6 MULTI_STAGE_DISPATCH=1 VLLM_GPU_MEM_UTIL=0.715 DEQUANT=unsloth sbatch train_grpo_tdc_gpt_oss_slurm.sh
 #
 #   # Distributed:
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 sbatch scripts/train_grpo_tdc_gpt_oss_slurm.sh
@@ -321,7 +321,7 @@ run_task() {
 
     WANDB_PROJECT="${WANDB_PROJECT:-openrlhf_tdc_grpo}"
     TEMPERATURE=1.0
-    TOP_P=0.85
+    TOP_P=0.95
 
     ### RAY TMPDIR ###
     export RAY_TMPDIR="/tmp/ray_${USER}/${SLURM_JOB_ID}"

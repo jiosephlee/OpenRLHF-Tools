@@ -76,8 +76,11 @@ class _VLLMStatsPoller:
         real stats have been recorded yet (step_counter == 0).
         """
         try:
+            # Handle AsyncLLMEngine wrapper by getting the inner engine
+            engine_core = getattr(self._llm, "engine", self._llm)
+
             # Primary: logger_manager → stat_loggers → last_scheduler_stats
-            lm = getattr(self._llm, "logger_manager", None)
+            lm = getattr(engine_core, "logger_manager", None)
             if lm is not None:
                 for sl in getattr(lm, "stat_loggers", []):
                     stats = getattr(sl, "last_scheduler_stats", None)
@@ -85,7 +88,7 @@ class _VLLMStatsPoller:
                         return stats
 
             # Fallback: older vLLM versions that store on output_processor.
-            op = getattr(self._llm, "output_processor", None)
+            op = getattr(engine_core, "output_processor", None)
             if op is not None:
                 stats = getattr(op, "scheduler_stats", None)
                 if stats is not None:

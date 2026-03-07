@@ -261,7 +261,7 @@ run_task() {
 
     WANDB_PROJECT="${WANDB_PROJECT:-openrlhf_tdc_grpo}"
     TEMPERATURE=1.0
-    TOP_P=0.85
+    TOP_P=0.95
 
     ### RAY TMPDIR ###
     export RAY_TMPDIR="/tmp/ray_${USER}/${SLURM_JOB_ID}"

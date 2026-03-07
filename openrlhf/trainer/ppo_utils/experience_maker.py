@@ -631,7 +631,7 @@ class SamplesGenerator:
 
         # Put engines back to sleep when enabled.
         if self.args.vllm_enable_sleep:
-            batch_vllm_engine_call(self.vllm_engines, "sleep")
+            batch_vllm_engine_call(self.vllm_engines, "sleep", level=getattr(self.args, "vllm_sleep_level", 1))
 
         self._eval_dataloader_iter = None
 
@@ -733,7 +733,7 @@ class SamplesGenerator:
 
         # Put engines back to sleep when enabled.
         if self.args.vllm_enable_sleep:
-            batch_vllm_engine_call(self.vllm_engines, "sleep")
+            batch_vllm_engine_call(self.vllm_engines, "sleep", level=getattr(self.args, "vllm_sleep_level", 1))
 
         filter_pass_rate = None
         if self.args.dynamic_filtering and prompts_consumed:

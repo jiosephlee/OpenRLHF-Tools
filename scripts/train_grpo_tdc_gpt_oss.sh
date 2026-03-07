@@ -187,7 +187,8 @@ fi
 
 ### MODE FLAGS ###
 if [ "$MODE" = "colocated" ]; then
-    MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep --$REDUCE_OPTIMIZER"
+    VLLM_SLEEP_LEVEL="${VLLM_SLEEP_LEVEL:-2}"
+    MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --vllm_sleep_level $VLLM_SLEEP_LEVEL --deepspeed_enable_sleep --$REDUCE_OPTIMIZER"
 else
     MODE_FLAGS="--async_train --async_queue_size 1 --$REDUCE_OPTIMIZER"
 fi

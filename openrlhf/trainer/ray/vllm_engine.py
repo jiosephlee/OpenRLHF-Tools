@@ -492,6 +492,7 @@ def create_vllm_engines(
     shared_pg=None,
     gpu_memory_utilization=None,
     vllm_enable_sleep=False,
+    vllm_sleep_level=1,
     logprobs_mode=None,
     agent_func_path: Optional[str] = None,
     remote_rm_url: Optional[str] = None,
@@ -633,7 +634,7 @@ def create_vllm_engines(
         ray.get(engine.set_engine_id.remote(i))
 
     if vllm_enable_sleep:
-        batch_vllm_engine_call(vllm_engines, "sleep")
+        batch_vllm_engine_call(vllm_engines, "sleep", level=vllm_sleep_level)
 
     return vllm_engines
 

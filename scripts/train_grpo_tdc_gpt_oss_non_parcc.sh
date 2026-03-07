@@ -23,7 +23,7 @@
 #   TRAIN_MAX_TOKENS_PER_GPU=1024 QUANT_METHOD=nvfp4 bash train_grpo_tdc_gpt_oss.sh
 #
 #   # Unsloth BF16:
-#   MULTI_STAGE_DISPATCH=1 TRAIN_MAX_TOKENS_PER_GPU=8192 DEQUANT=unsloth bash train_grpo_tdc_gpt_oss.sh
+#   DEQUANT=unsloth bash train_grpo_tdc_gpt_oss.sh
 #
 #   # Distributed:
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 bash scripts/train_grpo_tdc_gpt_oss.sh

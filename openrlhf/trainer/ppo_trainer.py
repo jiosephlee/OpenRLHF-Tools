@@ -6,7 +6,7 @@ import time
 from abc import ABC
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import ray
 import torch

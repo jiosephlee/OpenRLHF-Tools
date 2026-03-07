@@ -1,43 +1,29 @@
 #!/bin/bash
 #
-# Unified interactive script for GPT-OSS GRPO training.
-#
-# Supports all quantization modes via env vars:
-#   QUANT_METHOD=mxfp4 (default) — MXFP4 QAT + FlashInfer MoE kernel
-#   QUANT_METHOD=nvfp4            — NVFP4 QAT + NVIDIA kernel backend
-#   DEQUANT=unsloth               — Load pre-converted BF16 model (no quant flags)
-#
-# When DEQUANT is set, QUANT_METHOD is ignored.
+# Intern-S1 GRPO training — unified interactive script.
 #
 # Supports both colocated and distributed modes via MODE env var.
 #
-# Uses GPT-OSS Harmony tool-calling format:
-#   <|start|>assistant to=functions.<name><|channel|>commentary json<|message|>...
+# Uses the Intern-S1 JSON tool-calling format:
+#   <|action_start|><|plugin|>{"name": "...", "parameters": {...}}<|action_end|>
 #
 # Usage:
-#   VLLM_GPU_MEM_UTIL=0.6
-#   # MXFP4 QAT (default):
-#   TRAIN_MAX_TOKENS_PER_GPU=8192 QAT=fp4_fake_quantize bash train_grpo_tdc_gpt_oss.sh
+#   # Colocated (default — actor and vLLM share GPUs via sleep mode):
+#   SMART_REPLAY=1 MAX_REPLAY_ROUNDS=3 REDUCE_OPTIMIZER=adam_8bit bash train_grpo_tdc_intern_s1.sh
 #
-#   # NVFP4 QAT:
-#   TRAIN_MAX_TOKENS_PER_GPU=1024 QUANT_METHOD=nvfp4 bash train_grpo_tdc_gpt_oss.sh
+#   # Distributed (actor and vLLM on separate GPUs):
+#   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 bash train_grpo_tdc_intern_s1.sh
 #
-#   # Unsloth BF16:
-#   MULTI_STAGE_DISPATCH=1 TRAIN_MAX_TOKENS_PER_GPU=8192 DEQUANT=unsloth bash train_grpo_tdc_gpt_oss.sh
+#   # Distributed with extra flags:
+#   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 SMART_REPLAY=1 \
+#     EXTRA_ARGS="--skip_eval_step_zero" bash scripts/train_grpo_tdc_intern_s1.sh
 #
-#   # Distributed:
-#   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 bash scripts/train_grpo_tdc_gpt_oss.sh
-#       
 # Feature flags (all env-configurable):
 #   MODE=colocated|distributed           # Default: colocated
-#   QUANT_METHOD=mxfp4|nvfp4             # FP4 format (default: mxfp4, ignored when DEQUANT set)
-#   DEQUANT=unsloth                       # Skip quantization, run in BF16
 #   EFFECTIVE_ROLLOUT_BATCH_SIZE=8       # Rollout batch size in distributed/async mode
 #   EFFECTIVE_MINI_GRADIENT_STEPS=2      # Mini gradient steps in distributed/async mode
 #   ASYNC_ADVANTAGE=4                    # Scale factor: colocated uses ASYNC_ADVANTAGE * EFFECTIVE_* for both
 #                                        # ROLLOUT and MINI, keeping ROLLOUT/MINI ratio constant across modes.
-#                                        # Reflects that colocated is synchronous and can afford more rollouts
-#                                        # before each update without the 1-step off-policy lag of async.
 #   COLO_EVAL_STEPS=32                   # Eval frequency (global steps) for colocated; distributed scales by ASYNC_ADVANTAGE
 #   TOOL_VERSION=v4                      # Tool schema version (default: v4)
 #   SMART_REPLAY=1                       # Enable smart replay with max_replay_rounds=2
@@ -48,72 +34,18 @@
 #   TIS_TYPE=tis                         # TIS variant: tis (default), icepop, seq-mask-tis
 #   TIS_THRESHOLDS="0.5 5.0"            # Low and high clamp thresholds (default: 0.5 5.0)
 #   GSPO=1                               # Use GSPO loss (sequence-level IS ratio) instead of PPO
-#   QAT=fp4_fake_quantize                 # QAT method (default: off). fp4_fake_quantize derives format from QUANT_METHOD
-#   KV_CACHE_DTYPE=fp8                   # KV cache dtype for vLLM (default: off, i.e. vLLM default auto)
 #   REDUCE_OPTIMIZER=adam_offload        # Optimizer: adam_offload (default) or adam_8bit
 #   MAX_EPOCHS=2                         # Training epochs (default: 1)
 #   EXTRA_ARGS="..."                     # Additional CLI flags
 #
-### QUANTIZATION MODE RESOLUTION ###
-QUANT_METHOD="${QUANT_METHOD:-mxfp4}"
-DEQUANT="${DEQUANT:-}"
 
-if [ -n "$DEQUANT" ]; then
-    case "$DEQUANT" in
-        unsloth)
-            PRETRAIN_PATH="${PRETRAIN_PATH:-unsloth/gpt-oss-20b-BF16}"
-            QUANT_FLAGS=""
-            QUANT_LABEL="dequant-unsloth"
-            ;;
-        *)
-            echo "Error: DEQUANT must be 'unsloth', got '$DEQUANT'" >&2
-            exit 1
-            ;;
-    esac
-    CUDA_MODULE="${CUDA_MODULE:-cuda/13.1.0}"
-    CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern}"
-else
-    case "$QUANT_METHOD" in
-        mxfp4)
-            PRETRAIN_PATH="${PRETRAIN_PATH:-openai/gpt-oss-20b}"
-            QUANT_FLAGS="--mxfp4_dequantize --vllm_sync_fp4 mxfp4"
-            # export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
-            QUANT_LABEL="mxfp4"
-            ;;
-        nvfp4)
-            PRETRAIN_PATH="${PRETRAIN_PATH:-jiosephlee/gpt-oss-20B-NVFP4-calibrated}"
-            NVFP4_BASE="${NVFP4_BASE:-unsloth/gpt-oss-20b-BF16}"
-            QUANT_FLAGS="--vllm_sync_fp4 nvfp4 --nvfp4_dequantize_base_model $NVFP4_BASE"
-            QUANT_LABEL="nvfp4"
-            # FlashInfer CUTEDSL/CUTLASS hang for hidden_size=2880 (not tile-aligned).
-            # Marlin crashes (group_size=16 unsupported).
-            # Use VLLM_CUTLASS with calibrated activation scales (w13/w2_input_scale).
-            # Run scripts/calibrate_nvfp4_activations.py to regenerate calibrated checkpoint.
-            export VLLM_USE_FLASHINFER_MOE_FP4=0
-            ;;
-        *)
-            echo "Error: QUANT_METHOD must be 'mxfp4' or 'nvfp4', got '$QUANT_METHOD'" >&2
-            exit 1
-            ;;
-    esac
-    CUDA_MODULE="${CUDA_MODULE:-cuda/12.8.1}"
-    CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/openrlhf}"
-fi
-
-### ENVIRONMENT SETUP ###
-# module load "$CUDA_MODULE"
-# eval "$(conda shell.bash hook)"
-# conda activate "$CONDA_ENV"
 set -euo pipefail
-export DS_SKIP_CUDA_CHECK=1
-
-# Prevent corrupted torch inductor cache from crashing vLLM compilation.
-rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ ~/.cache/vllm/torch_compile_cache/ 2>/dev/null || true
 
 ### ARGS ###
-LEARNING_RATE="${LEARNING_RATE:-1e-6}"
+PRETRAIN_PATH=${1:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}
+LEARNING_RATE=${2:-"1e-6"}
 NUM_GPUS=8
-DEBUG_TRACES="${DEBUG_TRACES:-0}"
+DEBUG_TRACES=${3:-"0"}
 
 ### FEATURE FLAGS ###
 MODE="${MODE:-colocated}"
@@ -130,8 +62,6 @@ TIS="${TIS:-0}"
 TIS_TYPE="${TIS_TYPE:-tis}"
 TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
 GSPO="${GSPO:-0}"
-QAT="${QAT:-}"
-KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-}"
 REDUCE_OPTIMIZER="${REDUCE_OPTIMIZER:-adam_offload}"
 MAX_EPOCHS="${MAX_EPOCHS:-1}"
 VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-256}"
@@ -142,10 +72,10 @@ VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE="${VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE:-}"
 ### UNIFIED CONSTANTS ###
 AGENT_MAX_STEPS=30
 ZERO_STAGE=2
-PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-8192}"
+PROMPT_MAX_LEN=12288 # Any responses longer than this will be truncated.
 N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-8}"
-TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-4096}"
-ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')}"
+TRAIN_MAX_TOKENS_PER_GPU=36864 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
+ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')
 
 COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-32}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
 
@@ -155,7 +85,7 @@ if [ "$MODE" = "colocated" ]; then
     VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
     ROLLOUT_BATCH_SIZE=$(( EFFECTIVE_ROLLOUT_BATCH_SIZE * ASYNC_ADVANTAGE ))
     MINI_GRADIENT_STEPS=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
-    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.7}"
+    VLLM_GPU_MEM_UTIL=0.83
     VLLM_SYNC_BACKEND=nccl
     EVAL_STEPS="${EVAL_STEPS:-$COLO_EVAL_STEPS}"
 elif [ "$MODE" = "distributed" ]; then
@@ -163,9 +93,9 @@ elif [ "$MODE" = "distributed" ]; then
     VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:?"MODE=distributed requires VLLM_NUM_ENGINES"}"
     ROLLOUT_BATCH_SIZE=$EFFECTIVE_ROLLOUT_BATCH_SIZE  # Distributed uses the effective value directly; smaller than colocated to be more on-policy (only 1-step async lag).
     MINI_GRADIENT_STEPS=$EFFECTIVE_MINI_GRADIENT_STEPS  # Fewer mini gradient steps to match; ROLLOUT/MINI ratio is identical to colocated, same total gradient steps.
-    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.96}"
+    VLLM_GPU_MEM_UTIL=0.975
     VLLM_SYNC_BACKEND=gloo
-    EVAL_STEPS="${EVAL_STEPS:-$(( COLO_EVAL_STEPS * ASYNC_ADVANTAGE ))}" # Distributed takes ASYNC_ADVANTAGE more global steps per colocated step, so scale eval frequency accordingly.
+    EVAL_STEPS="${EVAL_STEPS:-$(( COLO_EVAL_STEPS * ASYNC_ADVANTAGE ))}"  # Distributed takes ASYNC_ADVANTAGE more global steps per colocated step, so scale eval frequency accordingly.
 else
     echo "Error: MODE must be 'colocated' or 'distributed', got '$MODE'" >&2
     exit 1
@@ -185,6 +115,12 @@ if [ "$MODE" = "distributed" ]; then
     LAYOUT_TAG="${ACTOR_GPUS}a${VLLM_GPUS}v"
 fi
 
+### AUTOTP (when distributed and ACTOR_GPUS > 1) ###
+AUTOTP_FLAGS=""
+if [ "$MODE" = "distributed" ] && [ "$ACTOR_GPUS" -gt 1 ]; then
+    AUTOTP_FLAGS="--ring_attn_size 1 --ring_head_stride 8 --ds_tensor_parallel_size $ACTOR_GPUS"
+fi
+
 ### MODE FLAGS ###
 if [ "$MODE" = "colocated" ]; then
     MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep --$REDUCE_OPTIMIZER"
@@ -197,7 +133,8 @@ WARMUP_STEPS=10
 WARM_STEPS_MULTIPLIER=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
 
 ### MULTI-TASK ###
-TASK_NAMES=(${TASK_NAMES:-BBB_Martins})
+#TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
+TASK_NAMES=(BBB_Martins)
 TASK_LABEL="Base"
 
 ### W&B ###
@@ -214,10 +151,10 @@ done
 if [ ! -d "$PROJECT_ROOT/openrlhf" ]; then
     echo "Error: Cannot find project root (no 'openrlhf' directory found)" >&2
     exit 1
-fi 
+fi
 
 ### DATA ###
-DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_gpt_oss"
+DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format"
 mkdir -p "$PROJECT_ROOT/logs"
 
 TRAIN_PARTS=()
@@ -236,7 +173,7 @@ IFS=,; TRAIN_DATA="${TRAIN_PARTS[*]}"; unset IFS
 ### RUN CONFIG ###
 N_TASKS=${#TASK_NAMES[@]}
 DATE_TAG=$(date +%m%d_%H%M)
-CHAT_PROTOCOL="gpt_oss"
+CHAT_PROTOCOL="intern_s1"
 
 # Build suffix tags for active features
 SUFFIX=""
@@ -245,16 +182,14 @@ SUFFIX=""
 [ "$TIS" = "1" ] && SUFFIX+="-tis"
 
 if [ "$MODE" = "colocated" ]; then
-    MODE_TAG="colo"
-    RUN_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
-    WANDB_GROUP="TDC-GPTOss-${QUANT_LABEL}-colo-$TASK_LABEL"
+    RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}${SUFFIX}-${DATE_TAG}"
+    WANDB_GROUP="TDC-InternS1-colo-$TASK_LABEL"
 else
-    MODE_TAG="dist-${LAYOUT_TAG}"
-    RUN_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
-    WANDB_GROUP="TDC-GPTOss-${QUANT_LABEL}-dist-${LAYOUT_TAG}-$TASK_LABEL"
+    RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}${SUFFIX}-dist-${LAYOUT_TAG}-${DATE_TAG}"
+    WANDB_GROUP="TDC-InternS1-dist-${LAYOUT_TAG}-$TASK_LABEL"
 fi
 RUN_ID="${RUN_NAME}"
-HUB_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
+HUB_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
 RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}"
 mkdir -p "$RUNS_DIR"
 LOCAL_SAVE_DIR="${LOCAL_SAVE_DIR:-/vast/projects/myatskar/design-documents/hf_home}"
@@ -262,7 +197,7 @@ SAVE_PATH="$LOCAL_SAVE_DIR/$RUN_NAME"
 HUB_REPO_ID="jiosephlee/${HUB_NAME}"
 
 ### TOOL-CALLING CONFIG ###
-AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
+AGENT_FUNC_PATH="${AGENT_FUNC_PATH:-$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py}"
 
 ### GRPO CONFIG ###
 ADVANTAGE_ESTIMATOR="group_norm"
@@ -295,7 +230,7 @@ export OPENRLHF_DEBUG_NAN_GUARD=0
 export RAY_NODE_IP_ADDRESS=$(hostname -I | awk '{print $1}')
 ulimit -n 65535 2>/dev/null || true
 
-# Use the conda env's ray to avoid version mismatch
+# Use the conda env's ray to avoid version mismatch with the training script's ray
 CONDA_RAY="$(which python) -m ray.scripts.scripts"
 echo "Using ray from: $(which python)"
 
@@ -329,13 +264,11 @@ echo "Ray is ready."
 
 ### PRINT CONFIG ###
 echo "========================================"
-echo "TDC GRPO Training — GPT-OSS (MODE=$MODE, QUANT=$QUANT_LABEL)"
+echo "TDC GRPO Training — Intern-S1-mini (MODE=$MODE)"
 echo "========================================"
 echo "Tasks: ${TASK_NAMES[*]}"
 echo "Model: $PRETRAIN_PATH"
 echo "Chat Protocol: $CHAT_PROTOCOL"
-echo "Quantization: $QUANT_LABEL"
-echo "Quant Flags: $QUANT_FLAGS"
 echo "Learning Rate: $LEARNING_RATE"
 echo "Run ID: $RUN_ID"
 echo "----------------------------------------"
@@ -351,8 +284,9 @@ echo "ROLLOUT_BATCH_SIZE: $ROLLOUT_BATCH_SIZE"
 echo "TRAIN_BATCH_SIZE: $TRAIN_BATCH_SIZE"
 echo "VLLM_NUM_ENGINES: $VLLM_NUM_ENGINES"
 echo "EVAL_STEPS: $EVAL_STEPS"
-echo "TRAIN_MAX_TOKENS_PER_GPU: $TRAIN_MAX_TOKENS_PER_GPU"
-echo "ROLLOUT_MAX_TOKENS_PER_GPU: $ROLLOUT_MAX_TOKENS_PER_GPU"
+if [ -n "$AUTOTP_FLAGS" ]; then
+    echo "AutoTP: $AUTOTP_FLAGS"
+fi
 echo "----------------------------------------"
 echo "Agent Max Steps: $AGENT_MAX_STEPS"
 echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
@@ -366,7 +300,6 @@ echo "Multi Stage Dispatch: $MULTI_STAGE_DISPATCH"
 echo "Liger GRPO Loss: $LIGER_GRPO_LOSS"
 echo "TIS: $TIS (type=$TIS_TYPE, thresholds=$TIS_THRESHOLDS)"
 echo "GSPO: $GSPO"
-echo "KV Cache Dtype: ${KV_CACHE_DTYPE:-auto}"
 echo "VLLM_MAX_NUM_SEQS: $VLLM_MAX_NUM_SEQS"
 echo "VLLM_MAX_NUM_BATCHED_TOKENS: $VLLM_MAX_NUM_BATCHED_TOKENS"
 echo "Tool Version: $TOOL_VERSION"
@@ -417,18 +350,12 @@ fi
 if [ "$GSPO" = "1" ]; then
     OPTIONAL_FLAGS+=" --policy_loss_type gspo"
 fi
-if [ -n "$QAT" ]; then
-    OPTIONAL_FLAGS+=" --qat $QAT"
-fi
-if [ -n "$KV_CACHE_DTYPE" ]; then
-    OPTIONAL_FLAGS+=" --kv_cache_dtype $KV_CACHE_DTYPE"
-fi
 if [ -n "$VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE" ]; then
     OPTIONAL_FLAGS+=" --vllm_cudagraph_max_capture_size $VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE"
 fi
 
 ### TRAINING ###
-RUN_LOG="$RUNS_DIR/run_${QUANT_LABEL}.log"
+RUN_LOG="$RUNS_DIR/run.log"
 echo "Logging to: $RUN_LOG"
 python -m openrlhf.cli.train_ppo_ray \
     --pretrain "$PRETRAIN_PATH" \
@@ -440,19 +367,16 @@ python -m openrlhf.cli.train_ppo_ray \
     --actor_num_gpus_per_node $ACTOR_GPUS \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size 1 \
-    --optimal_flags_b200_gpt_oss \
     --max_num_batched_tokens $VLLM_MAX_NUM_BATCHED_TOKENS \
     --vllm_gpu_memory_utilization $VLLM_GPU_MEM_UTIL \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \
-    --eps_clip_low_high 0.3 0.372 \
+    --eps_clip_low_high 0.2 0.282 \
     --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
     --save_hf_ckpt \
     --disable_ds_ckpt \
     --logging_steps 1 \
-    --micro_train_batch_size 1 \
-    --micro_rollout_batch_size 2 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $ROLLOUT_BATCH_SIZE \
@@ -475,16 +399,15 @@ python -m openrlhf.cli.train_ppo_ray \
     --tdc_tools "$TDC_TOOLS_JSON" \
     --tool_version "$TOOL_VERSION" \
     --gradient_checkpointing \
+    --packing_samples \
     --vllm_sync_backend $VLLM_SYNC_BACKEND \
     --top_p $TOP_P \
     --temperature $TEMPERATURE \
     --agent_func_path "$AGENT_FUNC_PATH" \
     --agent_max_steps $AGENT_MAX_STEPS \
-    --vllm_stop_strings "<|return|>" "<|call|>" \
+    --vllm_stop_strings "<|action_end|>" "<|im_end|>" \
     --vllm_max_num_seqs $VLLM_MAX_NUM_SEQS \
     --chat_protocol "$CHAT_PROTOCOL" \
-    --lora_r 64 \
-    --lora_alpha 64 \
     --use_wandb 1 \
     --wandb_project "$WANDB_PROJECT" \
     --wandb_group "$WANDB_GROUP" \
@@ -492,16 +415,19 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_path "$SAVE_PATH" \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
+    --use_liger_kernel \
+    --use_dynamic_batch \
+    --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
+    --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \
     --constant_lr_with_warm_up \
     --warmup_steps $WARMUP_STEPS \
     --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
-    --attn_implementation "flex_attention" \
-    $QUANT_FLAGS \
     $MODE_FLAGS \
+    $AUTOTP_FLAGS \
     $OPTIONAL_FLAGS \
     $EXTRA_ARGS \
     2>&1 | tee "$RUN_LOG"
 
 ### CLEANUP ###
 echo "Training complete! Stopping Ray..."
-$CONDA_RAY stop --force || true
+ray stop --force || true

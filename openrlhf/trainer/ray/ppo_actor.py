@@ -336,10 +336,10 @@ class ActorPPOTrainer(ABC):
                 pbar.set_postfix(short_status)
 
         if status_list:
-            status_mean = status_list[0]
+            status_mean = status_list[0].copy()
             for m in status_list[1:]:
                 for k, v in m.items():
-                    status_mean[k] += v
+                    status_mean[k] = status_mean.get(k, 0.0) + v
             for k in status_mean.keys():
                 status_mean[k] /= len(status_list)
         return status_mean
@@ -554,7 +554,14 @@ class ActorPPOTrainer(ABC):
 
         torch.cuda.empty_cache()
         model = self.actor.model.module
+        
+        import time
+        build_start_time = time.time()
         broadcast_params = _build_vllm_sync_params(model, self.strategy.args.zero_stage)
+        build_time = time.time() - build_start_time
+        if getattr(self.strategy.args, "lora_rank", 0) > 0:
+            logger.info(f"[Timing] LoRA weight merge and sync param collection took {build_time:.2f}s")
+            
         count, num_params = 0, len(broadcast_params)
 
         def _broadcast_param(param, count, num_params):

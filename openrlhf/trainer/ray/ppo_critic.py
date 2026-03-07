@@ -99,10 +99,10 @@ class CriticPPOTrainer(ABC):
                 pbar.set_postfix(status)
 
         if status_list:
-            status_mean = status_list[0]
+            status_mean = status_list[0].copy()
             for m in status_list[1:]:
                 for k, v in m.items():
-                    status_mean[k] += v
+                    status_mean[k] = status_mean.get(k, 0.0) + v
             for k in status_mean.keys():
                 status_mean[k] /= len(status_list)
         return status_mean

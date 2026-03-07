@@ -427,8 +427,18 @@ class BasePPOTrainer(ABC):
         for sample in rollout_samples:
             sample.info = {k: v for k, v in sample.info.items() if not k.startswith("tool_count__")}
 
+
+        ###### Forward Pass For Initial Log Probs ######
+        forward_start_time = time.time()
+    
         # Turn raw rollouts into PPO-ready trajectories with rewards.
         experiences = self.experience_maker.make_experience_batch(rollout_samples)
+
+        time_forward_pass = time.time() - forward_start_time
+        status = {}
+        status["time/forward_pass"] = time_forward_pass
+        ###### End of Forward Pass ######
+        
 
         # Periodic lightweight trace for rollout quality without full text spam.
         sample0 = [
@@ -448,7 +458,7 @@ class BasePPOTrainer(ABC):
         # Balance experiences across DP ranks if needed.
         if self.args.use_dynamic_batch:
             experiences = balance_experiences(experiences, self.args)
-
+        
         # Push experiences to actor (and critic) shards before PPO.
         refs = self.actor_model_group.async_run_method_batch(method_name="append", experience=experiences)
         if self.critic_model_group is not None:
@@ -458,12 +468,27 @@ class BasePPOTrainer(ABC):
         # Free local experience tensors — data now lives in actor replay buffers.
         del experiences, rollout_samples, refs
 
-        # Perform PPO optimization for actor/critic and gather metrics.
-        status = self.ppo_train(global_step)
+        ###### Beginning of Backwards Pass ######
 
+        # Perform PPO optimization for actor/critic and gather metrics.
+        backward_start_time = time.time()
+        ppo_status = self.ppo_train(global_step)
+        time_backward_pass = time.time() - backward_start_time
+        status.update(ppo_status)
+        status["time/backward_pass"] = time_backward_pass
+
+        ###### End of Backwards Pass ######
+
+
+        ###### Sync Weights ######
         # Sync weights to vLLM.
+        sync_start_time = time.time()
         if self.vllm_engines is not None:
             self.broadcast_to_vllm()
+        time_sync_weights = time.time() - sync_start_time
+        status["time/sync_weights"] = time_sync_weights
+
+        ###### End of Sync Weights ######
 
         # Refresh KL controller with the latest measurement.
         if "kl" in status:
@@ -835,36 +860,43 @@ class PPOTrainer(BasePPOTrainer):
             os.makedirs(stats_dir, exist_ok=True)
         return stats_dir
 
-    def _write_training_timing(
+    def _write_run_timing(
         self,
         global_step: int,
         rollout_wall_sec: float,
+        gap_rollout_to_train: float,
         train_wall_sec: float,
-        total_step_wall_sec: float,
-        vllm_stats: dict,
+        time_forward_pass: float,
+        time_backward_pass: float,
+        time_sync_weights: float,
+        gap_train_to_rollout: float,
+        eval_wall_sec: Optional[float] = None,
     ):
-        """Append one line to training_timing.jsonl."""
+        """Append one line to run_timing.jsonl."""
         record = {
             "global_step": global_step,
             "timestamp": datetime.now().isoformat(),
             "rollout_wall_sec": round(rollout_wall_sec, 2),
+            "gap_rollout_to_train": round(gap_rollout_to_train, 2),
             "train_wall_sec": round(train_wall_sec, 2),
-            "total_step_wall_sec": round(total_step_wall_sec, 2),
-            "decode_tokens": vllm_stats.get("vllm_total_decode_tokens", 0),
-            "prefill_tokens": vllm_stats.get("vllm_total_prefill_tokens", 0),
-            "decode_tok_per_sec": vllm_stats.get("vllm_decode_tokens_per_sec", 0),
-            "prefill_tok_per_sec": vllm_stats.get("vllm_prefill_tokens_per_sec", 0),
+            "time_forward_pass": round(time_forward_pass, 2),
+            "time_backward_pass": round(time_backward_pass, 2),
+            "time_sync_weights": round(time_sync_weights, 2),
+            "gap_train_to_rollout": round(gap_train_to_rollout, 2),
         }
-        timing_path = os.path.join(self._get_vllm_stats_dir(), "training_timing.jsonl")
+        if eval_wall_sec is not None:
+             record["eval_wall_sec"] = round(eval_wall_sec, 2)
+             
+        timing_path = os.path.join(self._get_vllm_stats_dir(), "run_timing.jsonl")
         try:
             with open(timing_path, "a") as f:
                 f.write(json.dumps(record) + "\n")
         except Exception as e:
-            logger.warning(f"Failed to write training timing: {e}")
+            logger.warning(f"Failed to write run timing: {e}")
 
     def _write_run_summary(self, total_steps: int):
-        """Read training_timing.jsonl and write run_summary.json with averages."""
-        timing_path = os.path.join(self._get_vllm_stats_dir(), "training_timing.jsonl")
+        """Read run_timing.jsonl and write run_summary.json with averages."""
+        timing_path = os.path.join(self._get_vllm_stats_dir(), "run_timing.jsonl")
         if not os.path.exists(timing_path):
             return
 
@@ -880,18 +912,19 @@ class PPOTrainer(BasePPOTrainer):
                 return
 
             n = len(records)
-            total_wall = sum(r["total_step_wall_sec"] for r in records)
+            evals = [r["eval_wall_sec"] for r in records if "eval_wall_sec" in r]
             summary = {
                 "total_steps": n,
-                "total_wall_time_sec": round(total_wall, 1),
                 "avg_rollout_wall_sec": round(sum(r["rollout_wall_sec"] for r in records) / n, 2),
+                "avg_gap_rollout_to_train": round(sum(r["gap_rollout_to_train"] for r in records) / n, 2),
                 "avg_train_wall_sec": round(sum(r["train_wall_sec"] for r in records) / n, 2),
-                "avg_total_step_wall_sec": round(total_wall / n, 2),
-                "avg_decode_tok_per_sec": round(sum(r["decode_tok_per_sec"] for r in records) / n, 1),
-                "avg_prefill_tok_per_sec": round(sum(r["prefill_tok_per_sec"] for r in records) / n, 1),
-                "total_decode_tokens": sum(r["decode_tokens"] for r in records),
-                "total_prefill_tokens": sum(r["prefill_tokens"] for r in records),
+                "avg_time_forward_pass": round(sum(r["time_forward_pass"] for r in records) / n, 2),
+                "avg_time_backward_pass": round(sum(r["time_backward_pass"] for r in records) / n, 2),
+                "avg_time_sync_weights": round(sum(r["time_sync_weights"] for r in records) / n, 2),
+                "avg_gap_train_to_rollout": round(sum(r["gap_train_to_rollout"] for r in records) / n, 2),
             }
+            if evals:
+                 summary["avg_eval_wall_sec"] = round(sum(evals) / len(evals), 2)
 
             # Read rollout_stats.jsonl for KV cache averages if available.
             rollout_path = os.path.join(self._get_vllm_stats_dir(), "rollout_stats.jsonl")
@@ -906,9 +939,9 @@ class PPOTrainer(BasePPOTrainer):
                     kv_means = [r["kv_cache_usage_pct"]["mean"] for r in rollout_records if "kv_cache_usage_pct" in r]
                     running_means = [r["num_running_reqs"]["mean"] for r in rollout_records if "num_running_reqs" in r]
                     if kv_means:
-                        summary["avg_kv_cache_usage_pct"] = round(sum(kv_means) / len(kv_means), 4)
+                        summary["vllm_avg_kv_cache_usage_pct"] = round(sum(kv_means) / len(kv_means), 4)
                     if running_means:
-                        summary["avg_num_running_reqs"] = round(sum(running_means) / len(running_means), 2)
+                        summary["vllm_avg_num_running_reqs"] = round(sum(running_means) / len(running_means), 2)
 
             summary_path = os.path.join(self._get_vllm_stats_dir(), "run_summary.json")
             with open(summary_path, "w") as f:
@@ -1017,6 +1050,7 @@ class PPOTrainer(BasePPOTrainer):
             logger.warning(f"Failed to write scheduler timeseries plot: {e}")
 
     def fit(self) -> None:
+        init_start_time = time.time()
         checkpoint_states = self.init_checkpoint_states()
         # Restore step and start_epoch
         start_episode = checkpoint_states["episode"]
@@ -1037,7 +1071,14 @@ class PPOTrainer(BasePPOTrainer):
             eval_generate_kwargs = self.generate_kwargs.copy()
             eval_generate_kwargs["temperature"] = self.args.eval_temperature
             eval_generate_kwargs["n_samples_per_prompt"] = self.args.eval_n_samples_per_prompt
+            
+            init_wall_sec = time.time() - init_start_time
+            logger.info(f"[Timing] Initialization took {init_wall_sec:.2f}s")
+            
             self.evaluate(global_step, **eval_generate_kwargs)
+
+        last_train_end_time = time.time()
+        last_eval_wall_sec = 0.0
 
         # --skip_training: exit after step-0 eval without entering the training loop.
         if getattr(self.args, "skip_training", False):
@@ -1061,24 +1102,32 @@ class PPOTrainer(BasePPOTrainer):
                 initial=total_consumed_prompts % max(dataset_length, 1),
             )
             while True:
+                # Calculate gap from the end of the previous training loop (or initialization)
+                # to the start of this generation step, excluding any time spent evaluating.
+                rollout_start_time = time.time()
+                gap_train_to_rollout = rollout_start_time - last_train_end_time - last_eval_wall_sec
+                
                 # Draw one mini-batch of prompts; stop when loader is exhausted.
                 log_step_trace = global_step % 2 == 0
-                step_start_time = time.time()
                 rollout_samples, filter_pass_rate, prompts_consumed, is_exhausted = (
                     self.samples_generator.generate_samples(
                         global_step=global_step, log_step_trace=log_step_trace, **self.generate_kwargs
                     )
                 )
-                rollout_wall_sec = time.time() - step_start_time
+                rollout_wall_sec = time.time() - rollout_start_time
+                gap_rollout_to_train_start = time.time()
+                
                 total_consumed_prompts += prompts_consumed
                 if is_exhausted:
                     break
+
+                gap_rollout_to_train = time.time() - gap_rollout_to_train_start
 
                 # Run PPO update on this batch and bump the global step counter.
                 train_start_time = time.time()
                 status, global_step = self.train_step(rollout_samples, global_step)
                 train_wall_sec = time.time() - train_start_time
-                total_step_wall_sec = time.time() - step_start_time
+                last_train_end_time = time.time()
 
                 # Add generated samples to status dictionary
                 if self.args.dynamic_filtering:
@@ -1088,21 +1137,18 @@ class PPOTrainer(BasePPOTrainer):
 
                 # Merge vLLM stats into status for W&B logging.
                 vllm_stats = getattr(self.samples_generator, "last_vllm_stats", {})
+                
+                # Remove duplicated wall time from vllm_stats to rely purely on the trainer's measurement
+                vllm_stats.pop("vllm_generation_wall_time_sec", None)
+                
                 status.update(vllm_stats)
                 status["vllm_rollout_wall_sec"] = round(rollout_wall_sec, 2)
                 status["vllm_train_wall_sec"] = round(train_wall_sec, 2)
 
                 log_status = {k: v for k, v in status.items() if k not in ["generated_samples"]}
                 logger.info(f"✨ Global step {global_step}: {log_status}")
-
-                # Write training timing JSONL.
-                self._write_training_timing(
-                    global_step=global_step,
-                    rollout_wall_sec=rollout_wall_sec,
-                    train_wall_sec=train_wall_sec,
-                    total_step_wall_sec=total_step_wall_sec,
-                    vllm_stats=vllm_stats,
-                )
+                
+                current_eval_wall_sec = None
 
                 # logs/checkpoints
                 client_states = {
@@ -1115,10 +1161,27 @@ class PPOTrainer(BasePPOTrainer):
 
                 # TODO: Add evaluation mechanism for PPO
                 if global_step % self.args.eval_steps == 0 and self.eval_dataloader:
+                    eval_start_time = time.time()
                     eval_generate_kwargs = self.generate_kwargs.copy()
                     eval_generate_kwargs["temperature"] = self.args.eval_temperature
                     eval_generate_kwargs["n_samples_per_prompt"] = self.args.eval_n_samples_per_prompt
                     self.evaluate(global_step, **eval_generate_kwargs)
+                    current_eval_wall_sec = time.time() - eval_start_time
+
+                last_eval_wall_sec = current_eval_wall_sec if current_eval_wall_sec else 0.0
+
+                # Write training timing JSONL.
+                self._write_run_timing(
+                    global_step=global_step,
+                    rollout_wall_sec=rollout_wall_sec,
+                    gap_rollout_to_train=gap_rollout_to_train,
+                    train_wall_sec=train_wall_sec,
+                    time_forward_pass=status.get("time/forward_pass", 0.0),
+                    time_backward_pass=status.get("time/backward_pass", 0.0),
+                    time_sync_weights=status.get("time/sync_weights", 0.0),
+                    gap_train_to_rollout=gap_train_to_rollout,
+                    eval_wall_sec=current_eval_wall_sec
+                )
 
                 pbar.update(prompts_consumed)
 

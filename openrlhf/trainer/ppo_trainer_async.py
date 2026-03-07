@@ -125,7 +125,7 @@ class GenerateSamplesActor:
         """Return episode filter stats for W&B logging (called by PPOTrainerAsync after each episode)."""
         return self.samples_generator.episode_filter_stats
 
-    def fit(self, episode: int, total_consumed_prompts: int):
+    def fit(self, episode: int, total_consumed_prompts: int) -> None:
         for episode in range(episode, self.args.num_episodes):
             dataset_length = len(self.prompts_dataloader)
             pbar = tqdm(
@@ -301,7 +301,7 @@ class TrainingActor(BasePPOTrainer):
         finally:
             ray.get(self.vllm_lock.release.remote())
 
-    def fit(self, global_step: int):
+    def fit(self, global_step: int = 0) -> None:
         while True:
             payload = self.rollout_queue.get(block=True)
             if payload == "done":

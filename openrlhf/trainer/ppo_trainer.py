@@ -10,8 +10,11 @@ from typing import Dict, Optional, Tuple
 
 import ray
 import torch
+import transformers
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
+
+_TRANSFORMERS_V5 = int(transformers.__version__.split(".")[0]) >= 5
 
 from openrlhf.datasets import PromptDataset
 from openrlhf.datasets.prompts_dataset import interleave_indices_by_datasource
@@ -135,7 +138,7 @@ class BasePPOTrainer(ABC):
         self.wandb_logger = WandbLogger(self.args) if self.args.use_wandb else None
         self.tensorboard_logger = TensorboardLogger(self.args) if self.args.use_tensorboard else None
 
-    def fit(self):
+    def fit(self, global_step: int = 0) -> None:
         raise NotImplementedError("fit method is not implemented")
 
     def _collect_eval_tool_usage(self, all_prompts, samples_list, prompt_to_datasource):
@@ -438,11 +441,12 @@ class BasePPOTrainer(ABC):
         status = {}
         status["time/forward_pass"] = time_forward_pass
         ###### End of Forward Pass ######
-        
+
 
         # Periodic lightweight trace for rollout quality without full text spam.
+        _decode = self.tokenizer.decode if _TRANSFORMERS_V5 else self.tokenizer.batch_decode
         sample0 = [
-            self.tokenizer.decode(experiences[0].sequences[0], skip_special_tokens=True),
+            _decode(experiences[0].sequences[0].unsqueeze(0), skip_special_tokens=True)[0],
             experiences[0].info["reward"][0].item(),
         ]
         trace_interval = int(os.environ.get("OPENRLHF_TRACE_INTERVAL", "10"))
@@ -1049,12 +1053,15 @@ class PPOTrainer(BasePPOTrainer):
         except Exception as e:
             logger.warning(f"Failed to write scheduler timeseries plot: {e}")
 
-    def fit(self) -> None:
+    def fit(self, global_step: int = 0) -> None:
         init_start_time = time.time()
         checkpoint_states = self.init_checkpoint_states()
         # Restore step and start_epoch
         start_episode = checkpoint_states["episode"]
-        global_step = checkpoint_states["global_step"]
+        # Use checkpoint's global_step if resuming, otherwise use the parameter
+        is_resuming = checkpoint_states["global_step"] > 0
+        if is_resuming:
+            global_step = checkpoint_states["global_step"]
         total_consumed_prompts = checkpoint_states["total_consumed_prompts"]
         # Keep vLLM weights and dataloader states in sync when resuming.
         if global_step:

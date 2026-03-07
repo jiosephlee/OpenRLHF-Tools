@@ -118,10 +118,22 @@ class ToolCallingTurn(AgentInstanceBase):
             # Bridge text: close assistant turn + tool responses + open next turn
             feedback = self.protocol.render_tool_feedback(tool_msgs)
             feedback_token_ids = self.protocol.render_tool_feedback_token_ids(tool_msgs)
+
+            #### small reward for well-formatted tool calls (harmony > regex > unparsed) ####
+            parse_method = action.get("parse_method")
+            if parse_method in ("primary", "fallback"):
+                format_reward = 0.1
+            elif parse_method == "regex":
+                format_reward = 0.05
+            else:
+                format_reward = 0.0
+            extra_logs["format_reward"] = format_reward
+            #### end small reward for well-formatted tool calls ####
+
             return {
                 "environment_feedback": feedback,
                 "environment_feedback_token_ids": feedback_token_ids,
-                "rewards": torch.tensor(0.0),
+                "rewards": torch.tensor(format_reward),
                 "done": False,
                 "scores": 0.0,
                 "extra_logs": extra_logs,

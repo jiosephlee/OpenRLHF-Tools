@@ -462,15 +462,16 @@ class GPTOSSProtocol(ChatProtocol):
     # ------------------------------------------------------------------
 
     # Patterns for harmony special tokens rendered as text
+    #### fix regex to handle multi-word channel values and channel/constrain in any order ####
     _RE_TOOL_CALL = re.compile(
-        r"(?:<\|channel\|>\w+\s*)?"  # optional channel before to=
+        r"(?:<\|channel\|>[^<]*?)?"  # optional channel before to= (multi-word safe)
         r"to=functions\.(\S+?)"  # recipient: functions.TOOL_NAME
-        r"(?:\s*<\|channel\|>\w+)?"  # optional channel after to= (role-section format)
-        r"(?:\s*<\|constrain\|>[^<]*)*"  # zero or more constrain tags (id=1, json, etc.)
+        r"(?:\s*<\|(?:channel|constrain)\|>[^<]*)*"  # any mix of channel/constrain tags
         r"\s*<\|message\|>(.*?)"  # message body (args)
         r"(?:<\|call\|>|<\|end\|>|$)",  # terminator
         re.DOTALL,
     )
+    #### end fix regex ####
 
     def _regex_fallback_parse(
         self, token_ids: List[int], raw_text: str, parse_method: str = "regex"

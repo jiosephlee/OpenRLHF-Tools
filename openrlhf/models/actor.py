@@ -156,6 +156,7 @@ class Actor(nn.Module):
                     bias="none",
                 )
                 self.model = get_peft_model(self.model, lora_config)
+                self.model.print_trainable_parameters()
 
                 if load_in_4bit:
                     for name, module in self.model.named_modules():

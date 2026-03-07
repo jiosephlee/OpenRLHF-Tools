@@ -37,16 +37,25 @@ assert (_INTERN_S1_ROOT / "tools").is_dir(), (
 if str(_INTERN_S1_ROOT) not in sys.path:
     sys.path.insert(0, str(_INTERN_S1_ROOT))
 _TOOLS_PATH = str(_INTERN_S1_ROOT / "tools")
+
+#### Python 3.11 compat: prefer tools_py311/ for patched files, fall through to tools/ ####
+_TOOLS_PY311_PATH = str(_INTERN_S1_ROOT / "tools_py311")
+_USE_PY311_COMPAT = sys.version_info < (3, 12) and os.path.isdir(_TOOLS_PY311_PATH)
+_tools_search_path = [_TOOLS_PY311_PATH, _TOOLS_PATH] if _USE_PY311_COMPAT else [_TOOLS_PATH]
+#### end Python 3.11 compat ####
+
 _existing_tools_pkg = sys.modules.get("tools")
 if _existing_tools_pkg is None:
     _pkg = types.ModuleType("tools")
-    _pkg.__path__ = [_TOOLS_PATH]
+    _pkg.__path__ = _tools_search_path
     _pkg.__package__ = "tools"
     sys.modules["tools"] = _pkg
 else:
     _existing_path = list(getattr(_existing_tools_pkg, "__path__", []))
-    if _TOOLS_PATH not in _existing_path:
-        _existing_tools_pkg.__path__ = [_TOOLS_PATH, *_existing_path]
+    for _p in reversed(_tools_search_path):
+        if _p not in _existing_path:
+            _existing_path.insert(0, _p)
+    _existing_tools_pkg.__path__ = _existing_path
 
 
 # ---------------------------------------------------------------------------

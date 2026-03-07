@@ -75,10 +75,11 @@ def _build_vllm_sync_params(model, zero_stage: int):
 
     # Pass 1: merged LoRA weights
     for peft_name, lora_mod in lora_module_map.items():
-        adapter = getattr(lora_mod, "active_adapter", None)
+        adapter = getattr(lora_mod, "active_adapters", None) or getattr(lora_mod, "active_adapter", None)
+        if isinstance(adapter, list):
+            adapter = adapter[0]
         if adapter is None:
-            adapters = getattr(lora_mod, "active_adapters", None) or list(lora_mod.lora_A.keys())
-            adapter = adapters[0]
+            adapter = list(lora_mod.lora_A.keys())[0]
 
         prefix = peft_name + "."
         skip_names.add(f"{prefix}base_layer.weight")
@@ -360,8 +361,37 @@ class ActorPPOTrainer(ABC):
                     f"name={name}, shape={tuple(param.grad.shape)}, nonfinite_count={nonfinite}, dtype={param.grad.dtype}"
                 )
 
+    def _log_vram_audit(self, tag: str):
+        """Log a detailed VRAM breakdown. Enable with OPENRLHF_VRAM_AUDIT=1."""
+        if not getattr(self, "_vram_audit", False):
+            return
+        dev = torch.cuda.current_device()
+        alloc = torch.cuda.memory_allocated(dev) / 1024**3
+        reserved = torch.cuda.memory_reserved(dev) / 1024**3
+        max_alloc = torch.cuda.max_memory_allocated(dev) / 1024**3
+        total = torch.cuda.get_device_properties(dev).total_mem / 1024**3
+        # Parameter memory breakdown
+        model = self.actor.model.module if hasattr(self.actor.model, "module") else self.actor.model
+        param_mem = sum(p.numel() * p.element_size() for p in model.parameters()) / 1024**3
+        grad_mem = sum(p.grad.numel() * p.grad.element_size() for p in model.parameters() if p.grad is not None) / 1024**3
+        trainable_mem = sum(p.numel() * p.element_size() for p in model.parameters() if p.requires_grad) / 1024**3
+        frozen_mem = param_mem - trainable_mem
+        logger.info(
+            f"[VRAM Audit: {tag}] "
+            f"alloc={alloc:.2f}GB reserved={reserved:.2f}GB max_alloc={max_alloc:.2f}GB total={total:.2f}GB | "
+            f"params={param_mem:.2f}GB (trainable={trainable_mem:.2f}GB frozen={frozen_mem:.2f}GB) "
+            f"grads={grad_mem:.2f}GB | "
+            f"other={alloc - param_mem - grad_mem:.2f}GB (activations+buffers+DS)"
+        )
+
     def training_step(self, experience: Experience, kl_ctl: float, step: int) -> Dict[str, float]:
         self.actor.train()
+        # Enable VRAM audit on the first step only
+        if step == 0 and not hasattr(self, "_vram_audit"):
+            self._vram_audit = os.environ.get("OPENRLHF_VRAM_AUDIT", "0") == "1"
+            if self._vram_audit:
+                torch.cuda.reset_peak_memory_stats()
+                self._log_vram_audit("pre_forward")
         nan_guard = os.environ.get("OPENRLHF_DEBUG_NAN_GUARD", "0") == "1"
         if nan_guard:
             self._assert_finite_actor_state(step, stage="pre_forward", check_grad=False)
@@ -492,7 +522,11 @@ class ActorPPOTrainer(ABC):
         if self.args.use_dynamic_batch:
             loss = loss * self.replay_buffer.dynamic_loss_scale[step]
 
+        if step == 0:
+            self._log_vram_audit("post_forward")
         self.strategy.backward(loss, self.actor, self.actor_optim)
+        if step == 0:
+            self._log_vram_audit("post_backward")
         if nan_guard:
             self._assert_finite_actor_state(step, stage="post_backward", check_grad=True)
         if self.args.use_dynamic_batch:

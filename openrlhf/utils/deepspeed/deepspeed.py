@@ -293,8 +293,13 @@ class DeepspeedStrategy(ABC):
             gc.collect()
             torch.cuda.empty_cache()
 
+        raw_model = model.model if is_actor else model
+        # Only pass trainable parameters to DeepSpeed so it doesn't allocate
+        # gradient buffers for frozen params (critical for LoRA memory savings).
+        trainable_params = list(filter(lambda p: p.requires_grad, raw_model.parameters()))
         engine, optim, _, scheduler = deepspeed.initialize(
-            model=model.model if is_actor else model,
+            model=raw_model,
+            model_parameters=trainable_params,
             optimizer=optim,
             lr_scheduler=scheduler,
             config=ds_config,

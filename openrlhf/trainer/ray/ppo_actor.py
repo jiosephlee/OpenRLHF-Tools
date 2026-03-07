@@ -369,7 +369,7 @@ class ActorPPOTrainer(ABC):
         alloc = torch.cuda.memory_allocated(dev) / 1024**3
         reserved = torch.cuda.memory_reserved(dev) / 1024**3
         max_alloc = torch.cuda.max_memory_allocated(dev) / 1024**3
-        total = torch.cuda.get_device_properties(dev).total_mem / 1024**3
+        total = torch.cuda.get_device_properties(dev).total_memory / 1024**3
         # Parameter memory breakdown
         model = self.actor.model.module if hasattr(self.actor.model, "module") else self.actor.model
         param_mem = sum(p.numel() * p.element_size() for p in model.parameters()) / 1024**3

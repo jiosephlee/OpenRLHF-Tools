@@ -708,8 +708,10 @@ class SamplesGenerator:
         # Wake both weights and KV cache — weights may still be asleep for
         # the first generation (before any broadcast_to_vllm has run).
         # Waking already-awake weights is a no-op, so this is always safe.
+        _wake_start = time.time()
         if self.args.vllm_enable_sleep:
             batch_vllm_engine_call(self.vllm_engines, "wake_up")
+        self._last_vllm_wake_sec = time.time() - _wake_start
 
         experiences, prompts_consumed, exhausted = self._generate_vllm(
             dataloader_iter=self._dataloader_iter,
@@ -731,11 +733,15 @@ class SamplesGenerator:
         )
 
         # Reclaim host RAM in vLLM engine workers accumulated during generation.
+        _gc_start = time.time()
         batch_vllm_engine_call(self.vllm_engines, "gc_collect")
+        self._last_vllm_gc_collect_sec = time.time() - _gc_start
 
         # Put engines back to sleep when enabled.
+        _sleep_start = time.time()
         if self.args.vllm_enable_sleep:
             batch_vllm_engine_call(self.vllm_engines, "sleep", level=getattr(self.args, "vllm_sleep_level", 1))
+        self._last_vllm_sleep_sec = time.time() - _sleep_start
 
         filter_pass_rate = None
         if self.args.dynamic_filtering and prompts_consumed:

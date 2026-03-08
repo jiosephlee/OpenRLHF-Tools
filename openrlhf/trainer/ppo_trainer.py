@@ -491,6 +491,13 @@ class BasePPOTrainer(ABC):
             self.broadcast_to_vllm()
         time_sync_weights = time.time() - sync_start_time
         status["time/sync_weights"] = time_sync_weights
+        status["time/sync_wake_weights"] = getattr(self, "_last_wake_weights_sec", 0.0)
+
+        # Surface vLLM sleep/wake/gc timings from the last rollout.
+        if hasattr(self, "samples_generator"):
+            status["time/vllm_wake"] = getattr(self.samples_generator, "_last_vllm_wake_sec", 0.0)
+            status["time/vllm_sleep"] = getattr(self.samples_generator, "_last_vllm_sleep_sec", 0.0)
+            status["time/vllm_gc_collect"] = getattr(self.samples_generator, "_last_vllm_gc_collect_sec", 0.0)
 
         ###### End of Sync Weights ######
 
@@ -510,19 +517,28 @@ class BasePPOTrainer(ABC):
         run_critic = self.critic_model_group is not None
         run_actor = global_steps > self.args.freezing_actor_steps and self.actor_model_group is not None
 
-        def _run_sleep(group, **kwargs):
+        def _run_sleep(group, group_name, **kwargs):
             # Sleep mode: reload -> fit -> offload (smaller GPU memory).
+            _reload_start = time.time()
             ray.get(group.async_run_method(method_name="reload_states"))
+            _reload_sec = time.time() - _reload_start
+
             ref = group.async_run_method(method_name="fit", **kwargs)
             status.update(ray.get(ref)[0])
+
+            _offload_start = time.time()
             ray.get(group.async_run_method(method_name="offload_states"))
+            _offload_sec = time.time() - _offload_start
+
+            status[f"time/ds_{group_name}_reload_states"] = _reload_sec
+            status[f"time/ds_{group_name}_offload_states"] = _offload_sec
 
         if self.args.deepspeed_enable_sleep:
             # Colocated/sleeping: run critic first, then actor.
             if run_critic:
-                _run_sleep(self.critic_model_group)
+                _run_sleep(self.critic_model_group, "critic")
             if run_actor:
-                _run_sleep(self.actor_model_group, kl_ctl=self.kl_ctl.value)
+                _run_sleep(self.actor_model_group, "actor", kl_ctl=self.kl_ctl.value)
         else:
             # Async: start jobs first, then wait and merge results.
             refs = []
@@ -547,10 +563,12 @@ class BasePPOTrainer(ABC):
         This approach reduces peak GPU memory during gradient sync by avoiding
         simultaneous allocation of both weights and KV cache.
         """
+        _wake_weights_start = time.time()
         if self.args.vllm_enable_sleep:
             # Wake up only weights for weight sync (not KV cache)
             # This avoids allocating KV cache memory during weight update
             batch_vllm_engine_call(self.vllm_engines, "wake_up", tags=["weights"])
+        self._last_wake_weights_sec = time.time() - _wake_weights_start
 
         ray.get(self.actor_model_group.async_run_method(method_name="broadcast_to_vllm"))
 
@@ -875,6 +893,7 @@ class PPOTrainer(BasePPOTrainer):
         time_sync_weights: float,
         gap_train_to_rollout: float,
         eval_wall_sec: Optional[float] = None,
+        extra_timings: Optional[Dict[str, float]] = None,
     ):
         """Append one line to run_timing.jsonl."""
         record = {
@@ -890,6 +909,9 @@ class PPOTrainer(BasePPOTrainer):
         }
         if eval_wall_sec is not None:
              record["eval_wall_sec"] = round(eval_wall_sec, 2)
+        if extra_timings:
+            for k, v in extra_timings.items():
+                record[k] = round(v, 2)
              
         timing_path = os.path.join(self._get_vllm_stats_dir(), "run_timing.jsonl")
         try:
@@ -1109,11 +1131,13 @@ class PPOTrainer(BasePPOTrainer):
                 initial=total_consumed_prompts % max(dataset_length, 1),
             )
             while True:
+                iteration_start_time = time.time()
+
                 # Calculate gap from the end of the previous training loop (or initialization)
                 # to the start of this generation step, excluding any time spent evaluating.
                 rollout_start_time = time.time()
                 gap_train_to_rollout = rollout_start_time - last_train_end_time - last_eval_wall_sec
-                
+
                 # Draw one mini-batch of prompts; stop when loader is exhausted.
                 log_step_trace = global_step % 2 == 0
                 rollout_samples, filter_pass_rate, prompts_consumed, is_exhausted = (
@@ -1122,16 +1146,15 @@ class PPOTrainer(BasePPOTrainer):
                     )
                 )
                 rollout_wall_sec = time.time() - rollout_start_time
-                gap_rollout_to_train_start = time.time()
-                
+                rollout_end_time = time.time()
+
                 total_consumed_prompts += prompts_consumed
                 if is_exhausted:
                     break
 
-                gap_rollout_to_train = time.time() - gap_rollout_to_train_start
-
                 # Run PPO update on this batch and bump the global step counter.
                 train_start_time = time.time()
+                gap_rollout_to_train = train_start_time - rollout_end_time
                 status, global_step = self.train_step(rollout_samples, global_step)
                 train_wall_sec = time.time() - train_start_time
                 last_train_end_time = time.time()
@@ -1178,6 +1201,22 @@ class PPOTrainer(BasePPOTrainer):
                 last_eval_wall_sec = current_eval_wall_sec if current_eval_wall_sec else 0.0
 
                 # Write training timing JSONL.
+                # Compute total iteration time and misc overhead.
+                iteration_wall_sec = time.time() - iteration_start_time
+                _eval_sec = current_eval_wall_sec if current_eval_wall_sec else 0.0
+                accounted_sec = rollout_wall_sec + train_wall_sec + _eval_sec
+                misc_gap_sec = max(0.0, iteration_wall_sec - accounted_sec)
+
+                # Collect sub-phase timings for sleep/wake/reload/offload.
+                _extra = {
+                    k.replace("time/", ""): v
+                    for k, v in status.items()
+                    if k.startswith("time/") and k not in {
+                        "time/forward_pass", "time/backward_pass", "time/sync_weights",
+                    }
+                }
+                _extra["iteration_wall_sec"] = iteration_wall_sec
+                _extra["misc_gap_sec"] = misc_gap_sec
                 self._write_run_timing(
                     global_step=global_step,
                     rollout_wall_sec=rollout_wall_sec,
@@ -1187,7 +1226,8 @@ class PPOTrainer(BasePPOTrainer):
                     time_backward_pass=status.get("time/backward_pass", 0.0),
                     time_sync_weights=status.get("time/sync_weights", 0.0),
                     gap_train_to_rollout=gap_train_to_rollout,
-                    eval_wall_sec=current_eval_wall_sec
+                    eval_wall_sec=current_eval_wall_sec,
+                    extra_timings=_extra,
                 )
 
                 pbar.update(prompts_consumed)

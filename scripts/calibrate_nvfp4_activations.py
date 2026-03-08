@@ -86,28 +86,36 @@ GENERIC_PROMPTS = [
 
 def parse_args():
     p = argparse.ArgumentParser(description="Calibrate NVFP4 activation scales.")
-    p.add_argument("--base_model", default="unsloth/gpt-oss-20b-BF16",
-                   help="BF16 base model for calibration forward passes")
-    p.add_argument("--nvfp4_repo", default="jiosephlee/gpt-oss-20B-NVFP4-packed-clean",
-                   help="Existing NVFP4 checkpoint to patch with calibrated scales")
-    p.add_argument("--output_repo", default="jiosephlee/gpt-oss-20B-NVFP4-calibrated",
-                   help="HF Hub repo to push the updated checkpoint to")
-    p.add_argument("--tdc_data_dir", default=None,
-                   help="Directory with TDC JSONL files (e.g., data/tdc/openai_format_gpt_oss). "
-                        "If provided, samples actual TDC prompts for calibration.")
-    p.add_argument("--num_samples", type=int, default=0,
-                   help="Max calibration prompts (0 = use all available, default: all)")
-    p.add_argument("--max_length", type=int, default=512,
-                   help="Max tokenised length per prompt")
-    p.add_argument("--local_dir", default=os.path.join(LOCAL_SAVE_DIR, "nvfp4_calibration"),
-                   help="Local scratch directory")
+    p.add_argument(
+        "--base_model", default="unsloth/gpt-oss-20b-BF16", help="BF16 base model for calibration forward passes"
+    )
+    p.add_argument(
+        "--nvfp4_repo",
+        default="jiosephlee/gpt-oss-20B-NVFP4-packed-clean",
+        help="Existing NVFP4 checkpoint to patch with calibrated scales",
+    )
+    p.add_argument(
+        "--output_repo",
+        default="jiosephlee/gpt-oss-20B-NVFP4-calibrated",
+        help="HF Hub repo to push the updated checkpoint to",
+    )
+    p.add_argument(
+        "--tdc_data_dir",
+        default=None,
+        help="Directory with TDC JSONL files (e.g., data/tdc/openai_format_gpt_oss). "
+        "If provided, samples actual TDC prompts for calibration.",
+    )
+    p.add_argument(
+        "--num_samples", type=int, default=0, help="Max calibration prompts (0 = use all available, default: all)"
+    )
+    p.add_argument("--max_length", type=int, default=512, help="Max tokenised length per prompt")
+    p.add_argument(
+        "--local_dir", default=os.path.join(LOCAL_SAVE_DIR, "nvfp4_calibration"), help="Local scratch directory"
+    )
     p.add_argument("--private", action="store_true", default=True)
-    p.add_argument("--keep_local", action="store_true",
-                   help="Keep local checkpoint copy after upload")
-    p.add_argument("--seed", type=int, default=42,
-                   help="Random seed for TDC prompt sampling")
-    p.add_argument("--skip_generic", action="store_true",
-                   help="Skip generic prompts, use only TDC data")
+    p.add_argument("--keep_local", action="store_true", help="Keep local checkpoint copy after upload")
+    p.add_argument("--seed", type=int, default=42, help="Random seed for TDC prompt sampling")
+    p.add_argument("--skip_generic", action="store_true", help="Skip generic prompts, use only TDC data")
     return p.parse_args()
 
 
@@ -115,12 +123,15 @@ def parse_args():
 # TDC prompt loading
 # ---------------------------------------------------------------------------
 
-def load_tdc_prompts(tdc_data_dir, num_samples, seed=42):
+
+def load_tdc_prompts(tdc_data_dir, num_samples, seed=42, max_per_task=5000):
     """
     Load calibration prompts from TDC JSONL files.
 
     Samples uniformly across all available task train files to get a
     representative distribution of SMILES strings and prompt templates.
+    Tasks with more than max_per_task samples are subsampled to avoid
+    large datasets (e.g. Tox21 54k, HIV 29k) dominating calibration.
 
     Returns:
         List[str] — prompt strings ready for tokenization
@@ -136,17 +147,14 @@ def load_tdc_prompts(tdc_data_dir, num_samples, seed=42):
     pattern = os.path.join(tdc_data_dir, "*_train.jsonl")
     train_files = sorted(glob.glob(pattern))
     if not train_files:
-        raise FileNotFoundError(
-            f"No *_train.jsonl files found in {tdc_data_dir}. "
-            f"Tried pattern: {pattern}"
-        )
+        raise FileNotFoundError(f"No *_train.jsonl files found in {tdc_data_dir}. Tried pattern: {pattern}")
 
-    # Load all prompts from all tasks
+    # Load prompts per task, cap large datasets
     all_prompts = []
     task_counts = {}
     for fpath in train_files:
         task_name = os.path.basename(fpath).replace("_train.jsonl", "")
-        count = 0
+        task_prompts = []
         with open(fpath, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -154,19 +162,24 @@ def load_tdc_prompts(tdc_data_dir, num_samples, seed=42):
                     continue
                 record = json.loads(line)
                 messages = record.get("messages", [])
-                # Extract user content — this is the actual prompt the model sees
                 for msg in messages:
                     if msg["role"] == "user":
-                        all_prompts.append(msg["content"])
-                        count += 1
+                        task_prompts.append(msg["content"])
                         break
-        task_counts[task_name] = count
+
+        raw_count = len(task_prompts)
+        if raw_count > max_per_task:
+            rng.shuffle(task_prompts)
+            task_prompts = task_prompts[:max_per_task]
+            print(f"  {task_name}: {raw_count} → capped to {max_per_task}")
+        task_counts[task_name] = len(task_prompts)
+        all_prompts.extend(task_prompts)
 
     print(f"[calibrate] Loaded {len(all_prompts)} TDC prompts from {len(train_files)} tasks:")
     for task, count in sorted(task_counts.items()):
         print(f"  {task}: {count}")
 
-    # Sample if a cap was requested, otherwise use all
+    # Sample if a global cap was requested, otherwise use all
     if num_samples > 0 and num_samples < len(all_prompts):
         rng.shuffle(all_prompts)
         all_prompts = all_prompts[:num_samples]
@@ -180,6 +193,7 @@ def load_tdc_prompts(tdc_data_dir, num_samples, seed=42):
 # Phase 1: collect activation amaxes via monkey-patched forward
 # ---------------------------------------------------------------------------
 
+
 def _find_experts_modules(model):
     """
     Return (layer_idx, name, module) for each MoE experts module.
@@ -191,10 +205,7 @@ def _find_experts_modules(model):
     for name, module in model.named_modules():
         parts = name.split(".")
         if ("mlp" in parts and "experts" in parts) or (
-            "mlp" in parts and any(
-                hasattr(module, attr)
-                for attr in ("gate_up_proj", "w13_weight")
-            )
+            "mlp" in parts and any(hasattr(module, attr) for attr in ("gate_up_proj", "w13_weight"))
         ):
             try:
                 layer_idx = int(parts[parts.index("layers") + 1])
@@ -237,9 +248,7 @@ def _monkey_patch_experts_forward(module, layer_idx, gate_up_amaxes, down_amaxes
 
         next_states = torch.zeros_like(hidden_states, dtype=hidden_states.dtype, device=hidden_states.device)
         with torch.no_grad():
-            expert_mask = F.one_hot(
-                router_indices, num_classes=module.num_experts
-            )
+            expert_mask = F.one_hot(router_indices, num_classes=module.num_experts)
             expert_mask = expert_mask.permute(2, 1, 0)
             expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
 
@@ -252,20 +261,18 @@ def _monkey_patch_experts_forward(module, layer_idx, gate_up_amaxes, down_amaxes
 
             # --- Capture gate_up_proj input amax ---
             with torch.no_grad():
-                gate_up_amaxes[layer_idx] = max(
-                    gate_up_amaxes[layer_idx],
-                    current_state.detach().float().abs().max().item(),
-                )
+                # Reduce in native dtype first, then convert scalar to float
+                # to avoid bf16→float32 bulk cast issues on multi-GPU setups
+                amax_val = current_state.detach().abs().max().float().item()
+                gate_up_amaxes[layer_idx] = max(gate_up_amaxes[layer_idx], amax_val)
 
             gate_up = current_state @ module.gate_up_proj[expert_idx] + module.gate_up_proj_bias[expert_idx]
             gated_output = module._apply_gate(gate_up)
 
             # --- Capture down_proj input amax (the ACTUAL intermediate) ---
             with torch.no_grad():
-                down_amaxes[layer_idx] = max(
-                    down_amaxes[layer_idx],
-                    gated_output.detach().float().abs().max().item(),
-                )
+                amax_val = gated_output.detach().abs().max().float().item()
+                down_amaxes[layer_idx] = max(down_amaxes[layer_idx], amax_val)
 
             out = gated_output @ module.down_proj[expert_idx] + module.down_proj_bias[expert_idx]
             weighted_output = out * routing_weights[token_idx, top_k_pos, None]
@@ -294,8 +301,7 @@ def collect_activation_amaxes(model, tokenizer, prompts, max_length):
     print(f"[calibrate] Found {n_layers} MoE layers to patch")
     if n_layers == 0:
         raise RuntimeError(
-            "No MoE expert modules found. "
-            "Check model architecture — expected 'experts' in module names."
+            "No MoE expert modules found. Check model architecture — expected 'experts' in module names."
         )
 
     gate_up_amaxes = [0.0] * n_layers
@@ -312,7 +318,7 @@ def collect_activation_amaxes(model, tokenizer, prompts, max_length):
     try:
         with torch.no_grad():
             for i, prompt in enumerate(prompts):
-                print(f"  [{i+1}/{len(prompts)}] {prompt[:80]!r}...")
+                print(f"  [{i + 1}/{len(prompts)}] {prompt[:80]!r}...")
                 inputs = tokenizer(
                     prompt,
                     return_tensors="pt",
@@ -330,12 +336,15 @@ def collect_activation_amaxes(model, tokenizer, prompts, max_length):
 
     print(f"\n[calibrate] Collected amaxes across {len(prompts)} prompts:")
     for i in range(n_layers):
-        print(f"  layer {i:2d}: gate_up_input={gate_up_amaxes[i]:.4f}  "
-              f"down_input={down_amaxes[i]:.4f}")
-    print(f"\n  gate_up_proj input:  min={min(gate_up_amaxes):.3f}  "
-          f"max={max(gate_up_amaxes):.3f}  mean={sum(gate_up_amaxes)/n_layers:.3f}")
-    print(f"  down_proj input:     min={min(down_amaxes):.3f}  "
-          f"max={max(down_amaxes):.3f}  mean={sum(down_amaxes)/n_layers:.3f}")
+        print(f"  layer {i:2d}: gate_up_input={gate_up_amaxes[i]:.4f}  down_input={down_amaxes[i]:.4f}")
+    print(
+        f"\n  gate_up_proj input:  min={min(gate_up_amaxes):.3f}  "
+        f"max={max(gate_up_amaxes):.3f}  mean={sum(gate_up_amaxes) / n_layers:.3f}"
+    )
+    print(
+        f"  down_proj input:     min={min(down_amaxes):.3f}  "
+        f"max={max(down_amaxes):.3f}  mean={sum(down_amaxes) / n_layers:.3f}"
+    )
 
     # Sanity check: all amaxes should be > 0
     for i in range(n_layers):
@@ -350,6 +359,7 @@ def collect_activation_amaxes(model, tokenizer, prompts, max_length):
 # ---------------------------------------------------------------------------
 # Phase 2: patch the NVFP4 checkpoint with calibrated input_scale tensors
 # ---------------------------------------------------------------------------
+
 
 def patch_checkpoint(nvfp4_repo, checkpoint_dir, gate_up_amaxes, down_amaxes, num_experts):
     """
@@ -368,11 +378,11 @@ def patch_checkpoint(nvfp4_repo, checkpoint_dir, gate_up_amaxes, down_amaxes, nu
         gate_scale = float(gate_up_amaxes[layer_idx]) / NVFP4_SCALE_DENOM
         down_scale = float(down_amaxes[layer_idx]) / NVFP4_SCALE_DENOM
         # [E] — broadcast same scale across all experts in this layer.
-        new_tensors[f"model.layers.{layer_idx}.mlp.experts.gate_up_proj.input_scale"] = (
-            torch.full((num_experts,), gate_scale, dtype=torch.float32)
+        new_tensors[f"model.layers.{layer_idx}.mlp.experts.gate_up_proj.input_scale"] = torch.full(
+            (num_experts,), gate_scale, dtype=torch.float32
         )
-        new_tensors[f"model.layers.{layer_idx}.mlp.experts.down_proj.input_scale"] = (
-            torch.full((num_experts,), down_scale, dtype=torch.float32)
+        new_tensors[f"model.layers.{layer_idx}.mlp.experts.down_proj.input_scale"] = torch.full(
+            (num_experts,), down_scale, dtype=torch.float32
         )
 
     print(f"\n[calibrate] Calibrated scales (input_scale = amax / {NVFP4_SCALE_DENOM}):")
@@ -381,8 +391,10 @@ def patch_checkpoint(nvfp4_repo, checkpoint_dir, gate_up_amaxes, down_amaxes, nu
         ds = float(down_amaxes[layer_idx]) / NVFP4_SCALE_DENOM
         print(f"  layer {layer_idx:2d}: gate_up_input_scale={gs:.6e}  down_input_scale={ds:.6e}")
 
-    print(f"\n[calibrate] Adding {len(new_tensors)} input_scale tensors "
-          f"({n_layers} layers × 2 projections × {num_experts} experts)")
+    print(
+        f"\n[calibrate] Adding {len(new_tensors)} input_scale tensors "
+        f"({n_layers} layers × 2 projections × {num_experts} experts)"
+    )
 
     index_path = os.path.join(checkpoint_dir, "model.safetensors.index.json")
     single_path = os.path.join(checkpoint_dir, "model.safetensors")
@@ -425,6 +437,7 @@ def patch_checkpoint(nvfp4_repo, checkpoint_dir, gate_up_amaxes, down_amaxes, nu
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
     args = parse_args()
     os.makedirs(args.local_dir, exist_ok=True)
@@ -438,14 +451,18 @@ def main():
         prompts.extend(tdc_prompts)
         if not args.skip_generic:
             prompts.extend(GENERIC_PROMPTS)
-        print(f"[calibrate] Using {len(tdc_prompts)} TDC prompts + "
-              f"{len(GENERIC_PROMPTS) if not args.skip_generic else 0} generic prompts "
-              f"= {len(prompts)} total")
+        print(
+            f"[calibrate] Using {len(tdc_prompts)} TDC prompts + "
+            f"{len(GENERIC_PROMPTS) if not args.skip_generic else 0} generic prompts "
+            f"= {len(prompts)} total"
+        )
     else:
         # Fallback: use generic prompts only (not recommended)
         prompts = list(GENERIC_PROMPTS)
-        print(f"[calibrate] WARNING: No --tdc_data_dir provided. Using only {len(prompts)} "
-              f"generic prompts. For best results, pass --tdc_data_dir data/tdc/openai_format_gpt_oss")
+        print(
+            f"[calibrate] WARNING: No --tdc_data_dir provided. Using only {len(prompts)} "
+            f"generic prompts. For best results, pass --tdc_data_dir data/tdc/openai_format_gpt_oss"
+        )
 
     # ---- Phase 1: calibration forward passes ----
     print(f"\n[calibrate] Loading BF16 model: {args.base_model}")
@@ -467,15 +484,10 @@ def main():
             print(f"[calibrate] Detected num_experts={num_experts} from {name} {tuple(param.shape)}")
             break
     if num_experts is None:
-        raise RuntimeError(
-            "Could not infer num_experts. "
-            "Check that model has 3D expert weight tensors."
-        )
+        raise RuntimeError("Could not infer num_experts. Check that model has 3D expert weight tensors.")
 
     print(f"[calibrate] Running {len(prompts)} calibration passes...")
-    gate_up_amaxes, down_amaxes = collect_activation_amaxes(
-        model, tokenizer, prompts, args.max_length
-    )
+    gate_up_amaxes, down_amaxes = collect_activation_amaxes(model, tokenizer, prompts, args.max_length)
 
     del model
     gc.collect()

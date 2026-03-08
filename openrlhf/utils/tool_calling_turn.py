@@ -120,8 +120,10 @@ class ToolCallingTurn(AgentInstanceBase):
             feedback_token_ids = self.protocol.render_tool_feedback_token_ids(tool_msgs)
 
             #### small reward for well-formatted tool calls (harmony > regex > unparsed) ####
+            # parse_method is only set by GPTOSSProtocol; None means a
+            # non-GPT-OSS protocol parsed successfully — no penalty.
             parse_method = action.get("parse_method")
-            if parse_method in ("primary", "fallback"):
+            if parse_method is None or parse_method in ("primary", "fallback"):
                 format_reward = 0
             elif parse_method == "regex":
                 format_reward = -0.05

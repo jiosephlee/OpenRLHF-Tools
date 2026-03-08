@@ -307,6 +307,26 @@ class DeepspeedStrategy(ABC):
             dist_init_required=True,
         )
 
+        # PyTorch nightly uses strict=True in LRScheduler._update_lr(),
+        # which crashes if per-param-group lists (base_lrs, lr_lambdas, etc.)
+        # don't match optimizer.param_groups in length. DeepSpeed may
+        # consolidate param groups (e.g. ZeRO-2 + adam_offload flattens
+        # 2 groups into 1), so re-sync all per-group scheduler state.
+        if scheduler is not None and hasattr(scheduler, "base_lrs"):
+            n_groups = len(optim.param_groups)
+            if len(scheduler.base_lrs) != n_groups:
+                old_n = len(scheduler.base_lrs)
+                self.print(
+                    f"[ds_init] Fixing LR scheduler: {old_n} → {n_groups} param_groups"
+                )
+                scheduler.base_lrs = [pg["lr"] for pg in optim.param_groups]
+                # LambdaLR (used by constant_with_warmup) also stores
+                # per-group lambda functions and last LRs.
+                if hasattr(scheduler, "lr_lambdas") and len(scheduler.lr_lambdas) != n_groups:
+                    scheduler.lr_lambdas = scheduler.lr_lambdas[:n_groups]
+                if hasattr(scheduler, "_last_lr") and len(getattr(scheduler, "_last_lr", [])) != n_groups:
+                    scheduler._last_lr = scheduler._last_lr[:n_groups]
+
         # Log post-DeepSpeed engine state
         dtypes_after = {}
         grad_counts_after = {"trainable": 0, "frozen": 0}

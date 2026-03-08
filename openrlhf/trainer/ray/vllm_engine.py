@@ -84,6 +84,11 @@ class _VLLMStatsPoller:
             if lm is not None:
                 for sl in getattr(lm, "stat_loggers", []):
                     stats = getattr(sl, "last_scheduler_stats", None)
+                    if stats is None and hasattr(sl, "per_engine_stat_loggers"):
+                        for pe_logger in sl.per_engine_stat_loggers.values():
+                            pe_stats = getattr(pe_logger, "last_scheduler_stats", None)
+                            if pe_stats is not None and getattr(pe_stats, "step_counter", 0) > 0:
+                                return pe_stats
                     if stats is not None and getattr(stats, "step_counter", 0) > 0:
                         return stats
 

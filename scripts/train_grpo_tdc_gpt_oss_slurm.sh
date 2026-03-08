@@ -16,13 +16,15 @@
 #
 # Usage:
 #   # MXFP4 QAT (default):
-#   MULTI_STAGE_DISPATCH=1 TIS=1 VLLM_GPU_MEM_UTIL=0.7 TRAIN_MAX_TOKENS_PER_GPU=40960 sbatch train_grpo_tdc_gpt_oss_slurm.sh
+#   VLLM_GPU_MEM_UTIL=0.6
+#   # MXFP4 QAT (default):
+#   TRAIN_MAX_TOKENS_PER_GPU=8192 QAT=fp4_fake_quantize sbatch train_grpo_tdc_gpt_oss_slurm.sh
 #
 #   # NVFP4 QAT:
-#   QUANT_METHOD=nvfp4 sbatch scripts/train_grpo_tdc_gpt_oss_slurm.sh
+#   TRAIN_MAX_TOKENS_PER_GPU=1024 QUANT_METHOD=nvfp4 sbatch train_grpo_tdc_gpt_oss_slurm.sh
 #
 #   # Unsloth BF16:
-#   LEARNING_RATE=1e-6 MULTI_STAGE_DISPATCH=1 VLLM_GPU_MEM_UTIL=0.715 DEQUANT=unsloth sbatch train_grpo_tdc_gpt_oss_slurm.sh
+#   MULTI_STAGE_DISPATCH=1 TRAIN_MAX_TOKENS_PER_GPU=8192 DEQUANT=unsloth sbatch train_grpo_tdc_gpt_oss_slurm.sh
 #
 #   # Distributed:
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 sbatch scripts/train_grpo_tdc_gpt_oss_slurm.sh
@@ -67,7 +69,7 @@
 #SBATCH --gres-flags=enforce-binding
 #SBATCH --sockets-per-node=1
 #SBATCH --cpus-per-task=56
-#SBATCH --time=00-24:00:00
+#SBATCH --time=00:24:00:00
 
 ### PARCC PARAMETERS ###
 export OMP_NUM_THREADS=16
@@ -137,6 +139,10 @@ run_task() {
                 QUANT_FLAGS=""
                 QUANT_LABEL="dequant-unsloth"
                 ;;
+            *)
+                echo "Error: DEQUANT must be 'unsloth', got '$DEQUANT'" >&2
+                exit 1
+                ;;
         esac
     else
         case "$QUANT_METHOD" in
@@ -151,8 +157,15 @@ run_task() {
                 NVFP4_BASE="${NVFP4_BASE:-unsloth/gpt-oss-20b-BF16}"
                 QUANT_FLAGS="--vllm_sync_fp4 nvfp4 --nvfp4_dequantize_base_model $NVFP4_BASE"
                 QUANT_LABEL="nvfp4"
-                # Disable FlashInfer (hangs for hidden_size=2880); use VLLM_CUTLASS with calibrated scales.
+                # FlashInfer CUTEDSL/CUTLASS hang for hidden_size=2880 (not tile-aligned).
+                # Marlin crashes (group_size=16 unsupported).
+                # Use VLLM_CUTLASS with calibrated activation scales (w13/w2_input_scale).
+                # Run scripts/calibrate_nvfp4_activations.py to regenerate calibrated checkpoint.
                 export VLLM_USE_FLASHINFER_MOE_FP4=0
+                ;;
+            *)
+                echo "Error: QUANT_METHOD must be 'mxfp4' or 'nvfp4', got '$QUANT_METHOD'" >&2
+                exit 1
                 ;;
         esac
     fi
@@ -192,10 +205,10 @@ run_task() {
     ### UNIFIED CONSTANTS ###
     AGENT_MAX_STEPS=30
     ZERO_STAGE=2
-    PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-6144}"
+    PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-8192}"
     N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-8}"
     TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-4096}"
-    ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.25" | bc | awk '{print int($1)}')}"
+    ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')}"
 
     COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-32}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
 
@@ -237,7 +250,8 @@ run_task() {
 
     ### MODE FLAGS ###
     if [ "$MODE" = "colocated" ]; then
-        MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep --$REDUCE_OPTIMIZER"
+        VLLM_SLEEP_LEVEL="${VLLM_SLEEP_LEVEL:-2}"
+        MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --vllm_sleep_level $VLLM_SLEEP_LEVEL --deepspeed_enable_sleep --$REDUCE_OPTIMIZER"
     else
         MODE_FLAGS="--async_train --async_queue_size 1 --$REDUCE_OPTIMIZER"
     fi
@@ -247,6 +261,7 @@ run_task() {
     WARM_STEPS_MULTIPLIER=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
 
     ### MULTI-TASK ###
+    #TASK_NAMES=(${TASK_NAMES:-BBB_Martins})
     TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
     TASK_LABEL="Base"
 
@@ -352,10 +367,13 @@ run_task() {
     trap copy_ray_logs EXIT
 
     ### ENVIRONMENT VARIABLES ###
-    export TRITON_CACHE_DIR="/tmp/triton_${USER}"
+    export TRITON_CACHE_DIR="/vast/projects/myatskar/design-documents/.cache/triton"
     mkdir -p "$TRITON_CACHE_DIR"
+    export TORCHINDUCTOR_CACHE_DIR="/vast/projects/myatskar/design-documents/.cache/torch_inductor"
+    mkdir -p "$TORCHINDUCTOR_CACHE_DIR"
 
     export VLLM_NO_USAGE_STATS=1
+    export VLLM_DISABLE_TELEMETRY=1
     export VLLM_ALLOW_INSECURE_SERIALIZATION=1  # vLLM v1 msgspec can't serialize torch.dtype; fall back to pickle
 
     export OPENRLHF_MODEL_PATH="$PRETRAIN_PATH"
@@ -364,6 +382,7 @@ run_task() {
     export DEBUG_TRACES="$DEBUG_TRACES"
     export OPENRLHF_DEBUG_LOGITS=0
     export OPENRLHF_DEBUG_NAN_GUARD=0
+    export OPENRLHF_VRAM_AUDIT="${OPENRLHF_VRAM_AUDIT:-1}"
 
     ### RAY ###
     export RAY_NODE_IP_ADDRESS=$(hostname -I | awk '{print $1}')
@@ -527,20 +546,21 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --advantage_estimator $ADVANTAGE_ESTIMATOR \
         --init_kl_coef 0 \
         --kl_estimator k1 \
-        --eps_clip_low_high 0.5 0.5 \
+        --eps_clip_low_high 0.3 0.372 \
         --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
         --save_hf_ckpt \
         --disable_ds_ckpt \
         --logging_steps 1 \
+        --micro_train_batch_size 2 \
+        --micro_rollout_batch_size 4 \
         --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
         --train_batch_size $TRAIN_BATCH_SIZE \
         --rollout_batch_size $ROLLOUT_BATCH_SIZE \
-        --micro_train_batch_size 1 \
-        --micro_rollout_batch_size 2 \
         --num_episodes $MAX_EPOCHS \
         --prompt_max_len $PROMPT_MAX_LEN \
         --generate_max_len 2048 \
         --max_samples 1000000 \
+        --enable_prefix_caching \
         --zero_stage $ZERO_STAGE \
         --param_dtype bf16 \
         --actor_learning_rate $LEARNING_RATE \
@@ -554,11 +574,12 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --apply_chat_template \
         --tdc_tools "$TDC_TOOLS_JSON" \
         --tool_version "$TOOL_VERSION" \
-        --enable_prefix_caching \
         --gradient_checkpointing \
         --vllm_sync_backend $VLLM_SYNC_BACKEND \
         --top_p $TOP_P \
         --temperature $TEMPERATURE \
+        --lora_rank 64 \
+        --lora_alpha 64 \
         --agent_func_path "$AGENT_FUNC_PATH" \
         --agent_max_steps $AGENT_MAX_STEPS \
         --vllm_stop_strings "<|return|>" "<|call|>" \
@@ -571,12 +592,10 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --save_path "$SAVE_PATH" \
         --push_to_hub "$HUB_REPO_ID" \
         --delete_local_after_push \
-        --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
-        --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \
         --constant_lr_with_warm_up \
         --warmup_steps $WARMUP_STEPS \
         --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
-        --attn_implementation eager \
+        --attn_implementation "flex_attention" \
         $QUANT_FLAGS \
         $MODE_FLAGS \
         $OPTIONAL_FLAGS \

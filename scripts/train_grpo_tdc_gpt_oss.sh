@@ -112,7 +112,7 @@ rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ ~/.cache/vllm/torch_
 
 ### ARGS ###
 LEARNING_RATE="${LEARNING_RATE:-1e-6}"
-NUM_GPUS=$SLURM_GPUS_ON_NODE
+NUM_GPUS="${SLURM_GPUS_ON_NODE:-$(nvidia-smi -L 2>/dev/null | wc -l)}"
 DEBUG_TRACES="${DEBUG_TRACES:-0}"
 
 ### FEATURE FLAGS ###
@@ -188,7 +188,7 @@ fi
 ### MODE FLAGS ###
 if [ "$MODE" = "colocated" ]; then
     VLLM_SLEEP_LEVEL="${VLLM_SLEEP_LEVEL:-2}"
-    MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --vllm_sleep_level $VLLM_SLEEP_LEVEL --deepspeed_enable_sleep --$REDUCE_OPTIMIZER"
+    MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --vllm_sleep_level $VLLM_SLEEP_LEVEL --deepspeed_enable_sleep"
 else
     MODE_FLAGS="--async_train --async_queue_size 1 --$REDUCE_OPTIMIZER"
 fi
@@ -292,8 +292,10 @@ TOP_P=0.95
 export RAY_TMPDIR="${RAY_TMPDIR:-/tmp/ray_${USER}}"
 mkdir -p "$RAY_TMPDIR"
 
-export TRITON_CACHE_DIR="/tmp/triton_${USER}"
+export TRITON_CACHE_DIR="/vast/projects/myatskar/design-documents/.cache/triton"
 mkdir -p "$TRITON_CACHE_DIR"
+export TORCHINDUCTOR_CACHE_DIR="/vast/projects/myatskar/design-documents/.cache/torch_inductor"
+mkdir -p "$TORCHINDUCTOR_CACHE_DIR"
 
 export VLLM_NO_USAGE_STATS=1
 export VLLM_DISABLE_TELEMETRY=1
@@ -315,17 +317,24 @@ ulimit -n 65535 2>/dev/null || true
 CONDA_RAY="$(which python) -m ray.scripts.scripts"
 echo "Using ray from: $(which python)"
 
+# Clear any stale RAY_ADDRESS from the environment to prevent
+# connecting to another user's cluster on shared nodes.
+unset RAY_ADDRESS
+
 $CONDA_RAY stop --force 2>/dev/null || true
 rm -rf "$RAY_TMPDIR"/ray/session_* 2>/dev/null || true
 
-echo "Starting Ray head node at $RAY_NODE_IP_ADDRESS"
+# Use a unique port to avoid collisions with other users on the same node.
+RAY_PORT=$(( 6379 + (RANDOM % 1000) ))
+echo "Starting Ray head node at $RAY_NODE_IP_ADDRESS:$RAY_PORT"
 $CONDA_RAY start --head \
     --node-ip-address "$RAY_NODE_IP_ADDRESS" \
+    --port "$RAY_PORT" \
     --num-gpus "$NUM_GPUS" \
     --temp-dir "$RAY_TMPDIR"
 
 # Set explicit address immediately — avoids "multiple active Ray instances" from other users
-export RAY_ADDRESS="$RAY_NODE_IP_ADDRESS:6379"
+export RAY_ADDRESS="$RAY_NODE_IP_ADDRESS:$RAY_PORT"
 
 echo "Waiting for Ray..."
 RAY_READY=0
@@ -468,7 +477,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --disable_ds_ckpt \
     --logging_steps 1 \
     --micro_train_batch_size 2 \
-    --micro_rollout_batch_size 2 \
+    --micro_rollout_batch_size 4 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $ROLLOUT_BATCH_SIZE \

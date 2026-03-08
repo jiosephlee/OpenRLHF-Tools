@@ -289,13 +289,13 @@ run_task() {
         echo "Top non-empty logs (dest):"
         find "$PERSIST_RAY_DIR/session_latest/logs" -type f -size +0c 2>/dev/null | head -n 20 || true
 
-        rm -rf "/tmp/triton_${USER}_${SLURM_JOB_ID}" "/tmp/torchinductor_${USER}_${SLURM_JOB_ID}" 2>/dev/null || true
+        # rm -rf "/tmp/triton_${USER}_${SLURM_JOB_ID}" "/tmp/torchinductor_${USER}_${SLURM_JOB_ID}" 2>/dev/null || true
     }
     trap copy_ray_logs EXIT
 
     ### ENVIRONMENT VARIABLES ###
-    export TRITON_CACHE_DIR="/tmp/triton_${USER}_${SLURM_JOB_ID}"
-    export TORCHINDUCTOR_CACHE_DIR="/tmp/torchinductor_${USER}_${SLURM_JOB_ID}"
+    export TRITON_CACHE_DIR="/vast/projects/myatskar/design-documents/.cache/triton"
+    export TORCHINDUCTOR_CACHE_DIR="/vast/projects/myatskar/design-documents/.cache/torch_inductor"
     mkdir -p "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR"
 
     export VLLM_NO_USAGE_STATS=1

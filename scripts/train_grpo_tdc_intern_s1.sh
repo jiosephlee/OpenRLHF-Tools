@@ -232,8 +232,10 @@ TOP_P=0.95
 export RAY_TMPDIR="${RAY_TMPDIR:-/tmp/ray_${USER}}"
 mkdir -p "$RAY_TMPDIR"
 
-export TRITON_CACHE_DIR="/tmp/triton_${USER}"
+export TRITON_CACHE_DIR="/vast/projects/myatskar/design-documents/.cache/triton"
 mkdir -p "$TRITON_CACHE_DIR"
+export TORCHINDUCTOR_CACHE_DIR="/vast/projects/myatskar/design-documents/.cache/torch_inductor"
+mkdir -p "$TORCHINDUCTOR_CACHE_DIR"
 
 export VLLM_NO_USAGE_STATS=1
 export VLLM_DISABLE_TELEMETRY=1

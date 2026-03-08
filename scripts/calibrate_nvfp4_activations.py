@@ -124,7 +124,7 @@ def parse_args():
 # ---------------------------------------------------------------------------
 
 
-def load_tdc_prompts(tdc_data_dir, num_samples, seed=42, max_per_task=5000):
+def load_tdc_prompts(tdc_data_dir, num_samples, seed=42, max_per_task=1000):
     """
     Load calibration prompts from TDC JSONL files.
 

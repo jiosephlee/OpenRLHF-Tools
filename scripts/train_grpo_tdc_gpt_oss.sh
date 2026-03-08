@@ -70,8 +70,8 @@ if [ -n "$DEQUANT" ]; then
             exit 1
             ;;
     esac
-    CUDA_MODULE="${CUDA_MODULE:-cuda/13.1.0}"
-    CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern}"
+    CUDA_MODULE="${CUDA_MODULE:-cuda/12.8.1}"
+    CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/openrlhf}"
 else
     case "$QUANT_METHOD" in
         mxfp4)
@@ -467,7 +467,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_hf_ckpt \
     --disable_ds_ckpt \
     --logging_steps 1 \
-    --micro_train_batch_size 1 \
+    --micro_train_batch_size 2 \
     --micro_rollout_batch_size 2 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
     --train_batch_size $TRAIN_BATCH_SIZE \
@@ -494,6 +494,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_sync_backend $VLLM_SYNC_BACKEND \
     --top_p $TOP_P \
     --temperature $TEMPERATURE \
+    --lora_rank 64 \
+    --lora_alpha 64 \
     --agent_func_path "$AGENT_FUNC_PATH" \
     --agent_max_steps $AGENT_MAX_STEPS \
     --vllm_stop_strings "<|return|>" "<|call|>" \

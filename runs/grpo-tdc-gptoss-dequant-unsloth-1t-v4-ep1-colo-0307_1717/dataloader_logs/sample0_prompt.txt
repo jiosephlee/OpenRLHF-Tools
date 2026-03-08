@@ -1,0 +1,241 @@
+<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-07
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|>
+
+# Tools
+
+## functions
+
+namespace functions {
+
+// Return the average molecular weight (Daltons).
+type get_molecular_weight = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Return the monoisotopic exact molecular weight (Daltons).
+type get_exact_molecular_weight = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Return the number of non-hydrogen atoms (heavy atoms).
+type get_heavy_atom_count = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Return Wildman–Crippen cLogP (octanol/water).
+type get_mol_logp = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Return topological polar surface area TPSA (Å^2).
+type get_tpsa = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Return Lipinski H-bond donors count.
+type get_hbd = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Return Lipinski H-bond acceptors count.
+type get_hba = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Return rotatable bonds count.
+type get_num_rotatable_bonds = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Return FractionCSP3 = (# sp3 carbon atoms)/(# total carbon atoms), Often used as a simple “3D character / saturation” proxy from 2D structure.
+type get_fraction_csp3 = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Return Wildman–Crippen molar refractivity (MR).
+type get_mol_mr = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Return total ring count.
+type get_ring_count = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Return aromatic ring count.
+type get_num_aromatic_rings = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Return net formal charge (sum of atom formal charges as encoded in the SMILES).
+type get_formal_charge = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Return QED (Quantitative Estimate of Drug-likeness) as implemented in RDKit.
+type get_qed = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Return heteroatom count (non C/H).
+type get_num_heteroatoms = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Analyze fused ring systems (clusters of rings sharing bonds) and report their topology, aromaticity, and heteroatom content. Distinguishes fused polycyclic systems from isolated rings. Useful for AMES mutagenicity (detecting PAH-like systems), hERG (extended flat aromatic surfaces), and general structural classification of ring complexity.
+type analyze_ring_systems = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Classify the ionization state of a molecule at a target pH using Dimorphite-DL. Returns a formatted string with charge distributions.
+type classify_ionization = (_: {
+// SMILES string of the molecule.
+smiles: string,
+// Target pH for protonation (default: 7.4, physiological).
+ph?: number
+}) => any;
+
+// Compute fingerprint similarity (Morgan by default) between a query SMILES and a list of reference SMILES. Returns a formatted string.
+type compute_similarity = (_: {
+// Query SMILES string.
+smiles: string,
+// List of reference SMILES strings to compare against.
+reference_smiles: string[]
+}) => any;
+
+// Screen a SMILES against RDKit's built-in structural alert catalogs. Returns a formatted string of alerts found.
+type score_structural_alerts = (_: {
+// Query SMILES string.
+smiles: string,
+// Which alert library to use. 'all' uses all available libraries.
+alert_library?: "brenk" | "nih" | "chembl" | "zinc" | "all", // default: all
+}) => any;
+
+// Extract pharmacophore features using RDKit's BaseFeatures definitions.
+type extract_pharmacophore_features = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Accurately parse functional groups with attachment points, corresponding fragment SMILES, and atom ids in the SMILES string for better structure description.
+type describe_high_level_fg_fragments = (_: {
+// The SMILES string to parse.
+smiles: string
+}) => any;
+
+// Test whether a molecule contains the given SMARTS substructures and count occurrences.
+type match_substructure = (_: {
+// The SMILES string of the molecule. Do not pass in an ellipsis (`...`) or other abbreviation.
+smiles: string,
+// Mapping of pattern name to SMARTS string.
+patterns: object
+}) => any;
+
+// Find the maximum common substructure (MCS) across query + reference SMILES. The output is a single structure present in ALL provided molecules. To compare very different molecules, call this tool multiple times individually rather than placing all molecules in a single list.
+type find_mcs = (_: {
+// Query SMILES.
+smiles: string,
+// Reference SMILES to include in the MCS search.
+reference_smiles: string[]
+}) => any;
+
+// Desalt a SMILES by removing salts/counterions and keeping ONLY the largest organic fragment. Use this tool when the SMILES contains multiple disconnected components separated by '.' and one or more components are likely inorganic ions/solvents (e.g., [Na+], Cl-, Br-, I-, [K+], [Li+], [Ca2+], [Mg2+], [NH4+], sulfate/phosphate, etc.), or when you want the parent (active) molecule for downstream property prediction.
+In aqueous/physiological conditions, salts typically dissociate; counterions are usually not part of the parent drug structure for many structure-based predictions.
+Typical examples needing desalting: 'CC(=O)O.[Na+]', '[Na+].O=C(O)c1ccccc1', 'CCO.Cl'.
+Do NOT use if the SMILES is already a single component (no '.') or if multiple organic fragments represent real mixture/co-crystal/combination therapy that should be kept. Output is the canonical SMILES of the retained parent fragment; smaller fragments are discarded.
+type remove_salts = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Predict pKa values for ionizable sites in a molecule. Returns base-site and acid-site pKa values (1-indexed atom map numbers), the most basic/acidic pKa, the number of basic/acidic sites, and the atom-mapped SMILES.
+type predict_pka = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Estimate logD at a target pH from predicted pKa values and RDKit logP. Uses a Henderson-Hasselbalch approximation: logD(pH) ≈ logP + log10(f_neutral). logP is RDKit Wildman-Crippen logP. This is a heuristic intended for helpingyour reasoning and should not be treated as experimental logD. For polyprotic molecules, uses the most basic and most acidic predicted pKa values.
+type estimate_logd = (_: {
+// SMILES string of the molecule.
+smiles: string,
+// Target pH (default: 7.4).
+ph?: number
+}) => any;
+
+// Screen a molecule against RDKit's built-in structural alert catalogs (PAINS, Brenk, NIH, ZINC, ChEMBL, etc.).
+type score_structural_alerts = (_: {
+// SMILES string of the molecule.
+smiles: string,
+// Alert library to screen against (default: all).
+alert_library?: "all" | "pains" | "pains_a" | "pains_b" | "pains_c" | "brenk" | "nih" | "zinc" | "chembl" | "chembl_bms" | "chembl_lint" | "chembl_mlsmr"
+}) => any;
+
+// Return Labute approximate surface area (ASA proxy).
+type get_labute_asa = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Return fraction of aromatic atoms (aromatic atoms / total atoms).
+type get_fraction_aromatic_atoms = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Return number of aromatic atoms.
+type get_num_aromatic_atoms = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Return aliphatic ring count using RDKit Lipinski.NumAliphaticRings.
+type get_num_aliphatic_rings = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Return saturated ring count using RDKit Lipinski.NumSaturatedRings.
+type get_num_saturated_rings = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Return count of cationic centers (atoms with formal charge > 0).
+type get_num_positive_charge_atoms = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Return count of anionic centers (atoms with formal charge < 0).
+type get_num_negative_charge_atoms = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+} // namespace functions<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: As a membrane separating circulating blood and brain extracellular fluid, the blood-brain barrier (BBB) is the protection layer that blocks most foreign drugs. Thus the ability of a drug to penetrate the barrier to deliver to the site of action forms a crucial challenge in development of drugs for central nervous system.
+Question: Given a drug SMILES string, predict whether it
+(A) does not cross the BBB (B) crosses the BBB
+Drug SMILES: CNCCOC(c1ccccc1)c1ccccc1CPlease think step by step and use tools when helpful. Then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant

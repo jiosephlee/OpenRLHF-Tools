@@ -577,11 +577,11 @@ def create_vllm_engines(
             from vllm.config import CompilationConfig, CompilationMode
 
             max_capture = vllm_cudagraph_max_capture_size if vllm_cudagraph_max_capture_size is not None else 128
-            # Power-of-2 schedule: 8 captures instead of 23, saving ~25GB VRAM
-            # from CUDA graph storage while keeping max capture size.
-            # vLLM pads to next captured size; worst case 2x padding is fine
-            # since prefill is compute-bound.
-            cudagraph_sizes = [s for s in [1, 2, 4, 8, 16, 32, 64, 128] if s <= max_capture]
+            # 15 capture sizes with denser coverage at mid-range batch sizes,
+            # saving VRAM from CUDA graph storage while keeping max capture size.
+            # vLLM pads to next captured size; the tighter spacing reduces
+            # wasted padding for common batch sizes.
+            cudagraph_sizes = [s for s in [1, 2, 4, 8, 12, 16, 24, 32, 64, 80, 96, 112, 128] if s <= max_capture]
             if max_capture not in cudagraph_sizes:
                 cudagraph_sizes.append(max_capture)
             actor_kwargs["compilation_config"] = CompilationConfig(

@@ -122,11 +122,11 @@ class ToolCallingTurn(AgentInstanceBase):
             #### small reward for well-formatted tool calls (harmony > regex > unparsed) ####
             parse_method = action.get("parse_method")
             if parse_method in ("primary", "fallback"):
-                format_reward = 0.1
+                format_reward = 0
             elif parse_method == "regex":
-                format_reward = 0.05
+                format_reward = -0.05
             else:
-                format_reward = 0.0
+                raise ValueError(f"Unknown parse method: {parse_method}")
             extra_logs["format_reward"] = format_reward
             #### end small reward for well-formatted tool calls ####
 
@@ -137,6 +137,19 @@ class ToolCallingTurn(AgentInstanceBase):
                 "done": False,
                 "scores": 0.0,
                 "extra_logs": extra_logs,
+            }
+
+        # Parse failed: model attempted a tool call but mangled the format.
+        # Apply an explicit penalty to discourage malformed harmony headers.
+        parse_failed = action.get("parse_failed", False)
+        if parse_failed:
+            base_logs["format_reward"] = -0.25
+            return {
+                "environment_feedback": "",
+                "rewards": torch.tensor(-0.25),
+                "done": True,
+                "scores": 0.0,
+                "extra_logs": base_logs,
             }
 
         # No tool calls → final answer
@@ -164,23 +177,29 @@ class ToolCallingTurn(AgentInstanceBase):
 
         t0 = time.monotonic()
         if tool_name not in self.tools:
-            result = json.dumps({
-                "error": f"Unknown tool: {tool_name}",
-                "available_tools": list(self.tools.keys()),
-            })
+            result = json.dumps(
+                {
+                    "error": f"Unknown tool: {tool_name}",
+                    "available_tools": list(self.tools.keys()),
+                }
+            )
         else:
             try:
-                result = json.dumps({
-                    "result": self.tools[tool_name](**arguments),
-                    "function_name": tool_name,
-                    "arguments": arguments,
-                })
+                result = json.dumps(
+                    {
+                        "result": self.tools[tool_name](**arguments),
+                        "function_name": tool_name,
+                        "arguments": arguments,
+                    }
+                )
             except Exception as e:
-                result = json.dumps({
-                    "error": str(e),
-                    "function_name": tool_name,
-                    "arguments": arguments,
-                })
+                result = json.dumps(
+                    {
+                        "error": str(e),
+                        "function_name": tool_name,
+                        "arguments": arguments,
+                    }
+                )
         return result, time.monotonic() - t0
 
     _ANSWER_RE = re.compile(r"Answer\s*:\s*\(?\s*([A-Za-z])\s*\)?")

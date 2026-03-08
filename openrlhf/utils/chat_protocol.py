@@ -462,16 +462,14 @@ class GPTOSSProtocol(ChatProtocol):
     # ------------------------------------------------------------------
 
     # Patterns for harmony special tokens rendered as text
-    #### fix regex to handle multi-word channel values and channel/constrain in any order ####
     _RE_TOOL_CALL = re.compile(
         r"(?:<\|channel\|>[^<]*?)?"  # optional channel before to= (multi-word safe)
         r"to=functions\.(\S+?)"  # recipient: functions.TOOL_NAME
-        r"(?:\s*<\|(?:channel|constrain)\|>[^<]*)*"  # any mix of channel/constrain tags
+        r"(?:\s*<\|(?:channel|constrain)\|>[^<{]*)*"  # any mix of channel/constrain tags
         r"\s*<\|message\|>(.*?)"  # message body (args)
         r"(?:<\|call\|>|<\|end\|>|$)",  # terminator
         re.DOTALL,
     )
-    #### end fix regex ####
 
     def _regex_fallback_parse(
         self, token_ids: List[int], raw_text: str, parse_method: str = "regex"
@@ -501,7 +499,7 @@ class GPTOSSProtocol(ChatProtocol):
                 args = {"raw": args}
             tool_calls.append({"name": name, "arguments": args})
 
-        attempted_call = "<|call|>" in raw_text or "to=functions." in raw_text
+        attempted_call = "<|call|>" in raw_text or "to=functions" in raw_text
         parse_failed = attempted_call and len(tool_calls) == 0
 
         return {

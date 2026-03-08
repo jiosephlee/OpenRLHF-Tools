@@ -230,58 +230,42 @@ def _find_experts_modules(model):
     return [(idx, name, mod) for idx, (name, mod) in sorted(seen.items())]
 
 
-def _monkey_patch_experts_forward(module, layer_idx, gate_up_amaxes, down_amaxes):
+def _patch_experts_module(module, layer_idx, gate_up_amaxes, down_amaxes):
     """
-    Monkey-patch GptOssExperts.forward to capture activation amaxes for both
-    gate_up_proj input (hidden_states) and down_proj input (gated_output).
+    Minimally patch a GptOssExperts module to capture activation amaxes:
+      - pre_hook on forward: captures gate_up_proj input (hidden_states)
+      - monkey-patch _apply_gate: captures down_proj input (gated_output)
 
-    The key insight: down_proj input = gated_output (the post-SwiGLU
-    intermediate), which is computed INSIDE the per-expert loop. A post_hook
-    on the module only sees the final weighted output — totally different
-    distribution. We must intercept inside the loop.
+    Unlike replicating the full forward() (which is fragile — the installed
+    transformers version may differ from what we read locally), this approach
+    only intercepts two small points and lets the original forward run
+    unchanged.  The _apply_gate output IS the down_proj input: the per-expert
+    loop does `gated_output = self._apply_gate(gate_up)` then
+    `out = gated_output @ self.down_proj[expert_idx]`.
     """
-    original_forward = module.forward
-
-    @wraps(original_forward)
-    def patched_forward(hidden_states, router_indices=None, routing_weights=None):
-        import torch.nn.functional as F
-
-        next_states = torch.zeros_like(hidden_states, dtype=hidden_states.dtype, device=hidden_states.device)
+    # --- 1. pre_hook for gate_up_proj input ---
+    def pre_hook(mod, args, kwargs=None):
+        x = args[0]
         with torch.no_grad():
-            expert_mask = F.one_hot(router_indices, num_classes=module.num_experts)
-            expert_mask = expert_mask.permute(2, 1, 0)
-            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+            amax_val = x.detach().abs().max().float().item()
+            gate_up_amaxes[layer_idx] = max(gate_up_amaxes[layer_idx], amax_val)
 
-        for expert_idx in expert_hit:
-            expert_idx = expert_idx[0]
-            if expert_idx == module.num_experts:
-                continue
-            top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
-            current_state = hidden_states[token_idx]
+    hook_handle = module.register_forward_pre_hook(pre_hook)
 
-            # --- Capture gate_up_proj input amax ---
-            with torch.no_grad():
-                # Reduce in native dtype first, then convert scalar to float
-                # to avoid bf16→float32 bulk cast issues on multi-GPU setups
-                amax_val = current_state.detach().abs().max().float().item()
-                gate_up_amaxes[layer_idx] = max(gate_up_amaxes[layer_idx], amax_val)
+    # --- 2. patch _apply_gate for down_proj input ---
+    original_apply_gate = module._apply_gate
 
-            gate_up = current_state @ module.gate_up_proj[expert_idx] + module.gate_up_proj_bias[expert_idx]
-            gated_output = module._apply_gate(gate_up)
+    @wraps(original_apply_gate)
+    def patched_apply_gate(gate_up):
+        gated_output = original_apply_gate(gate_up)
+        with torch.no_grad():
+            amax_val = gated_output.detach().abs().max().float().item()
+            down_amaxes[layer_idx] = max(down_amaxes[layer_idx], amax_val)
+        return gated_output
 
-            # --- Capture down_proj input amax (the ACTUAL intermediate) ---
-            with torch.no_grad():
-                amax_val = gated_output.detach().abs().max().float().item()
-                down_amaxes[layer_idx] = max(down_amaxes[layer_idx], amax_val)
+    module._apply_gate = patched_apply_gate
 
-            out = gated_output @ module.down_proj[expert_idx] + module.down_proj_bias[expert_idx]
-            weighted_output = out * routing_weights[token_idx, top_k_pos, None]
-            next_states.index_add_(0, token_idx, weighted_output.to(hidden_states.dtype))
-
-        return next_states
-
-    module.forward = patched_forward
-    return original_forward  # Return original so we can restore later
+    return hook_handle, original_apply_gate
 
 
 def collect_activation_amaxes(model, tokenizer, prompts, max_length):
@@ -307,11 +291,13 @@ def collect_activation_amaxes(model, tokenizer, prompts, max_length):
     gate_up_amaxes = [0.0] * n_layers
     down_amaxes = [0.0] * n_layers
 
-    # Monkey-patch all experts modules
-    originals = []
+    # Patch all experts modules (pre_hook + _apply_gate intercept)
+    patches = []
     for layer_idx, name, module in experts_by_layer:
-        orig = _monkey_patch_experts_forward(module, layer_idx, gate_up_amaxes, down_amaxes)
-        originals.append((module, orig))
+        hook_handle, orig_apply_gate = _patch_experts_module(
+            module, layer_idx, gate_up_amaxes, down_amaxes
+        )
+        patches.append((module, hook_handle, orig_apply_gate))
 
     model.eval()
     device = next(model.parameters()).device
@@ -330,9 +316,10 @@ def collect_activation_amaxes(model, tokenizer, prompts, max_length):
                 if i % 10 == 0:
                     torch.cuda.empty_cache()
     finally:
-        # Restore original forward methods
-        for module, orig in originals:
-            module.forward = orig
+        # Restore original _apply_gate and remove hooks
+        for module, hook_handle, orig_apply_gate in patches:
+            hook_handle.remove()
+            module._apply_gate = orig_apply_gate
 
     print(f"\n[calibrate] Collected amaxes across {len(prompts)} prompts:")
     for i in range(n_layers):

@@ -7,20 +7,22 @@ w13_input_scale / w2_input_scale pre-filled to 1.0.  The VLLM_CUTLASS
 backend (W4A4) requires these to cover the actual activation range; with
 1.0, activations are saturated → garbage output.
 
-Note on the sample code found online (mtq.quantize approach):
-  ModelOpt's mtq.quantize inserts FakeQuantize modules around individual
-  nn.Linear layers. GPT-OSS stores all experts fused as a single [E, in, out]
-  weight tensor — there are no individual per-expert nn.Linear modules to
-  quantize. mtq.quantize would skip or mishandle the fused expert ops.
-  We use forward hooks instead, which work correctly with any custom MoE.
-
 This script:
   1. Loads the BF16 base model
-  2. Hooks each MoE layer's experts module to collect max(|activation|)
-     across calibration forward passes
-  3. Computes input_scale = amax / 2688  (same formula as weight global scale)
-  4. Downloads the existing NVFP4 checkpoint and adds the new tensors
-  5. Uploads the updated checkpoint to HF Hub
+  2. Monkey-patches each GptOssExperts.forward to capture:
+     - gate_up_proj input amax (hidden_states entering the expert)
+     - down_proj input amax (gated_output, the post-SwiGLU intermediate)
+  3. Runs calibration on actual TDC dataset prompts (matching inference
+     distribution) plus a few generic prompts for coverage
+  4. Computes input_scale = amax / 2688  (same formula as weight global scale)
+  5. Downloads the existing NVFP4 checkpoint and adds the new tensors
+  6. Uploads the updated checkpoint to HF Hub
+
+Previous version used post_hook on the experts module output as a proxy for
+down_proj input — this is WRONG because the module output is the routing-
+weighted sum of expert outputs, not the post-SwiGLU intermediate that is
+the actual input to down_proj.  The fix: monkey-patch forward() to capture
+gated_output directly inside the per-expert loop.
 
 New checkpoint keys (picked up by hf_to_vllm_mapper in gpt_oss.py):
   model.layers.N.mlp.experts.gate_up_proj.input_scale  [E]  → w13_input_scale
@@ -35,20 +37,26 @@ Usage:
         --output_repo jiosephlee/gpt-oss-20B-NVFP4-calibrated \\
         --num_samples 512
 
+    # Use only TDC data (skip generic prompts):
+    python scripts/calibrate_nvfp4_activations.py \\
+        --tdc_data_dir data/tdc/openai_format_gpt_oss \\
+        --num_samples 256
+
 Notes:
   - Saves a single per-layer scale used for all experts in that layer
     (conservative upper bound — all experts see inputs from the same
     distribution; routing just selects a subset of tokens per expert).
-  - For down_proj input: measures the output of the gate_up_proj experts
-    module to capture the post-SwiGLU activation magnitude separately.
   - Requires ~40 GB GPU VRAM for the BF16 model (use 4-8 B200 GPUs).
 """
 
 import argparse
 import gc
+import glob
 import json
 import os
+import random
 import shutil
+from functools import wraps
 
 import torch
 from huggingface_hub import HfApi, snapshot_download
@@ -60,48 +68,19 @@ NVFP4_SCALE_DENOM = 448.0 * 6.0  # 2688.0
 
 LOCAL_SAVE_DIR = "/vast/projects/myatskar/design-documents/hf_home"
 
-# Representative calibration prompts.  Mix of general + TDC-style (chemistry,
-# drug discovery, biology) to match the actual inference distribution.
-CALIBRATION_PROMPTS = [
-    # General scientific reasoning
+# A small set of generic prompts for coverage beyond TDC distribution.
+# The bulk of calibration should come from actual TDC data via --tdc_data_dir.
+GENERIC_PROMPTS = [
     "The capital of France is Paris. Explain the history of this city and its role in European culture.",
     "Describe the mechanisms by which vaccines induce long-lasting immune responses in the human body.",
-    "The laws of thermodynamics govern energy transfer in physical and chemical systems. The first law states",
     "Machine learning models are trained by minimizing a loss function defined over the training data. In supervised learning,",
     "Quantum entanglement is a phenomenon where two particles become correlated such that the state of one",
-    # Drug discovery / TDC tasks
     "The SMILES notation CC(=O)Oc1ccccc1C(=O)O represents aspirin. Its pharmacological properties include",
     "Drug toxicity prediction is a critical step in pharmaceutical development. Common toxic endpoints evaluated include",
     "The blood-brain barrier restricts entry of most therapeutics. Key physicochemical factors affecting BBB permeability are",
     "ADMET stands for absorption, distribution, metabolism, excretion, and toxicity. When evaluating a new drug candidate,",
     "The Tox21 dataset contains toxicity measurements for thousands of environmental compounds. The NR-AR assay measures",
-    "Molecular docking simulations predict how a small molecule binds to a protein receptor target. Common scoring functions",
-    "The IC50 value represents the concentration required to inhibit 50% of a target's activity. In high-throughput screening,",
-    "SMILES: C1CC1N2C=C(C(=O)c3ccc(F)cc3)C(=O)N2 represents a fluoroquinolone. Its mechanism involves inhibition of",
-    "Protein-ligand binding affinity prediction using graph neural networks encodes atoms as nodes and bonds as edges.",
-    "The Lipinski rule of five describes oral bioavailability: MW < 500, HBA ≤ 10, HBD ≤ 5, LogP ≤ 5.",
-    # Biology / biochemistry
     "CRISPR-Cas9 gene editing works by using guide RNA to direct the Cas9 nuclease to a specific genomic location.",
-    "The tumor microenvironment plays a crucial role in cancer progression and therapy resistance. Key cell types include",
-    "mRNA vaccines encode antigen-coding sequences translated by host ribosomes. The innate immune response is triggered by",
-    "Enzyme kinetics follows the Michaelis-Menten equation v = Vmax[S]/(Km + [S]). The Km represents",
-    "Signal transduction pathways relay extracellular ligand binding to intracellular responses via phosphorylation cascades.",
-    # Longer-context prompts (stress-test deeper sequence positions)
-    (
-        "Given the molecular structure with SMILES CC(=O)NC1=CC=C(O)C=C1 (paracetamol / acetaminophen), predict "
-        "its likely pharmacokinetic behavior. Consider solubility, membrane permeability, metabolic stability, and "
-        "plasma protein binding. Discuss its hepatotoxicity mechanism at overdose concentrations."
-    ),
-    (
-        "A Phase II clinical trial for a novel EGFR inhibitor in non-small-cell lung cancer showed: ORR 42%, "
-        "median PFS 11.3 months, median OS 22.1 months, grade 3+ AEs in 28% of patients. Compare these outcomes "
-        "to erlotinib as second-line therapy and discuss the path to regulatory approval."
-    ),
-    (
-        "Design a multi-step synthesis for a peptidomimetic HIV protease inhibitor starting from commercially "
-        "available amino acid building blocks. Include stereochemical considerations and key protecting group "
-        "strategies for each step of the synthetic route."
-    ),
 ]
 
 
@@ -113,8 +92,11 @@ def parse_args():
                    help="Existing NVFP4 checkpoint to patch with calibrated scales")
     p.add_argument("--output_repo", default="jiosephlee/gpt-oss-20B-NVFP4-calibrated",
                    help="HF Hub repo to push the updated checkpoint to")
-    p.add_argument("--num_samples", type=int, default=len(CALIBRATION_PROMPTS),
-                   help="Number of calibration prompts (default: all)")
+    p.add_argument("--tdc_data_dir", default=None,
+                   help="Directory with TDC JSONL files (e.g., data/tdc/openai_format_gpt_oss). "
+                        "If provided, samples actual TDC prompts for calibration.")
+    p.add_argument("--num_samples", type=int, default=0,
+                   help="Max calibration prompts (0 = use all available, default: all)")
     p.add_argument("--max_length", type=int, default=512,
                    help="Max tokenised length per prompt")
     p.add_argument("--local_dir", default=os.path.join(LOCAL_SAVE_DIR, "nvfp4_calibration"),
@@ -122,11 +104,75 @@ def parse_args():
     p.add_argument("--private", action="store_true", default=True)
     p.add_argument("--keep_local", action="store_true",
                    help="Keep local checkpoint copy after upload")
+    p.add_argument("--seed", type=int, default=42,
+                   help="Random seed for TDC prompt sampling")
+    p.add_argument("--skip_generic", action="store_true",
+                   help="Skip generic prompts, use only TDC data")
     return p.parse_args()
 
 
 # ---------------------------------------------------------------------------
-# Phase 1: collect activation amaxes via forward hooks
+# TDC prompt loading
+# ---------------------------------------------------------------------------
+
+def load_tdc_prompts(tdc_data_dir, num_samples, seed=42):
+    """
+    Load calibration prompts from TDC JSONL files.
+
+    Samples uniformly across all available task train files to get a
+    representative distribution of SMILES strings and prompt templates.
+
+    Returns:
+        List[str] — prompt strings ready for tokenization
+    """
+    rng = random.Random(seed)
+
+    # Find all train JSONL files
+    pattern = os.path.join(tdc_data_dir, "*_train.jsonl")
+    train_files = sorted(glob.glob(pattern))
+    if not train_files:
+        raise FileNotFoundError(
+            f"No *_train.jsonl files found in {tdc_data_dir}. "
+            f"Tried pattern: {pattern}"
+        )
+
+    # Load all prompts from all tasks
+    all_prompts = []
+    task_counts = {}
+    for fpath in train_files:
+        task_name = os.path.basename(fpath).replace("_train.jsonl", "")
+        count = 0
+        with open(fpath, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                record = json.loads(line)
+                messages = record.get("messages", [])
+                # Extract user content — this is the actual prompt the model sees
+                for msg in messages:
+                    if msg["role"] == "user":
+                        all_prompts.append(msg["content"])
+                        count += 1
+                        break
+        task_counts[task_name] = count
+
+    print(f"[calibrate] Loaded {len(all_prompts)} TDC prompts from {len(train_files)} tasks:")
+    for task, count in sorted(task_counts.items()):
+        print(f"  {task}: {count}")
+
+    # Sample if a cap was requested, otherwise use all
+    if num_samples > 0 and num_samples < len(all_prompts):
+        rng.shuffle(all_prompts)
+        all_prompts = all_prompts[:num_samples]
+    else:
+        rng.shuffle(all_prompts)  # Shuffle for variety across tasks
+
+    return all_prompts
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: collect activation amaxes via monkey-patched forward
 # ---------------------------------------------------------------------------
 
 def _find_experts_modules(model):
@@ -135,20 +181,16 @@ def _find_experts_modules(model):
 
     GPT-OSS layout: model.layers.N.mlp.experts
       - experts has a fused weight attribute gate_up_proj: [E, in, out]
-    We hook both the pre-forward (captures gate_up input = hidden state)
-    and the post-forward (captures down_proj input = gate_up output).
     """
     candidates = []
     for name, module in model.named_modules():
         parts = name.split(".")
-        # Match "model.layers.<N>.mlp.experts" or "model.layers.<N>.mlp"
         if ("mlp" in parts and "experts" in parts) or (
             "mlp" in parts and any(
                 hasattr(module, attr)
                 for attr in ("gate_up_proj", "w13_weight")
             )
         ):
-            # Extract layer index from the path
             try:
                 layer_idx = int(parts[parts.index("layers") + 1])
             except (ValueError, IndexError):
@@ -156,7 +198,6 @@ def _find_experts_modules(model):
             candidates.append((layer_idx, name, module))
 
     if not candidates:
-        # Broader fallback: any module named "experts"
         for name, module in model.named_modules():
             if name.split(".")[-1] == "experts":
                 parts = name.split(".")
@@ -173,11 +214,71 @@ def _find_experts_modules(model):
     return [(idx, name, mod) for idx, (name, mod) in sorted(seen.items())]
 
 
+def _monkey_patch_experts_forward(module, layer_idx, gate_up_amaxes, down_amaxes):
+    """
+    Monkey-patch GptOssExperts.forward to capture activation amaxes for both
+    gate_up_proj input (hidden_states) and down_proj input (gated_output).
+
+    The key insight: down_proj input = gated_output (the post-SwiGLU
+    intermediate), which is computed INSIDE the per-expert loop. A post_hook
+    on the module only sees the final weighted output — totally different
+    distribution. We must intercept inside the loop.
+    """
+    original_forward = module.forward
+
+    @wraps(original_forward)
+    def patched_forward(hidden_states, router_indices=None, routing_weights=None):
+        import torch.nn.functional as F
+
+        next_states = torch.zeros_like(hidden_states, dtype=hidden_states.dtype, device=hidden_states.device)
+        with torch.no_grad():
+            expert_mask = F.one_hot(
+                router_indices, num_classes=module.num_experts
+            )
+            expert_mask = expert_mask.permute(2, 1, 0)
+            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+
+        for expert_idx in expert_hit:
+            expert_idx = expert_idx[0]
+            if expert_idx == module.num_experts:
+                continue
+            top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
+            current_state = hidden_states[token_idx]
+
+            # --- Capture gate_up_proj input amax ---
+            with torch.no_grad():
+                gate_up_amaxes[layer_idx] = max(
+                    gate_up_amaxes[layer_idx],
+                    current_state.detach().float().abs().max().item(),
+                )
+
+            gate_up = current_state @ module.gate_up_proj[expert_idx] + module.gate_up_proj_bias[expert_idx]
+            gated_output = module._apply_gate(gate_up)
+
+            # --- Capture down_proj input amax (the ACTUAL intermediate) ---
+            with torch.no_grad():
+                down_amaxes[layer_idx] = max(
+                    down_amaxes[layer_idx],
+                    gated_output.detach().float().abs().max().item(),
+                )
+
+            out = gated_output @ module.down_proj[expert_idx] + module.down_proj_bias[expert_idx]
+            weighted_output = out * routing_weights[token_idx, top_k_pos, None]
+            next_states.index_add_(0, token_idx, weighted_output.to(hidden_states.dtype))
+
+        return next_states
+
+    module.forward = patched_forward
+    return original_forward  # Return original so we can restore later
+
+
 def collect_activation_amaxes(model, tokenizer, prompts, max_length):
     """
-    Run calibration forward passes with forward hooks on each MoE experts
-    module.  Returns per-layer amaxes for gate_up_proj input and down_proj
-    input (post-SwiGLU intermediate).
+    Run calibration forward passes with monkey-patched experts.forward on
+    each MoE layer.  Captures the ACTUAL intermediate activations:
+      - gate_up_proj input = hidden_states routed to each expert
+      - down_proj input = gated_output (post-SwiGLU), computed inside the
+        per-expert loop
 
     Returns:
         gate_up_amaxes: List[float]  — one per layer
@@ -185,46 +286,28 @@ def collect_activation_amaxes(model, tokenizer, prompts, max_length):
     """
     experts_by_layer = _find_experts_modules(model)
     n_layers = len(experts_by_layer)
-    print(f"[calibrate] Found {n_layers} MoE layers to hook")
+    print(f"[calibrate] Found {n_layers} MoE layers to patch")
     if n_layers == 0:
         raise RuntimeError(
             "No MoE expert modules found. "
             "Check model architecture — expected 'experts' in module names."
         )
 
-    gate_up_amaxes = [0.0] * n_layers   # max(|hidden_state|) entering gate_up_proj
-    down_amaxes = [0.0] * n_layers       # max(|intermediate|) entering down_proj
+    gate_up_amaxes = [0.0] * n_layers
+    down_amaxes = [0.0] * n_layers
 
-    hooks = []
+    # Monkey-patch all experts modules
+    originals = []
     for layer_idx, name, module in experts_by_layer:
-        def make_pre_hook(lidx):
-            def pre_hook(mod, args):
-                # args[0]: hidden states routed to experts [n_tokens, hidden_size]
-                # (or [batch, seq, hidden] before routing flattens the batch dim)
-                x = args[0].detach().float()
-                gate_up_amaxes[lidx] = max(gate_up_amaxes[lidx], x.abs().max().item())
-            return pre_hook
-
-        def make_post_hook(lidx):
-            def post_hook(mod, args, output):
-                # output: result after down_proj, but the INPUT to down_proj
-                # is the post-SwiGLU intermediate.  We can't access it directly
-                # here.  Instead capture the output and use it as a proxy: the
-                # down_proj output magnitude is typically similar to its input
-                # magnitude (down_proj is a linear projection).
-                out = output.detach().float() if isinstance(output, torch.Tensor) else output[0].detach().float()
-                down_amaxes[lidx] = max(down_amaxes[lidx], out.abs().max().item())
-            return post_hook
-
-        hooks.append(module.register_forward_pre_hook(make_pre_hook(layer_idx)))
-        hooks.append(module.register_forward_hook(make_post_hook(layer_idx)))
+        orig = _monkey_patch_experts_forward(module, layer_idx, gate_up_amaxes, down_amaxes)
+        originals.append((module, orig))
 
     model.eval()
     device = next(model.parameters()).device
     try:
         with torch.no_grad():
             for i, prompt in enumerate(prompts):
-                print(f"  [{i+1}/{len(prompts)}] {prompt[:70]!r}...")
+                print(f"  [{i+1}/{len(prompts)}] {prompt[:80]!r}...")
                 inputs = tokenizer(
                     prompt,
                     return_tensors="pt",
@@ -233,25 +316,28 @@ def collect_activation_amaxes(model, tokenizer, prompts, max_length):
                 ).to(device)
                 model(**inputs)
                 del inputs
-                if i % 5 == 0:
+                if i % 10 == 0:
                     torch.cuda.empty_cache()
     finally:
-        for h in hooks:
-            h.remove()
+        # Restore original forward methods
+        for module, orig in originals:
+            module.forward = orig
 
     print(f"\n[calibrate] Collected amaxes across {len(prompts)} prompts:")
-    print(f"  gate_up_proj input: "
-          f"min={min(gate_up_amaxes):.3f}  max={max(gate_up_amaxes):.3f}  "
-          f"mean={sum(gate_up_amaxes)/n_layers:.3f}")
-    print(f"  down_proj input:    "
-          f"min={min(down_amaxes):.3f}  max={max(down_amaxes):.3f}  "
-          f"mean={sum(down_amaxes)/n_layers:.3f}")
-
-    # Sanity check: if down amax < gate_up amax the proxy may have underestimated;
-    # use gate_up * 2 as a floor (SwiGLU intermediate is typically larger).
     for i in range(n_layers):
-        if down_amaxes[i] < gate_up_amaxes[i]:
-            down_amaxes[i] = gate_up_amaxes[i] * 2.0
+        print(f"  layer {i:2d}: gate_up_input={gate_up_amaxes[i]:.4f}  "
+              f"down_input={down_amaxes[i]:.4f}")
+    print(f"\n  gate_up_proj input:  min={min(gate_up_amaxes):.3f}  "
+          f"max={max(gate_up_amaxes):.3f}  mean={sum(gate_up_amaxes)/n_layers:.3f}")
+    print(f"  down_proj input:     min={min(down_amaxes):.3f}  "
+          f"max={max(down_amaxes):.3f}  mean={sum(down_amaxes)/n_layers:.3f}")
+
+    # Sanity check: all amaxes should be > 0
+    for i in range(n_layers):
+        if gate_up_amaxes[i] == 0.0:
+            print(f"  WARNING: gate_up_amaxes[{i}] is 0 — layer may not have been hit")
+        if down_amaxes[i] == 0.0:
+            print(f"  WARNING: down_amaxes[{i}] is 0 — layer may not have been hit")
 
     return gate_up_amaxes, down_amaxes
 
@@ -284,7 +370,13 @@ def patch_checkpoint(nvfp4_repo, checkpoint_dir, gate_up_amaxes, down_amaxes, nu
             torch.full((num_experts,), down_scale, dtype=torch.float32)
         )
 
-    print(f"[calibrate] Adding {len(new_tensors)} input_scale tensors "
+    print(f"\n[calibrate] Calibrated scales (input_scale = amax / {NVFP4_SCALE_DENOM}):")
+    for layer_idx in range(n_layers):
+        gs = float(gate_up_amaxes[layer_idx]) / NVFP4_SCALE_DENOM
+        ds = float(down_amaxes[layer_idx]) / NVFP4_SCALE_DENOM
+        print(f"  layer {layer_idx:2d}: gate_up_input_scale={gs:.6e}  down_input_scale={ds:.6e}")
+
+    print(f"\n[calibrate] Adding {len(new_tensors)} input_scale tensors "
           f"({n_layers} layers × 2 projections × {num_experts} experts)")
 
     index_path = os.path.join(checkpoint_dir, "model.safetensors.index.json")
@@ -332,6 +424,24 @@ def main():
     args = parse_args()
     os.makedirs(args.local_dir, exist_ok=True)
 
+    # ---- Build calibration prompts ----
+    prompts = []
+
+    # Load TDC prompts if data dir is provided
+    if args.tdc_data_dir:
+        tdc_prompts = load_tdc_prompts(args.tdc_data_dir, args.num_samples, seed=args.seed)
+        prompts.extend(tdc_prompts)
+        if not args.skip_generic:
+            prompts.extend(GENERIC_PROMPTS)
+        print(f"[calibrate] Using {len(tdc_prompts)} TDC prompts + "
+              f"{len(GENERIC_PROMPTS) if not args.skip_generic else 0} generic prompts "
+              f"= {len(prompts)} total")
+    else:
+        # Fallback: use generic prompts only (not recommended)
+        prompts = list(GENERIC_PROMPTS)
+        print(f"[calibrate] WARNING: No --tdc_data_dir provided. Using only {len(prompts)} "
+              f"generic prompts. For best results, pass --tdc_data_dir data/tdc/openai_format_gpt_oss")
+
     # ---- Phase 1: calibration forward passes ----
     print(f"\n[calibrate] Loading BF16 model: {args.base_model}")
     tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=True)
@@ -357,7 +467,6 @@ def main():
             "Check that model has 3D expert weight tensors."
         )
 
-    prompts = CALIBRATION_PROMPTS[: args.num_samples]
     print(f"[calibrate] Running {len(prompts)} calibration passes...")
     gate_up_amaxes, down_amaxes = collect_activation_amaxes(
         model, tokenizer, prompts, args.max_length

@@ -127,6 +127,11 @@ def load_tdc_prompts(tdc_data_dir, num_samples, seed=42):
     """
     rng = random.Random(seed)
 
+    # Resolve relative paths from the repo root (script lives in scripts/)
+    if not os.path.isabs(tdc_data_dir):
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        tdc_data_dir = os.path.join(repo_root, tdc_data_dir)
+
     # Find all train JSONL files
     pattern = os.path.join(tdc_data_dir, "*_train.jsonl")
     train_files = sorted(glob.glob(pattern))

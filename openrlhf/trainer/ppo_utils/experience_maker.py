@@ -629,9 +629,11 @@ class SamplesGenerator:
         # Reclaim host RAM in vLLM engine workers accumulated during generation.
         batch_vllm_engine_call(self.vllm_engines, "gc_collect")
 
-        # Put engines back to sleep when enabled.
-        if self.args.vllm_enable_sleep:
-            batch_vllm_engine_call(self.vllm_engines, "sleep", level=getattr(self.args, "vllm_sleep_level", 1))
+        # NOTE: We intentionally do NOT sleep vLLM after eval.  Eval always
+        # runs between weight-sync and the next generate_samples() call, so
+        # sleeping here would just cause a pointless sleep→wake round-trip.
+        # The sleep that matters (freeing GPU for actor training) happens at
+        # the end of generate_samples() instead.
 
         self._eval_dataloader_iter = None
 

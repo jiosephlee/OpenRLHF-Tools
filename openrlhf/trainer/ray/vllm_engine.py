@@ -634,7 +634,11 @@ def create_vllm_engines(
         ray.get(engine.set_engine_id.remote(i))
 
     if vllm_enable_sleep:
-        batch_vllm_engine_call(vllm_engines, "sleep", level=vllm_sleep_level)
+        # Always use level 1 for the initial sleep so model weights are
+        # backed up to CPU and can be restored on the first wake_up.
+        # Level 2 would discard weights, leaving garbage after wake_up
+        # (no weight sync has happened yet to reload them).
+        batch_vllm_engine_call(vllm_engines, "sleep", level=1)
 
     return vllm_engines
 

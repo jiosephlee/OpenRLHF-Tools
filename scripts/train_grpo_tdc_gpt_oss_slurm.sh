@@ -24,7 +24,7 @@
 #   TRAIN_MAX_TOKENS_PER_GPU=1024 QUANT_METHOD=nvfp4 sbatch train_grpo_tdc_gpt_oss_slurm.sh
 #
 #   # Unsloth BF16:
-#   MULTI_STAGE_DISPATCH=1 TRAIN_MAX_TOKENS_PER_GPU=8192 DEQUANT=unsloth sbatch train_grpo_tdc_gpt_oss_slurm.sh
+#   TRAIN_MAX_TOKENS_PER_GPU=8192 DEQUANT=unsloth sbatch train_grpo_tdc_gpt_oss_slurm.sh
 #
 #   # Distributed:
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 sbatch scripts/train_grpo_tdc_gpt_oss_slurm.sh
@@ -43,7 +43,7 @@
 #   TOOL_VERSION=v4                      # Tool schema version (default: v4)
 #   SMART_REPLAY=1                       # Enable smart replay with max_replay_rounds=2
 #   CURRICULUM_BALANCED=1                # Enable curriculum-balanced sampling
-#   MULTI_STAGE_DISPATCH=1               # Continuous-refill dispatch (best for 2-GPU setups)
+
 #   LIGER_GRPO_LOSS=1                    # Enable Liger fused GRPO loss
 #   TIS=1                                # Enable Truncated Importance Sampling (off-policy correction)
 #   TIS_TYPE=tis                         # TIS variant: tis (default), icepop, seq-mask-tis
@@ -186,7 +186,7 @@ run_task() {
     TOOL_VERSION="${TOOL_VERSION:-v4}"
     SMART_REPLAY="${SMART_REPLAY:-0}"
     MAX_REPLAY_ROUNDS="${MAX_REPLAY_ROUNDS:-2}"
-    MULTI_STAGE_DISPATCH="${MULTI_STAGE_DISPATCH:-0}"
+
     LIGER_GRPO_LOSS="${LIGER_GRPO_LOSS:-0}"
     CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
     TIS="${TIS:-0}"
@@ -456,7 +456,7 @@ run_task() {
     echo "----------------------------------------"
     echo "Smart Replay: $SMART_REPLAY"
     echo "Curriculum Balanced: $CURRICULUM_BALANCED"
-    echo "Multi Stage Dispatch: $MULTI_STAGE_DISPATCH"
+
     echo "Liger GRPO Loss: $LIGER_GRPO_LOSS"
     echo "TIS: $TIS (type=$TIS_TYPE, thresholds=$TIS_THRESHOLDS)"
     echo "GSPO: $GSPO"
@@ -499,9 +499,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
     if [ "$CURRICULUM_BALANCED" = "1" ]; then
         OPTIONAL_FLAGS+=" --curriculum_balanced"
     fi
-    if [ "$MULTI_STAGE_DISPATCH" = "1" ]; then
-        OPTIONAL_FLAGS+=" --deferred_dispatch"
-    fi
+
     if [ "$LIGER_GRPO_LOSS" = "1" ]; then
         OPTIONAL_FLAGS+=" --use_liger_grpo_loss"
     fi

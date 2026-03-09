@@ -15,20 +15,20 @@
 #   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
 #
 # With TIS off-policy correction (token-level clamped IS):
-#   TIS=1 MULTI_STAGE_DISPATCH=1 SMART_REPLAY=1 MAX_REPLAY_ROUNDS=3 sbatch train_grpo_tdc_intern_s1_slurm.sh
+#   TIS=1 SMART_REPLAY=1 MAX_REPLAY_ROUNDS=3 sbatch train_grpo_tdc_intern_s1_slurm.sh
 #
 # With GSPO loss (sequence-level IS ratio, replaces PPO clipping):
-#   GSPO=1 MULTI_STAGE_DISPATCH=1 SMART_REPLAY=1 MAX_REPLAY_ROUNDS=2 sbatch train_grpo_tdc_intern_s1_slurm.sh
+#   GSPO=1 SMART_REPLAY=1 MAX_REPLAY_ROUNDS=2 sbatch train_grpo_tdc_intern_s1_slurm.sh
 #
 # With smart replay (halved effective rollout batch size):
-#   MODE=distributed ACTOR_GPUS=1 MULTI_STAGE_DISPATCH=1 VLLM_NUM_ENGINES=3 SMART_REPLAY=1 MAX_REPLAY_ROUNDS=3 sbatch train_grpo_tdc_intern_s1_slurm.sh
-#   SMART_REPLAY=1 MULTI_STAGE_DISPATCH=1 COLO_EVAL_STEPS=24 sbatch train_grpo_tdc_intern_s1_slurm.sh
+#   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=3 SMART_REPLAY=1 MAX_REPLAY_ROUNDS=3 sbatch train_grpo_tdc_intern_s1_slurm.sh
+#   SMART_REPLAY=1 COLO_EVAL_STEPS=24 sbatch train_grpo_tdc_intern_s1_slurm.sh
 # With curriculum balanced:
 #   CURRICULUM_BALANCED=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
 #
 # With both:
 #   SMART_REPLAY=1 CURRICULUM_BALANCED=1 sbatch scripts/train_grpo_tdc_intern_s1_slurm.sh
-#  SMART_REPLAY=1 COLO_EVAL_STEPS=16 MULTI_STAGE_DISPATCH=1 EFFECTIVE_ROLLOUT_BATCH_SIZE=4
+#  SMART_REPLAY=1 COLO_EVAL_STEPS=16 EFFECTIVE_ROLLOUT_BATCH_SIZE=4
 # Feature flags (set via env before sbatch):
 #   MODE=colocated|distributed           # Default: colocated
 #   EFFECTIVE_ROLLOUT_BATCH_SIZE=8       # Rollout batch size in distributed/async mode.
@@ -41,7 +41,7 @@
 #   TOOL_VERSION=v4                      # Tool schema version (default: v4)
 #   SMART_REPLAY=1               # Enable smart replay with max_replay_rounds=2
 #   CURRICULUM_BALANCED=1        # Enable curriculum-balanced sampling
-#   MULTI_STAGE_DISPATCH=1       # Continuous-refill dispatch (best for 2-GPU setups)
+
 #   TIS=1                        # Enable Truncated Importance Sampling (off-policy correction)
 #   TIS_TYPE=tis                 # TIS variant: tis (default), icepop, seq-mask-tis
 #   TIS_THRESHOLDS="0.5 5.0"    # Low and high clamp thresholds (default: 0.5 5.0)
@@ -108,7 +108,7 @@ run_task() {
     TOOL_VERSION="${TOOL_VERSION:-v4}"
     SMART_REPLAY="${SMART_REPLAY:-0}"
     MAX_REPLAY_ROUNDS="${MAX_REPLAY_ROUNDS:-2}"
-    MULTI_STAGE_DISPATCH="${MULTI_STAGE_DISPATCH:-0}"
+
     LIGER_GRPO_LOSS="${LIGER_GRPO_LOSS:-0}"
     CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
     TIS="${TIS:-0}"
@@ -405,9 +405,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
     if [ "$CURRICULUM_BALANCED" = "1" ]; then
         OPTIONAL_FLAGS+=" --curriculum_balanced"
     fi
-    if [ "$MULTI_STAGE_DISPATCH" = "1" ]; then
-        OPTIONAL_FLAGS+=" --deferred_dispatch"
-    fi
+
     if [ "$LIGER_GRPO_LOSS" = "1" ]; then
         OPTIONAL_FLAGS+=" --use_liger_grpo_loss"
     fi

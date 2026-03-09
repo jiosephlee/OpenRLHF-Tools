@@ -28,7 +28,7 @@
 #   TOOL_VERSION=v4                      # Tool schema version (default: v4)
 #   SMART_REPLAY=1                       # Enable smart replay with max_replay_rounds=2
 #   CURRICULUM_BALANCED=1                # Enable curriculum-balanced sampling
-#   MULTI_STAGE_DISPATCH=1               # Continuous-refill dispatch (best for 2-GPU setups)
+
 #   LIGER_GRPO_LOSS=1                    # Enable Liger fused GRPO loss
 #   TIS=1                                # Enable Truncated Importance Sampling (off-policy correction)
 #   TIS_TYPE=tis                         # TIS variant: tis (default), icepop, seq-mask-tis
@@ -56,7 +56,7 @@ ASYNC_ADVANTAGE="${ASYNC_ADVANTAGE:-4}"
 TOOL_VERSION="${TOOL_VERSION:-v4}"
 SMART_REPLAY="${SMART_REPLAY:-0}"
 MAX_REPLAY_ROUNDS="${MAX_REPLAY_ROUNDS:-2}"
-MULTI_STAGE_DISPATCH="${MULTI_STAGE_DISPATCH:-0}"
+
 LIGER_GRPO_LOSS="${LIGER_GRPO_LOSS:-0}"
 CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
 TIS="${TIS:-0}"
@@ -76,7 +76,7 @@ ZERO_STAGE=2
 PROMPT_MAX_LEN=12288 # Any responses longer than this will be truncated.
 N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-8}"
 TRAIN_MAX_TOKENS_PER_GPU=8192 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
-ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.5" | bc | awk '{print int($1)}')
+ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.25" | bc | awk '{print int($1)}')
 
 COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-32}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
 
@@ -297,7 +297,7 @@ echo "Warmup Steps: $WARMUP_STEPS (multiplier: $WARM_STEPS_MULTIPLIER)"
 echo "----------------------------------------"
 echo "Smart Replay: $SMART_REPLAY"
 echo "Curriculum Balanced: $CURRICULUM_BALANCED"
-echo "Multi Stage Dispatch: $MULTI_STAGE_DISPATCH"
+
 echo "Liger GRPO Loss: $LIGER_GRPO_LOSS"
 echo "TIS: $TIS (type=$TIS_TYPE, thresholds=$TIS_THRESHOLDS)"
 echo "GSPO: $GSPO"
@@ -339,9 +339,7 @@ fi
 if [ "$CURRICULUM_BALANCED" = "1" ]; then
     OPTIONAL_FLAGS+=" --curriculum_balanced"
 fi
-if [ "$MULTI_STAGE_DISPATCH" = "1" ]; then
-    OPTIONAL_FLAGS+=" --deferred_dispatch"
-fi
+
 if [ "$LIGER_GRPO_LOSS" = "1" ]; then
     OPTIONAL_FLAGS+=" --use_liger_grpo_loss"
 fi

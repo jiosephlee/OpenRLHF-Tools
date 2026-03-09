@@ -720,14 +720,6 @@ if __name__ == "__main__":
         default=False,
         help="Evenly interleave samples from each dataset across training",
     )
-    parser.add_argument(
-        "--deferred_dispatch",
-        action="store_true",
-        default=False,
-        help="Dispatches 75%% of prompts upfront, holds 25%% as reserve. "
-        "Dispatches reserve when any engine drops to ≤4 pending requests.",
-    )
-
     # ERL (Experiential Reinforcement Learning)
     parser.add_argument(
         "--erl_hard_threshold",

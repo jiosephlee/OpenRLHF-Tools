@@ -775,36 +775,13 @@ class SamplesGenerator:
 
         smart_replay = getattr(self.args, "smart_replay", False)
 
-        multi_stage = getattr(self.args, "deferred_dispatch", False)
-        n = len(prompts)
-
-        if multi_stage:
-            # Deferred dispatch (75/25): send 75% upfront, hold 25% as
-            # reserve.  The reserve is dispatched as one bulk batch when any
-            # engine drops to ≤4 pending requests.
-            RESERVE_THRESHOLD = 4
-            initial_count = max(1, int(n * 0.75))
-            reserve_prompts = prompts[initial_count:]
-            reserve_labels = labels[initial_count:]
-            reserve_dataset_indices = dataset_indices[initial_count:]
-            dispatches = self._dispatch_prompts_to_vllm(
-                prompts[:initial_count], labels[:initial_count], **generate_kwargs
-            )
-        else:
-            # Default: dispatch everything upfront.  The heap balancer in
-            # _dispatch_prompts_to_vllm already spreads load evenly, and
-            # vLLM's internal scheduler handles queuing efficiently.
-            reserve_prompts = []
-            reserve_labels = []
-            reserve_dataset_indices = []
-            dispatches = self._dispatch_prompts_to_vllm(prompts, labels, **generate_kwargs)
+        dispatches = self._dispatch_prompts_to_vllm(prompts, labels, **generate_kwargs)
 
         pending_refs = [ref for ref, _ in dispatches]
         ref_to_engine = {ref: engine_idx for ref, engine_idx in dispatches}
         # Map each ref → its dataset index for smart replay tracking.
         ref_to_dataset_idx = {ref: dataset_indices[i] for i, (ref, _) in enumerate(dispatches)}
         prompts_consumed += len(prompts)
-        reserve_dispatched = False
 
         # Track how many outstanding requests each engine has.
         engine_pending = defaultdict(int)
@@ -825,21 +802,7 @@ class SamplesGenerator:
                 ds_idx = ref_to_dataset_idx.pop(ref, None)
                 engine_pending[engine_idx] -= 1
 
-                # Deferred dispatch reserve: when any engine drops to
-                # ≤RESERVE_THRESHOLD pending, dispatch all reserve prompts at once.
-                if (
-                    multi_stage
-                    and reserve_prompts
-                    and not reserve_dispatched
-                    and engine_pending[engine_idx] <= RESERVE_THRESHOLD
-                ):
-                    new_dispatches = self._dispatch_prompts_to_vllm(reserve_prompts, reserve_labels, **generate_kwargs)
-                    for j, (new_ref, new_engine_idx) in enumerate(new_dispatches):
-                        pending_refs.append(new_ref)
-                        ref_to_engine[new_ref] = new_engine_idx
-                        ref_to_dataset_idx[new_ref] = reserve_dataset_indices[j]
-                        engine_pending[new_engine_idx] += 1
-                    reserve_dispatched = True
+
 
                 # Build Experience objects for each vLLM response returned from this worker.
                 responses = ray.get(ref)

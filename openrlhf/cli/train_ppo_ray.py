@@ -694,6 +694,15 @@ if __name__ == "__main__":
         default=False,
         help="After each episode, replay filtered prompts the model can still learn from",
     )
+    #### Prompt-level oversampling with early termination ####
+    parser.add_argument(
+        "--oversample_ratio",
+        type=float,
+        default=1.0,
+        help="Dispatch ceil(batch_size * ratio) prompts; early-terminate once batch_size accepted. "
+        "Cancelled prompts recycled via LeftOverPrompts phase. Default 1.0 (no oversampling).",
+    )
+    #### end oversampling ####
     parser.add_argument(
         "--constant_lr_with_warm_up",
         action="store_true",
@@ -838,6 +847,12 @@ if __name__ == "__main__":
     # Set vLLM generate_batch_size to rollout_batch_size if not specified
     if not args.vllm_generate_batch_size:
         args.vllm_generate_batch_size = args.rollout_batch_size
+
+    #### Oversample ratio validation ####
+    assert args.oversample_ratio >= 1.0, f"--oversample_ratio must be >= 1.0, got {args.oversample_ratio}"
+    if args.oversample_ratio > 1.0:
+        assert args.dynamic_filtering, "--oversample_ratio > 1.0 requires --dynamic_filtering"
+    #### end oversample ratio validation ####
 
     if args.dynamic_filtering:
         assert args.dynamic_filtering_reward_range[0] < args.dynamic_filtering_reward_range[1], (

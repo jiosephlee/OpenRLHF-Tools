@@ -1,4 +1,5 @@
 import heapq
+import math
 from collections import defaultdict
 from datetime import datetime
 import json
@@ -298,6 +299,14 @@ class SamplesGenerator:
         # Per-episode filtering stats (reset each episode).
         self._episode_easy_count = 0
         self._episode_hard_count = 0
+
+        #### Oversampling: missed indices tracking ####
+        self._missed_indices: set = set()
+        self._step_missed_count = 0
+        self._episode_missed_count = 0
+        # Store reference to original dataset for index lookups during replay.
+        self._original_dataset = prompts_dataloader.dataset
+        #### end oversampling ####
 
     def _to_jsonable(self, value):
         if isinstance(value, torch.Tensor):
@@ -643,6 +652,12 @@ class SamplesGenerator:
         """Return (hard_indices, kept_indices) accumulated during the episode."""
         return self._replay_hard_indices, self._replay_kept_indices
 
+    #### Oversampling: missed indices getter ####
+    def get_missed_indices(self) -> set:
+        """Return missed/cancelled indices from oversampling."""
+        return self._missed_indices
+    #### end oversampling ####
+
     def clear_replay_indices(self):
         """Reset replay tracking for a new episode."""
         self._replay_hard_indices = set()
@@ -651,6 +666,10 @@ class SamplesGenerator:
         self._discarded_hard_indices = set()
         self._episode_easy_count = 0
         self._episode_hard_count = 0
+        #### Oversampling: reset missed indices per episode ####
+        self._missed_indices = set()
+        self._episode_missed_count = 0
+        #### end oversampling ####
 
     def save_discarded_indices(self, episode: int):
         """Write the discarded indices of this episode to the runs_dir."""
@@ -661,6 +680,9 @@ class SamplesGenerator:
             "episode": episode,
             "too_easy": sorted(list(self._discarded_easy_indices)),
             "too_hard": sorted(list(self._discarded_hard_indices)),
+            #### Oversampling: include missed indices ####
+            "missed": sorted(list(self._missed_indices)),
+            #### end oversampling ####
         }
         with open(out_path, "w") as f:
             json.dump(data, f)
@@ -682,12 +704,24 @@ class SamplesGenerator:
             return 0.0
         return self._step_too_hard_count / self._step_prompts_consumed * 100
 
+    #### Oversampling: missed percentage property ####
+    @property
+    def step_missed_pct(self) -> float:
+        """Percentage of prompts consumed this step that were missed/cancelled."""
+        if self._step_prompts_consumed == 0:
+            return 0.0
+        return self._step_missed_count / self._step_prompts_consumed * 100
+    #### end oversampling ####
+
     @property
     def episode_filter_stats(self) -> dict:
         """Per-episode filtering stats for W&B logging."""
         return {
             "easy_discarded": self._episode_easy_count,
             "hard_kept": self._episode_hard_count,
+            #### Oversampling: include missed count ####
+            "missed_cancelled": self._episode_missed_count,
+            #### end oversampling ####
         }
 
     @torch.no_grad()
@@ -695,7 +729,10 @@ class SamplesGenerator:
         """Produce one batch and indicate if the dataloader is exhausted."""
         if getattr(self, "_dataloader_iter", None) is None:
             self._dataloader_iter = iter(self.prompts_dataloader)
-            self.clear_replay_indices()
+            #### Oversampling: skip replay index reset if caller opts out ####
+            if not generate_kwargs.pop("_skip_clear_replay", False):
+                self.clear_replay_indices()
+            #### end oversampling ####
         trace_step_idx = getattr(self, "_trace_step_idx", 0)
         self._trace_step_idx = trace_step_idx + 1
 
@@ -703,6 +740,9 @@ class SamplesGenerator:
         self._step_too_easy_count = 0
         self._step_too_hard_count = 0
         self._step_prompts_consumed = 0
+        #### Oversampling: reset per-step missed count ####
+        self._step_missed_count = 0
+        #### end oversampling ####
 
         # Wake sleeping vLLM engines before dispatching.
         # Wake both weights and KV cache — weights may still be asleep for
@@ -713,11 +753,17 @@ class SamplesGenerator:
             batch_vllm_engine_call(self.vllm_engines, "wake_up")
         self._last_vllm_wake_sec = time.time() - _wake_start
 
+        #### Oversampling: extract and forward oversample_ratio ####
+        oversample_ratio = generate_kwargs.pop(
+            "oversample_ratio", getattr(self.args, "oversample_ratio", 1.0)
+        )
+        #### end oversampling ####
         experiences, prompts_consumed, exhausted = self._generate_vllm(
             dataloader_iter=self._dataloader_iter,
             num_prompts=self.args.rollout_batch_size,
             dynamic_filtering=self.args.dynamic_filtering,
             trace_step_idx=trace_step_idx,
+            oversample_ratio=oversample_ratio,
             **generate_kwargs,
         )
         self._step_prompts_consumed = prompts_consumed
@@ -757,6 +803,11 @@ class SamplesGenerator:
         self, dataloader_iter, num_prompts: int, dynamic_filtering, **generate_kwargs
     ) -> Tuple[List[Experience], int, bool]:
         """Generate a batch of Experiences with optional reward filtering."""
+        #### Oversampling: compute oversampled dispatch count ####
+        oversample_ratio = generate_kwargs.pop("oversample_ratio", getattr(self.args, "oversample_ratio", 1.0))
+        oversampled_count = math.ceil(num_prompts * oversample_ratio) if dynamic_filtering else num_prompts
+        #### end oversampling ####
+
         step_idx = int(generate_kwargs.get("trace_step_idx", generate_kwargs.get("global_step", 0)))
         self._current_step_group_sizes = []  # Reset per-prompt group sizes for ERL
 
@@ -767,8 +818,35 @@ class SamplesGenerator:
         generation_start_time = time.time()
 
         prompts_consumed = 0
-        dataset_indices, prompts, labels, exhausted = _collect_prompt_batch(dataloader_iter, num_prompts)
-        # Stop early if the prompt source is fully consumed.
+        #### Oversampling: collect oversampled_count prompts, fill from missed_indices ####
+        dataset_indices, prompts, labels, exhausted = _collect_prompt_batch(dataloader_iter, oversampled_count)
+
+        # Fill-in: when dataloader exhausts, supplement from missed_indices
+        if exhausted and len(prompts) < oversampled_count and self._missed_indices:
+            remaining_needed = oversampled_count - len(prompts)
+            fill_indices = list(self._missed_indices)[:remaining_needed]
+            for idx in fill_indices:
+                dataset_indices.append(idx)
+                prompts.append(self._original_dataset.prompts[idx])
+                labels.append(self._original_dataset.labels[idx])
+            self._missed_indices -= set(fill_indices)
+            if len(prompts) < oversampled_count:
+                logger.warning(
+                    f"[Oversample] Could only fill {len(prompts)}/{oversampled_count} "
+                    f"(dataloader exhausted, {len(self._missed_indices)} missed remaining)"
+                )
+
+        # If can't even fill num_prompts (base, not oversampled): mark as missed and skip
+        if len(prompts) < num_prompts:
+            for idx in dataset_indices:
+                self._missed_indices.add(idx)
+                self._step_missed_count += 1
+                self._episode_missed_count += 1
+            self._last_generation_wall_time = 0.0
+            return [], len(prompts), True
+        #### end oversampling ####
+
+        # Stop early if the prompt source is fully consumed and nothing collected.
         if exhausted and not prompts:
             self._last_generation_wall_time = 0.0
             return [], prompts_consumed, exhausted
@@ -789,6 +867,7 @@ class SamplesGenerator:
             engine_pending[engine_idx] += 1
 
         accepted_experiences: List[Experience] = []
+        accepted_prompt_groups = 0  #### Oversampling: track accepted groups for early termination ####
         pbar = tqdm(range(num_prompts), desc="Generate samples")
         filtered_count = 0
         episode_traces: list = []
@@ -882,24 +961,59 @@ class SamplesGenerator:
                     if not hasattr(self, "_current_step_group_sizes"):
                         self._current_step_group_sizes = []
                     self._current_step_group_sizes.append(len(experiences))
+                    accepted_prompt_groups += 1
                     pbar.set_postfix({"prompts_consumed": prompts_consumed})
                     pbar.update()
+
+                    #### Oversampling: early termination once enough accepted ####
+                    if accepted_prompt_groups >= num_prompts and oversample_ratio > 1.0:
+                        cancelled_refs = list(pending_refs)
+                        for cancel_ref in cancelled_refs:
+                            missed_idx = ref_to_dataset_idx.get(cancel_ref)
+                            if missed_idx is not None:
+                                self._missed_indices.add(missed_idx)
+                                self._step_missed_count += 1
+                                self._episode_missed_count += 1
+                        logger.info(
+                            f"[Oversample] Early termination: {accepted_prompt_groups} accepted, "
+                            f"cancelled {len(cancelled_refs)} in-flight, "
+                            f"{self._step_missed_count} missed this step"
+                        )
+                        # Drain abandoned refs so vLLM engines finish before sleep.
+                        # All stragglers run in parallel so we only wait for the slowest.
+                        if cancelled_refs:
+                            try:
+                                ray.get(cancelled_refs)
+                            except Exception:
+                                pass  # best-effort drain
+                        pending_refs = []
+                        break
+                    #### end oversampling ####
 
                 # If rejected, request a new prompt to keep filling the batch.
                 else:
                     # Pull another prompt when the current one fails filtering.
                     new_ds_indices, new_prompts, new_labels, exhausted = _collect_prompt_batch(dataloader_iter, 1)
                     prompts_consumed += len(new_prompts)
-                    # Dataloader drained: stop adding work and drain in-flight refs.
+
+                    #### Oversampling: fall back to missed_indices when dataloader exhausted ####
+                    if exhausted and not new_prompts and self._missed_indices:
+                        fallback_idx = self._missed_indices.pop()
+                        new_ds_indices = [fallback_idx]
+                        new_prompts = [self._original_dataset.prompts[fallback_idx]]
+                        new_labels = [self._original_dataset.labels[fallback_idx]]
+                    #### end oversampling ####
+
+                    # Dataloader drained (and no missed fallback): drain in-flight refs.
                     # This avoids racing vLLM sleep/wake against active decode kernels.
-                    if exhausted:
+                    if exhausted and not new_prompts:
                         logger.info(
                             "Prompt dataloader exhausted during refill; "
                             f"draining {len(pending_refs)} in-flight vLLM refs before sleep."
                         )
                         exhausted_during_refill = True
                     # Otherwise dispatch the new prompt to keep filling the queue.
-                    else:
+                    elif new_prompts:
                         new_dispatches = self._dispatch_prompts_to_vllm(new_prompts, new_labels, **generate_kwargs)
                         for j, (new_ref, new_engine_idx) in enumerate(new_dispatches):
                             pending_refs.append(new_ref)
@@ -918,7 +1032,8 @@ class SamplesGenerator:
             logger.info(
                 f"[SmartReplay] Step done: replay buffer now has "
                 f"{len(self._replay_hard_indices)} hard + {len(self._replay_kept_indices)} kept "
-                f"= {len(self._replay_hard_indices) + len(self._replay_kept_indices)} total prompts"
+                f"+ {len(self._missed_indices)} missed "
+                f"= {len(self._replay_hard_indices) + len(self._replay_kept_indices) + len(self._missed_indices)} total prompts"
             )
 
         if exhausted_during_refill:
@@ -928,7 +1043,9 @@ class SamplesGenerator:
                     f"{len(self._replay_hard_indices)} hard + {len(self._replay_kept_indices)} kept "
                     f"= {len(self._replay_hard_indices) + len(self._replay_kept_indices)} total prompts"
                 )
-            return [], prompts_consumed, True
+            #### Oversampling: return partial results instead of [] ####
+            return accepted_experiences, prompts_consumed, True
+            #### end oversampling ####
 
         return accepted_experiences, prompts_consumed, exhausted
 

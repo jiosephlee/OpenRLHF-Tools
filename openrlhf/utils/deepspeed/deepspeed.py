@@ -319,7 +319,12 @@ class DeepspeedStrategy(ABC):
                 self.print(
                     f"[ds_init] Fixing LR scheduler: {old_n} → {n_groups} param_groups"
                 )
-                scheduler.base_lrs = [pg["lr"] for pg in optim.param_groups]
+                # NB: Do NOT read pg["lr"] here — the scheduler has already
+                # stepped, so pg["lr"] reflects the warmup-scaled value (often 0
+                # at step 0), not the true base LR. Instead, reuse the original
+                # base_lrs values (they're typically all equal).
+                orig_base_lr = scheduler.base_lrs[0]
+                scheduler.base_lrs = [orig_base_lr] * n_groups
                 # LambdaLR (used by constant_with_warmup) also stores
                 # per-group lambda functions and last LRs.
                 if hasattr(scheduler, "lr_lambdas") and len(scheduler.lr_lambdas) != n_groups:

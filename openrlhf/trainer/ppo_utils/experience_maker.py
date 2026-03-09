@@ -979,13 +979,21 @@ class SamplesGenerator:
                             f"cancelled {len(cancelled_refs)} in-flight, "
                             f"{self._step_missed_count} missed this step"
                         )
-                        # Drain abandoned refs so vLLM engines finish before sleep.
-                        # All stragglers run in parallel so we only wait for the slowest.
+                        # Cancel abandoned refs so vLLM engines are idle before sleep.
+                        # ray.cancel(force=False) raises CancelledError inside the
+                        # remote coroutine, which propagates through the await chain
+                        # and triggers vLLM request abort. ray.get() then returns as
+                        # soon as cancellation cleanup finishes — not when the original
+                        # generation would have completed.
+                        for cancel_ref in cancelled_refs:
+                            ray.cancel(cancel_ref, force=False)
                         if cancelled_refs:
                             try:
                                 ray.get(cancelled_refs)
+                            except ray.exceptions.TaskCancelledError:
+                                pass
                             except Exception:
-                                pass  # best-effort drain
+                                pass  # best-effort
                         pending_refs = []
                         break
                     #### end oversampling ####

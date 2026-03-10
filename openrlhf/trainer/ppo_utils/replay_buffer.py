@@ -264,7 +264,10 @@ class NaiveReplayBuffer(ABC):
         world_size = dist.get_world_size()
         dp_size = world_size // args.ring_attn_size // args.ds_tensor_parallel_size
         local_train_batch_size = args.train_batch_size // dp_size
-        num_steps = args.rollout_batch_size * args.n_samples_per_prompt // args.train_batch_size
+        #### Partial-batch safe: derive num_steps from actual buffer size ####
+        total_samples = len(self.items)
+        num_steps = total_samples // local_train_batch_size
+        #### end partial-batch safe ####
 
         # split by train_batch_size, sync num_microbatches across dp
         num_microbatches = []
@@ -322,7 +325,10 @@ class NaiveReplayBuffer(ABC):
         world_size = dist.get_world_size()
         dp_size = world_size // args.ring_attn_size // args.ds_tensor_parallel_size
         local_train_batch_size = args.train_batch_size // dp_size
-        num_steps = args.rollout_batch_size * args.n_samples_per_prompt // args.train_batch_size
+        #### Partial-batch safe: derive num_steps from actual buffer size ####
+        total_samples = len(self.items)
+        num_steps = total_samples // local_train_batch_size
+        #### end partial-batch safe ####
 
         num_microbatches = []
         data_partitions = []

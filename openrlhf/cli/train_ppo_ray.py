@@ -104,6 +104,7 @@ def train(args):
             vllm_stop_strings=args.vllm_stop_strings,
             chat_protocol=args.chat_protocol,
             tool_version=args.tool_version,
+            length_penalty_max_length=args.length_penalty_max_length,
             reduce_cuda_graph=args.optimal_flags_b200_gpt_oss,
             vllm_cudagraph_max_capture_size=args.vllm_cudagraph_max_capture_size,
             kv_cache_dtype=args.kv_cache_dtype,
@@ -620,6 +621,12 @@ if __name__ == "__main__":
     parser.add_argument("--ref_reward_offload", action="store_true", default=False)
     parser.add_argument("--agent_func_path", type=str, default=None, help="Agent script path")
     parser.add_argument("--agent_max_steps", type=int, default=5, help="Maximum number of agent turns per episode")
+    parser.add_argument(
+        "--length_penalty_max_length",
+        type=int,
+        default=0,
+        help="Upper limit of length penalty; 0 disables it",
+    )
     parser.add_argument(
         "--vllm_stop_strings",
         type=str,

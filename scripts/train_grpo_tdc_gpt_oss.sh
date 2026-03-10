@@ -44,6 +44,9 @@
 #   CURRICULUM_BALANCED=1                # Enable curriculum-balanced sampling
 
 #   LIGER_GRPO_LOSS=1                    # Enable Liger fused GRPO loss
+#   LIGER_GRPO_BACKEND=triton            # Liger backend: triton (default) or chunked
+#   LIGER_LOSS_TYPE=grpo                 # Loss type: grpo, dapo, bnpo, dr_grpo, cispo, sapo
+#   LIGER_CHUNK_SIZE=1                   # Chunk size for chunked backend (1=max chunking)
 #   TIS=1                                # Enable Truncated Importance Sampling (off-policy correction)
 #   TIS_TYPE=tis                         # TIS variant: tis (default), icepop, seq-mask-tis
 #   TIS_THRESHOLDS="0.5 5.0"            # Low and high clamp thresholds (default: 0.5 5.0)
@@ -125,6 +128,9 @@ SMART_REPLAY="${SMART_REPLAY:-0}"
 MAX_REPLAY_ROUNDS="${MAX_REPLAY_ROUNDS:-2}"
 
 LIGER_GRPO_LOSS="${LIGER_GRPO_LOSS:-0}"
+LIGER_GRPO_BACKEND="${LIGER_GRPO_BACKEND:-triton}"
+LIGER_LOSS_TYPE="${LIGER_LOSS_TYPE:-dapo}"
+LIGER_CHUNK_SIZE="${LIGER_CHUNK_SIZE:-1}"
 CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
 TIS="${TIS:-0}"
 TIS_TYPE="${TIS_TYPE:-tis}"
@@ -390,7 +396,7 @@ echo "----------------------------------------"
 echo "Smart Replay: $SMART_REPLAY"
 echo "Curriculum Balanced: $CURRICULUM_BALANCED"
 
-echo "Liger GRPO Loss: $LIGER_GRPO_LOSS"
+echo "Liger GRPO Loss: $LIGER_GRPO_LOSS (backend=$LIGER_GRPO_BACKEND, loss_type=$LIGER_LOSS_TYPE, chunk_size=$LIGER_CHUNK_SIZE)"
 echo "TIS: $TIS (type=$TIS_TYPE, thresholds=$TIS_THRESHOLDS)"
 echo "GSPO: $GSPO"
 echo "KV Cache Dtype: ${KV_CACHE_DTYPE:-auto}"
@@ -434,7 +440,10 @@ if [ "$CURRICULUM_BALANCED" = "1" ]; then
 fi
 
 if [ "$LIGER_GRPO_LOSS" = "1" ]; then
-    OPTIONAL_FLAGS+=" --use_liger_grpo_loss"
+    OPTIONAL_FLAGS+=" --use_liger_grpo_loss --liger_grpo_backend $LIGER_GRPO_BACKEND --liger_loss_type $LIGER_LOSS_TYPE"
+    if [ "$LIGER_GRPO_BACKEND" = "chunked" ]; then
+        OPTIONAL_FLAGS+=" --liger_chunk_size $LIGER_CHUNK_SIZE"
+    fi
 fi
 if [ "$TIS" = "1" ]; then
     OPTIONAL_FLAGS+=" --enable_vllm_is_correction --vllm_is_correction_type $TIS_TYPE --vllm_is_truncated_threshold $TIS_THRESHOLDS"

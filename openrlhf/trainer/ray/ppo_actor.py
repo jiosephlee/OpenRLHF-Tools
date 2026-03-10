@@ -172,6 +172,7 @@ class ActorPPOTrainer(ABC):
 
         # Liger fused lm_head + GRPO loss (opt-in)
         self.use_liger_grpo_loss = getattr(self.args, "use_liger_grpo_loss", False)
+        self.liger_grpo_backend = getattr(self.args, "liger_grpo_backend", "triton")
         if self.use_liger_grpo_loss:
             assert self.args.zero_stage != 3, (
                 "--use_liger_grpo_loss requires direct access to lm_head.weight, "
@@ -181,19 +182,43 @@ class ActorPPOTrainer(ABC):
                 "--use_liger_grpo_loss cannot compute entropy (requires full logits). "
                 "Remove --entropy_loss_coef when using Liger fused GRPO loss."
             )
-            from liger_kernel.chunked_loss import LigerFusedLinearGRPOLoss
 
-            self.liger_grpo_loss = LigerFusedLinearGRPOLoss(
-                beta=self.args.init_kl_coef,
-                epsilon_low=self.args.eps_clip_low_high[0],
-                epsilon_high=self.args.eps_clip_low_high[1],
-                temperature=getattr(self.args, "temperature", 1.0),
-                use_ref_model=self.args.init_kl_coef > 0,
-            )
-            logger.info(
-                f"[Liger GRPO] Initialized fused lm_head+GRPO loss "
-                f"(beta={self.args.init_kl_coef}, eps=[{self.args.eps_clip_low_high[0]}, {self.args.eps_clip_low_high[1]}])"
-            )
+            #### Liger GRPO loss: triton or chunked backend (liger-kernel PRs #993/#1088) ####
+            if self.liger_grpo_backend == "triton":
+                # Triton fused kernel — computes log-softmax + loss + backward in
+                # custom Triton kernels. Never materializes the [B,L,V] log-softmax
+                # tensor; recomputes from saved LSE during backward.
+                from liger_kernel.transformers.grpo_loss import triton_grpo_loss
+
+                self._triton_grpo_loss = triton_grpo_loss
+                logger.info(
+                    f"[Liger GRPO] Initialized Triton fused kernel backend "
+                    f"(beta={self.args.init_kl_coef}, eps=[{self.args.eps_clip_low_high[0]}, {self.args.eps_clip_low_high[1]}], "
+                    f"loss_type={getattr(self.args, 'liger_loss_type', 'grpo')})"
+                )
+            else:
+                # Chunked fused-linear — fuses lm_head projection with loss,
+                # processing chunk_size sequences at a time. Never materializes
+                # the full [B,T,V] logits tensor.
+                from liger_kernel.chunked_loss import LigerFusedLinearGRPOLoss
+
+                self.liger_grpo_loss = LigerFusedLinearGRPOLoss(
+                    beta=self.args.init_kl_coef,
+                    epsilon_low=self.args.eps_clip_low_high[0],
+                    epsilon_high=self.args.eps_clip_low_high[1],
+                    temperature=getattr(self.args, "temperature", 1.0),
+                    use_ref_model=self.args.init_kl_coef > 0,
+                    loss_type=getattr(self.args, "liger_loss_type", "dapo"),
+                    chunk_size=getattr(self.args, "liger_chunk_size", 1),
+                    compiled=True,
+                )
+                logger.info(
+                    f"[Liger GRPO] Initialized chunked fused-linear backend "
+                    f"(beta={self.args.init_kl_coef}, eps=[{self.args.eps_clip_low_high[0]}, {self.args.eps_clip_low_high[1]}], "
+                    f"loss_type={getattr(self.args, 'liger_loss_type', 'grpo')}, "
+                    f"chunk_size={getattr(self.args, 'liger_chunk_size', 1)})"
+                )
+            #### end Liger GRPO loss init ####
 
         self.replay_buffer = NaiveReplayBuffer(
             micro_train_batch_size,
@@ -408,7 +433,7 @@ class ActorPPOTrainer(ABC):
         base_action_log_probs = experience.base_action_log_probs
 
         if self.use_liger_grpo_loss:
-            # Fused lm_head + GRPO loss path — never materializes full [B, T, V] logits
+            # Get hidden states (shared by both Liger backends)
             hidden_states, aux_loss = self.actor.forward_hidden_states(
                 sequences,
                 attention_mask=attention_mask,
@@ -416,23 +441,54 @@ class ActorPPOTrainer(ABC):
                 packed_seq_lens=packed_seq_lens,
             )
 
-            # Slice to action/completion region (match action_mask dimensions)
-            hidden_states = hidden_states[:, -action_mask.shape[1] :, :]
-            completion_ids = sequences[:, -action_mask.shape[1] :]
-
-            lm_head = self.actor.get_lm_head()
-            actor_loss, metrics = self.liger_grpo_loss(
-                _input=hidden_states,
-                lin_weight=lm_head.weight,
-                selected_token_ids=completion_ids,
-                attention_mask=action_mask,  # Liger uses this as loss mask
-                advantages=advantages,
-                bias=getattr(lm_head, "bias", None),
-                old_per_token_logps=old_action_log_probs,
-                ref_per_token_logps=base_action_log_probs
+            L = action_mask.shape[1]
+            completion_ids = sequences[:, -L:]
+            ref_logp = (
+                base_action_log_probs
                 if self.args.use_kl_loss and self.args.init_kl_coef > 0
-                else None,
+                else None
             )
+
+            #### Liger GRPO loss: triton or chunked backend ####
+            if self.liger_grpo_backend == "triton":
+                # Triton path: compute logits for L+1 positions, then fused Triton kernel
+                # handles log-softmax + loss + backward without materializing [B,L,V] log-softmax.
+                hidden_states = hidden_states[:, -(L + 1) :, :]
+                lm_head = self.actor.get_lm_head()
+                logits = torch.nn.functional.linear(
+                    hidden_states, lm_head.weight, getattr(lm_head, "bias", None)
+                )  # (B, L+1, V)
+
+                actor_loss, metrics = self._triton_grpo_loss(
+                    logits=logits,
+                    old_logp=old_action_log_probs,
+                    ref_logp=ref_logp,
+                    completion_ids=completion_ids,
+                    advantages=advantages,
+                    completion_mask=action_mask,
+                    temperature=self.args.temperature,
+                    beta=self.args.init_kl_coef,
+                    eps_low=self.args.eps_clip_low_high[0],
+                    eps_high=self.args.eps_clip_low_high[1],
+                    loss_type=getattr(self.args, "liger_loss_type", "dapo"),
+                    reduce=True,
+                )
+            else:
+                # Chunked path: fuse lm_head projection with loss, never materializes
+                # the full [B,T,V] logits tensor.
+                hidden_states = hidden_states[:, -L :, :]
+                lm_head = self.actor.get_lm_head()
+                actor_loss, metrics = self.liger_grpo_loss(
+                    _input=hidden_states,
+                    lin_weight=lm_head.weight,
+                    selected_token_ids=completion_ids,
+                    attention_mask=action_mask,
+                    advantages=advantages,
+                    bias=getattr(lm_head, "bias", None),
+                    old_per_token_logps=old_action_log_probs,
+                    ref_per_token_logps=ref_logp,
+                )
+            #### end Liger GRPO loss backend dispatch ####
 
             clip_ratio = metrics[-1]
             ppo_kl = metrics[0] if self.args.init_kl_coef > 0 else torch.tensor(0.0)

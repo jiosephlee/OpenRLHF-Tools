@@ -159,6 +159,7 @@ class ActorPPOTrainer(ABC):
             clip_eps_low=self.args.eps_clip_low_high[0],
             clip_eps_high=self.args.eps_clip_low_high[1],
             dual_clip=self.args.dual_clip,
+            token_level_loss=getattr(self.args, "token_level_loss", "local_rank"),
             policy_loss_type=self.args.policy_loss_type,
             enable_vllm_is_correction=self.args.enable_vllm_is_correction,
             vllm_is_truncated_threshold=(
@@ -557,7 +558,7 @@ class ActorPPOTrainer(ABC):
                 kl_loss = 0
 
             loss = actor_loss + kl_loss * kl_ctl
-            # mixtral
+            # mixtral or gpt-oss
             if self.aux_loss:
                 loss += output.aux_loss * self.args.aux_loss_coef
             # entropy loss

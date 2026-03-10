@@ -507,6 +507,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --prompt_max_len $PROMPT_MAX_LEN \
     --generate_max_len 2048 \
     --max_samples 1000000 \
+    --token_level_loss global \
     --use_adaptive_batch \
     --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
     --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \

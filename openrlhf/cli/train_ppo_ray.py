@@ -590,6 +590,18 @@ if __name__ == "__main__":
     parser.add_argument("--init_kl_coef", type=float, default=0.01, help="KL penalty in PPO")
     parser.add_argument("--policy_loss_type", type=str, default="ppo", choices=["ppo", "gspo"])
     parser.add_argument(
+        "--token_level_loss",
+        type=str,
+        default="local_rank",
+        choices=["none", "local_rank", "global"],
+        help=(
+            "Loss reduction mode. "
+            "'none': per-sequence mean then batch mean (grpo-style). "
+            "'local_rank': flat token mean within rank (bnpo). "
+            "'global': flat token mean with cross-rank all-reduce normalizer (dapo)."
+        ),
+    )
+    parser.add_argument(
         "--kl_estimator",
         type=str,
         default="k1",
@@ -849,6 +861,11 @@ if __name__ == "__main__":
         if not args.packing_samples:
             print("[Warning] --ring_attn_size > 1 requires --packing_samples.")
             args.packing_samples = True
+
+    #### Convert token_level_loss "none" string to None ####
+    if args.token_level_loss == "none":
+        args.token_level_loss = None
+    #### end token_level_loss conversion ####
 
     if args.use_adaptive_batch:
         args.use_dynamic_batch = True

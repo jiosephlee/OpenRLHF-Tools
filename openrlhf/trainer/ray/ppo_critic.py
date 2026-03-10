@@ -200,24 +200,29 @@ class CriticModelActor(BaseModelActor):
 
         # configure scheduler
         num_warmup_steps = getattr(args, "warmup_steps", None) or math.ceil(max_steps * args.lr_warmup_ratio)
-        critic_scheduler = get_scheduler(
-            args.lr_scheduler,
-            critic_optim,
-            num_warmup_steps=num_warmup_steps,
-            num_training_steps=max_steps,
-            scheduler_specific_kwargs={"min_lr": args.critic_learning_rate * 0.1},
-        )
 
         if args.gradient_checkpointing:
             critic.gradient_checkpointing_enable(
                 gradient_checkpointing_kwargs={"use_reentrant": args.gradient_checkpointing_use_reentrant}
             )
 
-        # prepare models/optimizers...
-        self.critic, self.critic_optim, self.critic_scheduler = strategy.prepare(
-            (critic, critic_optim, critic_scheduler),
+        #### Deferred scheduler creation: nightly PyTorch + DeepSpeed fix ####
+        self.critic, self.critic_optim, _ = strategy.prepare(
+            (critic, critic_optim, None),
             is_rlhf=True,
         )
+        self.critic_scheduler = get_scheduler(
+            args.lr_scheduler,
+            self.critic_optim,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=max_steps,
+            scheduler_specific_kwargs={"min_lr": args.critic_learning_rate * 0.1},
+        )
+        strategy.print(
+            f"[Scheduler] Created after strategy.prepare() — "
+            f"optimizer has {len(self.critic_optim.param_groups)} param group(s)"
+        )
+        #### end deferred scheduler creation ####
 
         # load checkpoint
         if args.load_checkpoint and os.path.exists(os.path.join(args.ckpt_path, "_actor")):

@@ -371,8 +371,13 @@ class Actor(nn.Module):
                 from transformers.models.mixtral.modeling_mixtral import load_balancing_loss_func
 
                 #### Use causal_lm.config (not self.model.config which may be DS dict) ####
-                num_experts = causal_lm.config.num_local_experts
-                top_k = causal_lm.config.num_experts_per_tok
+                cfg = causal_lm.config
+                if isinstance(cfg, dict):
+                    num_experts = cfg["num_local_experts"]
+                    top_k = cfg["num_experts_per_tok"]
+                else:
+                    num_experts = cfg.num_local_experts
+                    top_k = cfg.num_experts_per_tok
                 #### end config ####
                 aux_loss = load_balancing_loss_func(router_logits, num_experts, top_k, attention_mask)
 

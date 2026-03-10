@@ -442,11 +442,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--liger_grpo_backend",
         type=str,
-        default="triton",
+        default="chunked",
         choices=["triton", "chunked"],
-        help="Liger GRPO loss backend: 'triton' uses fused Triton kernels (saves log-softmax memory, "
-        "recomputes in backward); 'chunked' fuses lm_head+loss and processes chunk_size sequences at a time "
-        "(never materializes full logits tensor). Default: triton.",
+        help="Liger GRPO loss backend: 'chunked' (default) fuses lm_head+loss and processes chunk_size "
+        "sequences at a time (never materializes full logits tensor); 'triton' uses fused Triton kernels "
+        "(still materializes logits but saves log-softmax memory by recomputing in backward).",
     )
     parser.add_argument(
         "--liger_chunk_size",

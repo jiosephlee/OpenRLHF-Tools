@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers.trainer import get_scheduler
 
-from openrlhf.models import Actor, PolicyLoss
+from openrlhf.models import Actor, LigerPolicyLoss, PolicyLoss
 from openrlhf.models.utils import compute_approx_kl, masked_mean
 from openrlhf.trainer.ppo_utils.experience_maker import Experience
 from openrlhf.utils import get_tokenizer
@@ -155,25 +155,11 @@ class ActorPPOTrainer(ABC):
         self.vllm_engines = vllm_engines
         self.max_epochs = self.args.max_epochs
 
-        self.actor_loss_fn = PolicyLoss(
-            clip_eps_low=self.args.eps_clip_low_high[0],
-            clip_eps_high=self.args.eps_clip_low_high[1],
-            dual_clip=self.args.dual_clip,
-            token_level_loss=getattr(self.args, "token_level_loss", "local_rank"),
-            policy_loss_type=self.args.policy_loss_type,
-            enable_vllm_is_correction=self.args.enable_vllm_is_correction,
-            vllm_is_truncated_threshold=(
-                self.args.vllm_is_truncated_threshold if self.args.enable_vllm_is_correction else None
-            ),
-            vllm_is_correction_type=self.args.vllm_is_correction_type,
-        )
-
         # Mixtral 8x7b
         self.aux_loss = self.args.aux_loss_coef > 1e-8
 
-        # Liger fused lm_head + GRPO loss (opt-in)
+        #### Policy loss: route to PolicyLoss or LigerPolicyLoss ####
         self.use_liger_grpo_loss = getattr(self.args, "use_liger_grpo_loss", False)
-        self.liger_grpo_backend = getattr(self.args, "liger_grpo_backend", "triton")
         if self.use_liger_grpo_loss:
             assert self.args.zero_stage != 3, (
                 "--use_liger_grpo_loss requires direct access to lm_head.weight, "
@@ -183,43 +169,34 @@ class ActorPPOTrainer(ABC):
                 "--use_liger_grpo_loss cannot compute entropy (requires full logits). "
                 "Remove --entropy_loss_coef when using Liger fused GRPO loss."
             )
-
-            #### Liger GRPO loss: triton or chunked backend (liger-kernel PRs #993/#1088) ####
-            if self.liger_grpo_backend == "triton":
-                # Triton fused kernel — computes log-softmax + loss + backward in
-                # custom Triton kernels. Never materializes the [B,L,V] log-softmax
-                # tensor; recomputes from saved LSE during backward.
-                from liger_kernel.transformers.grpo_loss import triton_grpo_loss
-
-                self._triton_grpo_loss = triton_grpo_loss
-                logger.info(
-                    f"[Liger GRPO] Initialized Triton fused kernel backend "
-                    f"(beta={self.args.init_kl_coef}, eps=[{self.args.eps_clip_low_high[0]}, {self.args.eps_clip_low_high[1]}], "
-                    f"loss_type={getattr(self.args, 'liger_loss_type', 'grpo')})"
-                )
-            else:
-                # Chunked fused-linear — fuses lm_head projection with loss,
-                # processing chunk_size sequences at a time. Never materializes
-                # the full [B,T,V] logits tensor.
-                from liger_kernel.chunked_loss import LigerFusedLinearGRPOLoss
-
-                self.liger_grpo_loss = LigerFusedLinearGRPOLoss(
-                    beta=self.args.init_kl_coef,
-                    epsilon_low=self.args.eps_clip_low_high[0],
-                    epsilon_high=self.args.eps_clip_low_high[1],
-                    temperature=getattr(self.args, "temperature", 1.0),
-                    use_ref_model=self.args.init_kl_coef > 0,
-                    loss_type=getattr(self.args, "liger_loss_type", "dapo"),
-                    chunk_size=getattr(self.args, "liger_chunk_size", 1),
-                    compiled=True,
-                )
-                logger.info(
-                    f"[Liger GRPO] Initialized chunked fused-linear backend "
-                    f"(beta={self.args.init_kl_coef}, eps=[{self.args.eps_clip_low_high[0]}, {self.args.eps_clip_low_high[1]}], "
-                    f"loss_type={getattr(self.args, 'liger_loss_type', 'grpo')}, "
-                    f"chunk_size={getattr(self.args, 'liger_chunk_size', 1)})"
-                )
-            #### end Liger GRPO loss init ####
+            self.actor_loss_fn = LigerPolicyLoss(
+                clip_eps_low=self.args.eps_clip_low_high[0],
+                clip_eps_high=self.args.eps_clip_low_high[1],
+                beta=0.0,  # KL handled externally in shared post-loss code
+                temperature=getattr(self.args, "temperature", 1.0),
+                loss_type=getattr(self.args, "liger_loss_type", "grpo"),
+                backend=getattr(self.args, "liger_grpo_backend", "chunked"),
+                chunk_size=getattr(self.args, "liger_chunk_size", 1),
+                enable_vllm_is_correction=self.args.enable_vllm_is_correction,
+                vllm_is_truncated_threshold=(
+                    self.args.vllm_is_truncated_threshold if self.args.enable_vllm_is_correction else None
+                ),
+                vllm_is_correction_type=self.args.vllm_is_correction_type,
+            )
+        else:
+            self.actor_loss_fn = PolicyLoss(
+                clip_eps_low=self.args.eps_clip_low_high[0],
+                clip_eps_high=self.args.eps_clip_low_high[1],
+                dual_clip=self.args.dual_clip,
+                token_level_loss=getattr(self.args, "token_level_loss", "local_rank"),
+                policy_loss_type=self.args.policy_loss_type,
+                enable_vllm_is_correction=self.args.enable_vllm_is_correction,
+                vllm_is_truncated_threshold=(
+                    self.args.vllm_is_truncated_threshold if self.args.enable_vllm_is_correction else None
+                ),
+                vllm_is_correction_type=self.args.vllm_is_correction_type,
+            )
+        #### end policy loss init ####
 
         self.replay_buffer = NaiveReplayBuffer(
             micro_train_batch_size,
@@ -433,79 +410,39 @@ class ActorPPOTrainer(ABC):
         advantages = experience.advantages
         base_action_log_probs = experience.base_action_log_probs
 
+        #### Forward pass + policy loss (divergent) ####
+        # Both paths produce: actor_loss, clip_ratio, ppo_kl, vllm_kl, aux_loss
+        # Liger path also sets action_log_probs=None, model_output=None
+        action_log_probs = None
+        model_output = None
+        aux_loss = None
+
         if self.use_liger_grpo_loss:
-            # Get hidden states (shared by both Liger backends)
+            # Liger: backbone-only forward → fused lm_head + loss
             hidden_states, aux_loss = self.actor.forward_hidden_states(
                 sequences,
                 attention_mask=attention_mask,
                 ring_attn_group=self.strategy.ring_attn_group,
                 packed_seq_lens=packed_seq_lens,
             )
-
             L = action_mask.shape[1]
-            completion_ids = sequences[:, -L:]
-            ref_logp = (
-                base_action_log_probs
-                if self.args.use_kl_loss and self.args.init_kl_coef > 0
-                else None
+            lm_head = self.actor.get_lm_head()
+            backend = getattr(self.args, "liger_grpo_backend", "chunked")
+            # Triton needs L+1 positions (next-token prediction); chunked needs L
+            hs_slice = hidden_states[:, -(L + 1) :, :] if backend == "triton" else hidden_states[:, -L:, :]
+
+            actor_loss, clip_ratio, ppo_kl, vllm_kl = self.actor_loss_fn(
+                hidden_states=hs_slice,
+                lm_head=lm_head,
+                completion_ids=sequences[:, -L:],
+                action_mask=action_mask,
+                advantages=advantages,
+                old_log_probs=old_action_log_probs,
+                rollout_log_probs=experience.rollout_log_probs,
             )
-
-            #### Liger GRPO loss: triton or chunked backend ####
-            if self.liger_grpo_backend == "triton":
-                # Triton path: compute logits for L+1 positions, then fused Triton kernel
-                # handles log-softmax + loss + backward without materializing [B,L,V] log-softmax.
-                hidden_states = hidden_states[:, -(L + 1) :, :]
-                lm_head = self.actor.get_lm_head()
-                logits = torch.nn.functional.linear(
-                    hidden_states, lm_head.weight, getattr(lm_head, "bias", None)
-                )  # (B, L+1, V)
-
-                actor_loss, metrics = self._triton_grpo_loss(
-                    logits=logits,
-                    old_logp=old_action_log_probs,
-                    ref_logp=ref_logp,
-                    completion_ids=completion_ids,
-                    advantages=advantages,
-                    completion_mask=action_mask,
-                    temperature=self.args.temperature,
-                    beta=self.args.init_kl_coef,
-                    eps_low=self.args.eps_clip_low_high[0],
-                    eps_high=self.args.eps_clip_low_high[1],
-                    loss_type=getattr(self.args, "liger_loss_type", "dapo"),
-                    reduce=True,
-                )
-            else:
-                # Chunked path: fuse lm_head projection with loss, never materializes
-                # the full [B,T,V] logits tensor.
-                hidden_states = hidden_states[:, -L :, :]
-                lm_head = self.actor.get_lm_head()
-                actor_loss, metrics = self.liger_grpo_loss(
-                    _input=hidden_states,
-                    lin_weight=lm_head.weight,
-                    selected_token_ids=completion_ids,
-                    attention_mask=action_mask,
-                    advantages=advantages,
-                    bias=getattr(lm_head, "bias", None),
-                    old_per_token_logps=old_action_log_probs,
-                    ref_per_token_logps=ref_logp,
-                )
-            #### end Liger GRPO loss backend dispatch ####
-
-            clip_ratio = metrics[-1]
-            ppo_kl = metrics[0] if self.args.init_kl_coef > 0 else torch.tensor(0.0)
-
-            experience.info["ppo_clip_ratio"] = clip_ratio.detach()
-            experience.info["ppo_kl"] = ppo_kl.detach()
-
-            if self.args.use_kl_loss:
-                experience.info["kl"] = ppo_kl.detach()
-
-            loss = actor_loss
-            if aux_loss is not None and self.aux_loss:
-                loss = loss + aux_loss * self.args.aux_loss_coef
         else:
-            # Standard forward + PolicyLoss path
-            action_log_probs, output = self.actor(
+            # Standard: full forward → PolicyLoss on log_probs
+            action_log_probs, model_output = self.actor(
                 sequences,
                 action_mask,
                 attention_mask=attention_mask,
@@ -514,8 +451,6 @@ class ActorPPOTrainer(ABC):
                 packed_seq_lens=packed_seq_lens,
                 return_entropy=self.args.entropy_loss_coef is not None,
             )
-
-            # loss function
             actor_loss, clip_ratio, ppo_kl, vllm_kl = self.actor_loss_fn(
                 action_log_probs,
                 old_action_log_probs,
@@ -523,61 +458,72 @@ class ActorPPOTrainer(ABC):
                 action_mask=experience.action_mask,
                 rollout_log_probs=experience.rollout_log_probs,
             )
-            if not torch.isfinite(actor_loss):
-                action_tokens = int(experience.action_mask.sum().item())
-                raise RuntimeError(
-                    "Non-finite actor_loss detected. "
-                    f"step={step}, action_tokens={action_tokens}, "
-                    f"advantages_finite={bool(torch.isfinite(advantages).all())}, "
-                    f"old_log_probs_finite={bool(torch.isfinite(old_action_log_probs).all())}, "
-                    f"new_log_probs_finite={bool(torch.isfinite(action_log_probs).all())}, "
+            aux_loss = getattr(model_output, "aux_loss", None)
+        #### end forward pass + policy loss ####
+
+        # Non-finite loss check
+        if not torch.isfinite(actor_loss):
+            action_tokens = int(experience.action_mask.sum().item())
+            diag = (
+                f"step={step}, action_tokens={action_tokens}, "
+                f"advantages_finite={bool(torch.isfinite(advantages).all())}, "
+                f"old_log_probs_finite={bool(torch.isfinite(old_action_log_probs).all())}"
+            )
+            if action_log_probs is not None:
+                diag += (
+                    f", new_log_probs_finite={bool(torch.isfinite(action_log_probs).all())}, "
                     f"old_log_probs_excerpt={str(old_action_log_probs)[:100]} ... {str(old_action_log_probs)[-100:]}, "
                     f"new_log_probs_excerpt={str(action_log_probs)[:100]} ... {str(action_log_probs)[-100:]}"
                 )
-            experience.info["ppo_clip_ratio"] = clip_ratio.detach()
-            experience.info["ppo_kl"] = ppo_kl.detach()
-            if vllm_kl is not None:
-                experience.info["vllm_kl"] = vllm_kl.detach()
+            raise RuntimeError(f"Non-finite actor_loss detected. {diag}")
 
-            if self.args.use_kl_loss:
-                if self.args.init_kl_coef > 0:
-                    kl = compute_approx_kl(
-                        action_log_probs,
-                        base_action_log_probs,
-                        kl_estimator=self.args.kl_estimator,
-                    )
-                    logprobs_diff = action_log_probs.float() - base_action_log_probs.float()
-                else:
-                    kl = torch.zeros_like(action_log_probs)
-                    logprobs_diff = torch.zeros_like(action_log_probs)
-                kl_loss = masked_mean(kl, experience.action_mask)
-                logprobs_diff = masked_mean(logprobs_diff, experience.action_mask)
-                experience.info["kl"] = kl_loss.detach()
-                experience.info["logprobs_diff"] = logprobs_diff.detach()
-            else:
-                kl_loss = 0
+        #### Shared post-loss: metrics, KL, aux_loss, entropy, distill ####
+        experience.info["ppo_clip_ratio"] = clip_ratio.detach()
+        experience.info["ppo_kl"] = ppo_kl.detach()
+        if vllm_kl is not None:
+            experience.info["vllm_kl"] = vllm_kl.detach()
 
-            loss = actor_loss + kl_loss * kl_ctl
-            # mixtral or gpt-oss
-            if self.aux_loss:
-                loss += output.aux_loss * self.args.aux_loss_coef
-            # entropy loss
-            if self.args.entropy_loss_coef is not None:
-                entropy_loss = masked_mean(
-                    output.entropy[:, -experience.action_mask.shape[1] :], experience.action_mask
+        loss = actor_loss
+
+        # KL loss (requires action_log_probs — not available in Liger path)
+        if self.args.use_kl_loss and action_log_probs is not None:
+            if self.args.init_kl_coef > 0:
+                kl = compute_approx_kl(
+                    action_log_probs,
+                    base_action_log_probs,
+                    kl_estimator=self.args.kl_estimator,
                 )
-                if self.args.entropy_loss_coef != 0:
-                    loss -= entropy_loss * self.args.entropy_loss_coef
+                logprobs_diff = action_log_probs.float() - base_action_log_probs.float()
+            else:
+                kl = torch.zeros_like(action_log_probs)
+                logprobs_diff = torch.zeros_like(action_log_probs)
+            kl_loss = masked_mean(kl, experience.action_mask)
+            logprobs_diff = masked_mean(logprobs_diff, experience.action_mask)
+            experience.info["kl"] = kl_loss.detach()
+            experience.info["logprobs_diff"] = logprobs_diff.detach()
+            loss = loss + kl_loss * kl_ctl
 
-        # Distillation loss: SFT signal on experiences tagged with distill_mask.
-        # Any executor can request this by setting extra_logs["distill"] = 1.
+        # Aux loss (MoE load balancing — available from both paths)
+        if aux_loss is not None and self.aux_loss:
+            loss = loss + aux_loss * self.args.aux_loss_coef
+
+        # Entropy loss (requires full logits — not available in Liger path)
+        if model_output is not None and self.args.entropy_loss_coef is not None:
+            entropy_loss = masked_mean(
+                model_output.entropy[:, -experience.action_mask.shape[1] :], experience.action_mask
+            )
+            if self.args.entropy_loss_coef != 0:
+                loss -= entropy_loss * self.args.entropy_loss_coef
+
+        # Distillation loss (requires action_log_probs — not available in Liger path)
         distill_coef = getattr(self.args, "distill_coef", 0.0)
-        if distill_coef > 0 and not self.use_liger_grpo_loss:
+        if distill_coef > 0 and action_log_probs is not None:
             distill_mask = experience.info.get("distill_mask")
             if distill_mask is not None and distill_mask.any():
                 distill_action_mask = distill_mask.unsqueeze(-1) * experience.action_mask
                 distill_loss = -masked_mean(action_log_probs, distill_action_mask)
                 loss = loss + distill_coef * distill_loss
+        #### end shared post-loss ####
 
         if self.args.use_dynamic_batch:
             loss = loss * self.replay_buffer.dynamic_loss_scale[step]

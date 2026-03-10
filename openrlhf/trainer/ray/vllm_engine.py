@@ -22,7 +22,7 @@ from .utils import get_bundle_indices, ray_noset_visible_devices
 logger = init_logger(__name__)
 
 
-def _load_agent_executor(agent_func_path: str) -> AgentExecutorBase:
+def _load_agent_executor(agent_func_path: str, **kwargs) -> AgentExecutorBase:
     assert agent_func_path.endswith(".py"), "Agent path must be a Python file"
     import importlib.util
 
@@ -33,7 +33,7 @@ def _load_agent_executor(agent_func_path: str) -> AgentExecutorBase:
     assert hasattr(agent_module, "AgentExecutor"), "Agent module must contain AgentExecutor class"
     agent_executor_cls = agent_module.AgentExecutor
     assert issubclass(agent_executor_cls, AgentExecutorBase), "AgentExecutor must inherit from AgentExecutorBase"
-    return agent_executor_cls()
+    return agent_executor_cls(**kwargs)
 
 
 class _VLLMStatsPoller:
@@ -208,6 +208,7 @@ class LLMRayActor:
         vllm_stop_strings: Optional[list] = None,
         chat_protocol: str = "glm_flash",
         tool_version: Optional[str] = None,
+        length_penalty_max_length: int = 0,
         **kwargs,
     ):
         self._configure_device_env(
@@ -236,9 +237,15 @@ class LLMRayActor:
         # - custom agent executor: user-provided AgentExecutorBase subclass
         # - single-turn with optional reward: default executor
         if agent_func_path:
-            self.executor = _load_agent_executor(agent_func_path)
+            self.executor = _load_agent_executor(
+                agent_func_path,
+                length_penalty_max_length=length_penalty_max_length,
+            )
         else:
-            self.executor = SingleTurnAgentExecutor(remote_rm_url)
+            self.executor = SingleTurnAgentExecutor(
+                remote_rm_url,
+                length_penalty_max_length=length_penalty_max_length,
+            )
 
         self.kwargs = kwargs
 
@@ -512,6 +519,7 @@ def create_vllm_engines(
     vllm_stop_strings: Optional[list] = None,
     chat_protocol: str = "glm_flash",
     tool_version: Optional[str] = None,
+    length_penalty_max_length: int = 0,
     reduce_cuda_graph: bool = False,
     vllm_cudagraph_max_capture_size: Optional[int] = None,
     kv_cache_dtype: str = "auto",
@@ -622,6 +630,7 @@ def create_vllm_engines(
                 "vllm_stop_strings": vllm_stop_strings,
                 "chat_protocol": chat_protocol,
                 "tool_version": tool_version,
+                "length_penalty_max_length": length_penalty_max_length,
             }
         )
 

@@ -208,7 +208,7 @@ class ActorPPOTrainer(ABC):
                     epsilon_high=self.args.eps_clip_low_high[1],
                     temperature=getattr(self.args, "temperature", 1.0),
                     use_ref_model=self.args.init_kl_coef > 0,
-                    loss_type=getattr(self.args, "liger_loss_type", "grpo"),
+                    loss_type=getattr(self.args, "liger_loss_type", "dapo"),
                     chunk_size=getattr(self.args, "liger_chunk_size", 1),
                     compiled=True,
                 )
@@ -470,7 +470,7 @@ class ActorPPOTrainer(ABC):
                     beta=self.args.init_kl_coef,
                     eps_low=self.args.eps_clip_low_high[0],
                     eps_high=self.args.eps_clip_low_high[1],
-                    loss_type=getattr(self.args, "liger_loss_type", "grpo"),
+                    loss_type=getattr(self.args, "liger_loss_type", "dapo"),
                     reduce=True,
                 )
             else:

@@ -14,5 +14,5 @@ from openrlhf.utils.tool_calling_turn import AgentExecutor as InnerAgentExecutor
 
 
 class AgentExecutor(ERLExecutor):
-    def __init__(self):
-        super().__init__(inner_executor=InnerAgentExecutor())
+    def __init__(self, **kwargs):
+        super().__init__(inner_executor=InnerAgentExecutor(**kwargs))

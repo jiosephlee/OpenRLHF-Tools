@@ -147,6 +147,7 @@ VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE="${VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE:-}"
 LENGTH_PENALTY_MAX_LENGTH="${LENGTH_PENALTY_MAX_LENGTH:-0}"
 
 export TORCH_DYNAMO_CACHE_SIZE_LIMIT=1024
+export TORCH_DYNAMO_RECOMPILE_LIMIT=1024
 ### UNIFIED CONSTANTS ###
 AGENT_MAX_STEPS=30
 ZERO_STAGE=2
@@ -535,6 +536,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --warmup_steps $WARMUP_STEPS \
     --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
     --attn_implementation "flex_attention" \
+    --length_penalty_max_length 10240 \
     --skip_eval_step_zero \
     $QUANT_FLAGS \
     $MODE_FLAGS \

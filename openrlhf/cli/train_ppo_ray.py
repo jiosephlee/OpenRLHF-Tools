@@ -427,8 +427,34 @@ if __name__ == "__main__":
         "--use_liger_grpo_loss",
         action="store_true",
         default=False,
-        help="Use Liger fused lm_head+GRPO loss to reduce peak memory (requires liger-kernel>=0.7.0)",
+        help="Use Liger fused lm_head+GRPO loss to reduce peak memory (requires liger-kernel-nightly>=0.7.0)",
     )
+    #### Liger GRPO loss args ####
+    parser.add_argument(
+        "--liger_grpo_backend",
+        type=str,
+        default="triton",
+        choices=["triton", "chunked"],
+        help="Liger GRPO loss backend: 'triton' uses fused Triton kernels (saves log-softmax memory, "
+        "recomputes in backward); 'chunked' fuses lm_head+loss and processes chunk_size sequences at a time "
+        "(never materializes full logits tensor). Default: triton.",
+    )
+    parser.add_argument(
+        "--liger_chunk_size",
+        type=int,
+        default=1,
+        help="Chunk size for Liger fused GRPO loss. chunk_size=1 means max chunking (one sequence per chunk, "
+        "minimum memory). Higher values process more sequences together (faster but more memory).",
+    )
+    parser.add_argument(
+        "--liger_loss_type",
+        type=str,
+        default="grpo",
+        choices=["grpo", "dapo", "bnpo", "dr_grpo", "cispo", "sapo"],
+        help="Loss type for Liger fused GRPO loss (default: grpo)",
+    )
+    #### end Liger GRPO loss args ####
+
     parser.add_argument("--grad_accum_dtype", type=str, default=None, help="Adam grad accum data type")
     parser.add_argument("--overlap_comm", action="store_true", default=False)
     parser.add_argument("--gradient_checkpointing_use_reentrant", action="store_true", default=False)

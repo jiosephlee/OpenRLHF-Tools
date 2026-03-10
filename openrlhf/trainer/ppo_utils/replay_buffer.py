@@ -339,15 +339,18 @@ class NaiveReplayBuffer(ABC):
             default_max_len = 0 # No partition yet
 
             for idx, length in samples_with_idx:
+                # Bucket sequence lengths to reduction flex_attention recompilation triggers (nearest 512)
+                effective_length = ((length + 511) // 512) * 512
+                
                 # If adding this sequence means we exceed budget (or it's the first seq in a new partition)
                 new_size = len(current_partition) + 1
-                new_max_len = max(default_max_len, length) if current_partition else length
+                new_max_len = max(default_max_len, effective_length) if current_partition else effective_length
                 
                 # We enforce minimum of 1 sample per partition even if it's over budget
                 if current_partition and (new_size * new_max_len > args.train_max_tokens_per_gpu):
                     partitions.append([idx for idx, _ in current_partition])
                     current_partition = [(idx, length)]
-                    default_max_len = length
+                    default_max_len = effective_length
                 else:
                     current_partition.append((idx, length))
                     default_max_len = new_max_len

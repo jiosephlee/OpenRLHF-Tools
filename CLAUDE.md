@@ -2,7 +2,7 @@
 
 ## Overview
 
-This fork extends OpenRLHF with multi-turn tool-calling support for GRPO training, along with several infrastructure improvements: transformers v5 compatibility, multi-stage GPU dispatch, DeepSpeed OOM fixes, eval improvements, and TDC (Therapeutics Data Commons) dataset integration.
+This fork extends OpenRLHF with multi-turn tool-calling support for GRPO training, along with several infrastructure improvements: transformers v5 compatibility, DeepSpeed OOM fixes, eval improvements, and TDC (Therapeutics Data Commons) dataset integration.
 
 **Key Features:**
 - Multi-turn agent-based rollouts with tool execution (including parallel tool calls)
@@ -10,7 +10,7 @@ This fork extends OpenRLHF with multi-turn tool-calling support for GRPO trainin
 - Clean abstraction layer (ToolCallingTurn + ChatProtocol)
 - Multiple chat protocol support: GLM Flash XML, Intern-S1, Qwen3, GPT-OSS
 - Transformers v4/v5 backward compatibility
-- 3-stage deferred GPU dispatch for better load balancing
+
 - AutoTP OOM fix (free pre-sharded weights before DeepSpeed init)
 - NaN-safe masked operations (`torch.where` instead of `tensor * mask` in action log probs)
 - Eval at step 0, macro-F1 for TDC, `eval/global_step` W&B axis
@@ -25,15 +25,6 @@ This fork extends OpenRLHF with multi-turn tool-calling support for GRPO trainin
 **Files:** `openrlhf/cli/batch_inference.py`, `openrlhf/cli/interactive_chat.py`
 
 Detects transformers major version at import time and branches on `batch_decode` (v4) vs `decode` (v5). `requirements.txt` allows either version.
-
-### 2. Deferred Dispatch (75/25)
-**File:** `openrlhf/trainer/ppo_utils/experience_maker.py`
-
-Enabled via `--deferred_dispatch`. Upstream dispatches all prompts at once; with this flag we split into 2 stages (75/25):
-- Stage 1 (75%): dispatched immediately via heap-balanced `_dispatch_prompts_to_vllm`
-- Stage 2 (25%): held as reserve, dispatched when any engine's pending count drops to ≤4
-
-Improves GPU utilization when generation times vary (common with multi-turn tool calling). Uses heap-based balancer with per-engine pending counts.
 
 ### 3. DeepSpeed AutoTP OOM Fix
 **File:** `openrlhf/utils/deepspeed/deepspeed.py`
@@ -165,7 +156,7 @@ actor_loss = -(log_probs * advantages * loss_mask).sum() / loss_mask.sum()
 ### Multi-Turn Flow
 ```
 GRPO Training Loop
-  -> Experience Maker (deferred dispatch 75/25)
+  -> Experience Maker
     -> vLLM Engine (LLMRayActor)
       -> MultiTurnAgentExecutor (agent.py, tracks action_ranges)
         -> ToolCallingTurn (tool_calling_turn.py)
@@ -188,8 +179,6 @@ GRPO Training Loop
 - `--skip_eval_step_zero`: Skip evaluation at step 0
 - `--skip_training`: Run only the step-0 eval and exit (skips training loop, for benchmarking eval speed and efficiency reports)
 
-**Dispatch:**
-- `--deferred_dispatch`: Dispatch 75% upfront, hold 25% as reserve until any engine drops to ≤4 pending
 
 **Checkpointing:**
 - `--push_to_hub <repo_id>`: Upload checkpoints to HF Hub
@@ -229,7 +218,7 @@ Debug flags:
 | `openrlhf/utils/tdc_reward_model.py` | New: binary answer extractor for TDC eval |
 | `openrlhf/datasets/tdc_loader.py` | New: TDCDatasetLoader |
 | `openrlhf/datasets/prompts_dataset.py` | Per-task tool schema injection via tools_map |
-| `openrlhf/trainer/ppo_utils/experience_maker.py` | Deferred dispatch (75/25 via `--deferred_dispatch`), trace logging, filtered count logging, ERL variable group sizes |
+| `openrlhf/trainer/ppo_utils/experience_maker.py` | Trace logging, filtered count logging, ERL variable group sizes |
 | `openrlhf/trainer/ppo_trainer.py` | evaluate() in BasePPOTrainer, step-0 eval, macro-F1, hub push |
 | `openrlhf/trainer/ppo_trainer_async.py` | Eval wired into async trainer, missing logging/cleanup fixes |
 | `openrlhf/trainer/ray/vllm_engine.py` | Passes chat_protocol env var to Ray actors, reduced CUDA graphs, MXFP4 weight sync, `execute_batch()` dispatch in `generate_responses()` |
@@ -243,7 +232,7 @@ Debug flags:
 | `openrlhf/utils/logging_utils.py` | eval/global_step W&B axis |
 | `openrlhf/cli/batch_inference.py` | Transformers v4/v5 compat |
 | `openrlhf/cli/interactive_chat.py` | Transformers v4/v5 compat |
-| `openrlhf/cli/train_ppo_ray.py` | New CLI args for tools, eval, checkpointing, `--deferred_dispatch`, ERL args; validation builds `args.fp4_config` |
+| `openrlhf/cli/train_ppo_ray.py` | New CLI args for tools, eval, checkpointing, ERL args; validation builds `args.fp4_config` |
 | `openrlhf/utils/agent.py` | Pass hf_tokenizer + `**agent_kwargs` through to agent instance |
 
 ## Storage Guidelines

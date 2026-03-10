@@ -121,12 +121,20 @@ class ToolCallingTurn(AgentInstanceBase):
 
             #### small reward for well-formatted tool calls (harmony > regex > unparsed) ####
             # parse_method is only set by GPTOSSProtocol; None means a
-            # non-GPT-OSS protocol parsed successfully — no penalty.
+            # non-GPT-OSS protocol parsed successfully — no bonus/penalty.
             parse_method = action.get("parse_method")
-            if parse_method is None or parse_method in ("primary", "fallback"):
+            if parse_method is None:
+                # Non-GPT-OSS protocol: no format shaping
+                format_reward = 0
+            elif parse_method == "primary":
+                # Best case: harmony token-ID parser succeeded on first try
+                format_reward = 0.025
+            elif parse_method == "fallback":
+                # Harmony succeeded after prepending assistant header — neutral
                 format_reward = 0
             elif parse_method == "regex":
-                format_reward = -0.05
+                # Had to fall back to regex — mild penalty
+                format_reward = -0.025
             else:
                 raise ValueError(f"Unknown parse method: {parse_method}")
             extra_logs["format_reward"] = format_reward
@@ -145,10 +153,10 @@ class ToolCallingTurn(AgentInstanceBase):
         # Apply an explicit penalty to discourage malformed harmony headers.
         parse_failed = action.get("parse_failed", False)
         if parse_failed:
-            base_logs["format_reward"] = -0.25
+            base_logs["format_reward"] = -0.05
             return {
                 "environment_feedback": "",
-                "rewards": torch.tensor(-0.25),
+                "rewards": torch.tensor(-0.05),
                 "done": True,
                 "scores": 0.0,
                 "extra_logs": base_logs,

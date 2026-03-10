@@ -61,7 +61,7 @@ class TDCDatasetLoader:
         if model_type and ("gpt_oss" in model_type.lower() or "gpt-oss" in model_type.lower()):
             self.cot_instruction = self.cot_instruction.replace(
                 "Please think step by step and use tools when necessary (**Don't use the same tool more than once**).",
-                "Please think step by step and use tools when helpful."
+                "Please think step by step and use the relevant tools in your analysis."
             )
 
     def _load_prompts(self, prompts_path: str) -> Dict[str, str]:
@@ -102,8 +102,8 @@ class TDCDatasetLoader:
         # Replace SMILES placeholder
         user_content = prompt_stripped.replace("{Drug SMILES}", smiles)
 
-        # Append CoT instructions
-        user_content += self.cot_instruction
+        # Append CoT instructions (with newline separator)
+        user_content += "\n" + self.cot_instruction
 
         return user_content
 

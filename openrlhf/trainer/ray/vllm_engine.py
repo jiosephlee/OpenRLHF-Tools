@@ -372,15 +372,22 @@ class LLMRayActor:
 
     async def generate(self, prompt_token_ids, sampling_params):
         """Token-level generation for rollout executors."""
+        #### ray.cancel() graceful abort ####
+        request_id = random_uuid()
         generator = self.llm.generate(
             TokensPrompt(prompt_token_ids=prompt_token_ids),
             deepcopy(sampling_params),
-            request_id=random_uuid(),
+            request_id=request_id,
         )
 
         final_output = None
-        async for request_output in generator:
-            final_output = request_output
+        try:
+            async for request_output in generator:
+                final_output = request_output
+        except asyncio.CancelledError:
+            await self.llm.abort(request_id)
+            raise
+        #### end ray.cancel() graceful abort ####
 
         return final_output
 

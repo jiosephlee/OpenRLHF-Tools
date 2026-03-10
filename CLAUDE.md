@@ -81,12 +81,12 @@ Saves one decoded rollout trace per step to `runs/<run_name>/traces/`. Annotates
 
 In colocate mode, vLLM's `sleep()` releases weights but doesn't return the memory to the CUDA driver. The Actor process then OOMs during backward passes because `torch.cuda.memory.caching_allocator` still holds the pages. Fix: call `torch.cuda.empty_cache()` in both `sleep()` and `gc_collect()` so freed GPU memory is actually returned to the driver and available to the Actor.
 
-### 14. On-the-Fly FP4 Quantization for Weight Sync
+### 14. On-the-Fly FP4 Quantization for Weight Sync (Experimental)
 **Files:** `openrlhf/trainer/ray/vllm_worker_wrap.py`, `openrlhf/utils/mxfp4_quantize.py`
 
 When the Actor trains in bf16 but vLLM serves with FP4-quantized weights (e.g. GPT-OSS MoE), the weight sync must quantize on the fly. `quantize_to_mxfp4()` reimplements NVIDIA ModelOpt's E8M0-scaled FP4 E2M1 packing (transpose, per-expert block scaling, uint8 nibble packing). After writing packed weights + scales into vLLM's parameter storage, `reprocess_mxfp4_weights()` calls `process_weights_after_loading()` on dirty layers to re-run FlashInfer's swizzle/interleave pass. Recently, we fixed MXFP4 sync bugs and added support for NVFP4 formats (WIP on the vLLM end).
 
-### 15. FP4 Quantization-Aware Training (QAT)
+### 15. FP4 Quantization-Aware Training (QAT) (Experimental)
 **Files:** `openrlhf/utils/mxfp4_quantize.py`, `openrlhf/models/actor.py`, `openrlhf/trainer/ray/ppo_actor.py`, `openrlhf/cli/train_ppo_ray.py`
 
 Closes the train/inference distribution gap when vLLM serves with FP4-quantized MoE expert weights but the actor trains in bf16. Uses a batched Triton kernel prefetch: before each forward pass, all expert weights are concatenated and fake-quantized in a single kernel launch on the default stream, eliminating the previous multi-stream approach and its race conditions.
@@ -118,6 +118,25 @@ Based on [Experiential Reinforcement Learning](https://arxiv.org/abs/2602.13949)
 - **Distillation loss**: Optional SFT loss (`--distill_coef`) on experiences tagged with `extra_logs["distill"] = 1` (generic — any executor can use)
 - **Per-task memory**: Optional (`OPENRLHF_ERL_MEMORY=1`) cross-episode reflection storage keyed by TDC task name
 - **Training script**: `scripts/train_grpo_tdc_erl.sh` sets ERL env vars + `AGENT_FUNC_PATH` and delegates to intern_s1 script
+### 19. Prompt-Level Oversampling with Early Termination
+**Files:** `openrlhf/cli/train_ppo_ray.py`, `openrlhf/trainer/ppo_trainer.py`, `openrlhf/trainer/ppo_utils/experience_maker.py`, `openrlhf/trainer/ray/vllm_engine.py`
+
+- Added `--oversample_ratio` flag to dispatch extra prompts per step and accept the first `batch_size` completed that pass dynamic filtering (reduces wasted rollouts).
+- Early termination uses `ray.cancel()` to abort in-flight abandoned rollouts, cascading to vLLM via `await self.llm.abort(request_id)`.
+- Implements leftover prompts recycling phases.
+
+### 20. Token-Level Loss Normalization & Token-Proportional Adaptive Batch Scaling
+**Files:** `openrlhf/models/loss.py`, `openrlhf/trainer/ray/ppo_actor.py`, `openrlhf/trainer/ppo_utils/experience_maker.py`
+
+- Introduced a tri-state `--token_level_loss` (`none`, `local_rank`, `global`) for different DAPO/GRPO loss normalization modes.
+- Fixed adaptive batch scaling to be token-proportional instead of uniform 1/N, ensuring every token contributes equally despite microbatching.
+
+### 21. Unified Liger GRPO Loss (Experimental)
+**Files:** `openrlhf/models/loss.py`
+
+- Refactored ad-hoc Liger logic into a dedicated `LigerPolicyLoss` class matching the standard `PolicyLoss` API signature.
+- Added `--liger_grpo_backend` (`triton` vs `chunked`), `--liger_chunk_size`, and `--liger_loss_type`.
+- Chunked backend significantly reduces OOMs by fusing `lm_head` and avoiding full `[B, L, V]` logit materialization.
 
 ## Architecture
 
@@ -201,6 +220,13 @@ Set automatically by vllm_engine.py:
 - `OPENRLHF_MAX_STEPS`: Max agent steps
 - `OPENRLHF_CHAT_PROTOCOL`: Chat protocol name
 - `OPENRLHF_TOOL_VERSION`: Tool version descriptor
+
+**GRPO & Liger Engine:**
+- `--oversample_ratio <float>`: Ratio of prompts to dispatch over batch size (default: 1.0)
+- `--token_level_loss <str>`: Normalization mode: `none`, `local_rank`, `global`
+- `--liger_grpo_backend <str>`: `triton` or `chunked` (significantly reduces OOMs)
+- `--liger_chunk_size <int>`: Processing chunks for Liger loss
+- `--liger_loss_type <str>`: Sub-loss types like `grpo`, `dapo`, `bnpo`
 
 Debug flags:
 - `OPENRLHF_DEBUG_NAN_GUARD=1`: Enable NaN assertions in actor forward/backward

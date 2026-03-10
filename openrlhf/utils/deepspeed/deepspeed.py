@@ -181,13 +181,6 @@ class DeepspeedStrategy(ABC):
         if isinstance(model, Actor):
             model = model.model
         model.step()
-        #### Manual scheduler step: nightly PyTorch + DeepSpeed fix ####
-        # When scheduler=None was passed to deepspeed.initialize() (to avoid
-        # nightly PyTorch's strict isinstance check on DeepSpeedZeroOptimizer),
-        # the engine won't auto-step the scheduler. Step it manually here.
-        if scheduler is not None and getattr(model, "lr_scheduler", None) is None:
-            scheduler.step()
-        #### end manual scheduler step ####
 
     def setup_dataloader(
         self,

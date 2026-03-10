@@ -794,33 +794,49 @@ class PolicyModelActor(BaseModelActor):
             f"warm_steps_multiplier={warmup_multiplier}, "
             f"num_warmup_steps={num_warmup_steps} ({raw_warmup or num_warmup_steps // steps_per_ppo_train} global steps)"
         )
+        #### Deferred scheduler rebind: nightly PyTorch + DeepSpeed fix ####
+        # Nightly PyTorch's LRScheduler.__init__ requires isinstance(optimizer, Optimizer),
+        # but DeepSpeed's ZeRO wrapper (DeepSpeedZeroOptimizer) doesn't subclass it.
+        # So we create the scheduler with the raw optimizer (passes isinstance check),
+        # pass scheduler=None to DeepSpeed (avoids internal scheduler interactions),
+        # then rebind the scheduler to the post-consolidation DS optimizer.
+        actor_scheduler = get_scheduler(
+            args.lr_scheduler,
+            actor_optim,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=total_scheduler_steps,
+            scheduler_specific_kwargs={"min_lr": args.actor_learning_rate * 0.1},
+        )
+
         if args.gradient_checkpointing:
             actor.gradient_checkpointing_enable(
                 gradient_checkpointing_kwargs={"use_reentrant": args.gradient_checkpointing_use_reentrant}
             )
 
-        #### Deferred scheduler creation: nightly PyTorch + DeepSpeed fix ####
-        # Create scheduler AFTER strategy.prepare() so the optimizer's param
-        # groups are already consolidated by DeepSpeed (e.g. ZeRO-2 +
-        # adam_offload may flatten 2 groups → 1). Creating the scheduler
-        # before prepare causes mismatched per-group state (base_lrs,
-        # lr_lambdas) that nightly PyTorch's strict LRScheduler checks reject.
         self.actor, self.actor_optim, _ = strategy.prepare(
             (actor, actor_optim, None),
             is_rlhf=True,
         )
-        self.actor_scheduler = get_scheduler(
-            args.lr_scheduler,
-            self.actor_optim,
-            num_warmup_steps=num_warmup_steps,
-            num_training_steps=total_scheduler_steps,
-            scheduler_specific_kwargs={"min_lr": args.actor_learning_rate * 0.1},
-        )
+
+        # DeepSpeed may consolidate param groups (e.g. ZeRO-2 + adam_offload
+        # flattens 2 groups → 1). Sync scheduler's per-group state to match
+        # the DS optimizer, then rebind so scheduler.step() updates DS param_groups.
+        n_groups = len(self.actor_optim.param_groups)
+        if len(actor_scheduler.base_lrs) != n_groups:
+            old_n = len(actor_scheduler.base_lrs)
+            strategy.print(f"[Scheduler] Syncing scheduler: {old_n} → {n_groups} param_groups")
+            actor_scheduler.base_lrs = actor_scheduler.base_lrs[:n_groups]
+            if hasattr(actor_scheduler, "lr_lambdas") and len(actor_scheduler.lr_lambdas) != n_groups:
+                actor_scheduler.lr_lambdas = actor_scheduler.lr_lambdas[:n_groups]
+            if hasattr(actor_scheduler, "_last_lr") and len(getattr(actor_scheduler, "_last_lr", [])) != n_groups:
+                actor_scheduler._last_lr = actor_scheduler._last_lr[:n_groups]
+        actor_scheduler.optimizer = self.actor_optim
+        self.actor_scheduler = actor_scheduler
         strategy.print(
-            f"[Scheduler] Created after strategy.prepare() — "
-            f"optimizer has {len(self.actor_optim.param_groups)} param group(s)"
+            f"[Scheduler] Created and rebound to DS optimizer — "
+            f"{n_groups} param group(s)"
         )
-        #### end deferred scheduler creation ####
+        #### end deferred scheduler rebind ####
 
         if ema_model:
             ema_model._offload = True

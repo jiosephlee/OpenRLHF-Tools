@@ -201,28 +201,41 @@ class CriticModelActor(BaseModelActor):
         # configure scheduler
         num_warmup_steps = getattr(args, "warmup_steps", None) or math.ceil(max_steps * args.lr_warmup_ratio)
 
+        #### Deferred scheduler rebind: nightly PyTorch + DeepSpeed fix ####
+        critic_scheduler = get_scheduler(
+            args.lr_scheduler,
+            critic_optim,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=max_steps,
+            scheduler_specific_kwargs={"min_lr": args.critic_learning_rate * 0.1},
+        )
+
         if args.gradient_checkpointing:
             critic.gradient_checkpointing_enable(
                 gradient_checkpointing_kwargs={"use_reentrant": args.gradient_checkpointing_use_reentrant}
             )
 
-        #### Deferred scheduler creation: nightly PyTorch + DeepSpeed fix ####
         self.critic, self.critic_optim, _ = strategy.prepare(
             (critic, critic_optim, None),
             is_rlhf=True,
         )
-        self.critic_scheduler = get_scheduler(
-            args.lr_scheduler,
-            self.critic_optim,
-            num_warmup_steps=num_warmup_steps,
-            num_training_steps=max_steps,
-            scheduler_specific_kwargs={"min_lr": args.critic_learning_rate * 0.1},
-        )
+
+        n_groups = len(self.critic_optim.param_groups)
+        if len(critic_scheduler.base_lrs) != n_groups:
+            old_n = len(critic_scheduler.base_lrs)
+            strategy.print(f"[Scheduler] Syncing scheduler: {old_n} → {n_groups} param_groups")
+            critic_scheduler.base_lrs = critic_scheduler.base_lrs[:n_groups]
+            if hasattr(critic_scheduler, "lr_lambdas") and len(critic_scheduler.lr_lambdas) != n_groups:
+                critic_scheduler.lr_lambdas = critic_scheduler.lr_lambdas[:n_groups]
+            if hasattr(critic_scheduler, "_last_lr") and len(getattr(critic_scheduler, "_last_lr", [])) != n_groups:
+                critic_scheduler._last_lr = critic_scheduler._last_lr[:n_groups]
+        critic_scheduler.optimizer = self.critic_optim
+        self.critic_scheduler = critic_scheduler
         strategy.print(
-            f"[Scheduler] Created after strategy.prepare() — "
-            f"optimizer has {len(self.critic_optim.param_groups)} param group(s)"
+            f"[Scheduler] Created and rebound to DS optimizer — "
+            f"{n_groups} param group(s)"
         )
-        #### end deferred scheduler creation ####
+        #### end deferred scheduler rebind ####
 
         # load checkpoint
         if args.load_checkpoint and os.path.exists(os.path.join(args.ckpt_path, "_actor")):

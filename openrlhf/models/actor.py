@@ -370,8 +370,15 @@ class Actor(nn.Module):
                 )
                 from transformers.models.mixtral.modeling_mixtral import load_balancing_loss_func
 
-                num_experts = self.model.config.num_local_experts
-                top_k = self.model.config.num_experts_per_tok
+                #### Handle config as dict or object (GPT-OSS compat) ####
+                cfg = self.model.config
+                if isinstance(cfg, dict):
+                    num_experts = cfg["num_local_experts"]
+                    top_k = cfg["num_experts_per_tok"]
+                else:
+                    num_experts = cfg.num_local_experts
+                    top_k = cfg.num_experts_per_tok
+                #### end config compat ####
                 aux_loss = load_balancing_loss_func(router_logits, num_experts, top_k, attention_mask)
 
         return last_hidden_state, aux_loss

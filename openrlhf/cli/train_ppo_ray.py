@@ -446,6 +446,7 @@ if __name__ == "__main__":
 
     # dynamic batch size
     parser.add_argument("--use_dynamic_batch", action="store_true", default=False)
+    parser.add_argument("--use_adaptive_batch", action="store_true", default=False, help="Use padded adaptive batching instead of packed dynamic batching")
     parser.add_argument("--rollout_max_tokens_per_gpu", type=int, default=None)
     parser.add_argument("--train_max_tokens_per_gpu", type=int, default=16192)
 
@@ -808,8 +809,14 @@ if __name__ == "__main__":
             print("[Warning] --ring_attn_size > 1 requires --packing_samples.")
             args.packing_samples = True
 
+    if args.use_adaptive_batch:
+        args.use_dynamic_batch = True
+        if args.rollout_max_tokens_per_gpu is None:
+            print("[Warning] Set --rollout_max_tokens_per_gpu to --train_max_tokens_per_gpu.")
+            args.rollout_max_tokens_per_gpu = args.train_max_tokens_per_gpu
+
     if args.use_dynamic_batch:
-        if not args.packing_samples:
+        if not args.packing_samples and not args.use_adaptive_batch:
             print("[Warning] Please --packing_samples to accelerate when --use_dynamic_batch is enabled.")
             args.packing_samples = True
         if args.rollout_max_tokens_per_gpu is None:

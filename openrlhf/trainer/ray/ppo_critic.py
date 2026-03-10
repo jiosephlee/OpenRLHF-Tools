@@ -52,7 +52,8 @@ class CriticPPOTrainer(ABC):
             buffer_limit,
             buffer_cpu_offload,
             getattr(self.args, "packing_samples", False),
-            self.args.use_dynamic_batch,
+            getattr(self.args, "use_dynamic_batch", False),
+            getattr(self.args, "use_adaptive_batch", False),
         )
 
         self.critic_loss_fn = ValueLoss(value_clip)
@@ -62,7 +63,9 @@ class CriticPPOTrainer(ABC):
 
     def ppo_train(self):
         # replay buffer may be empty at first, we should rebuild at each training
-        if self.args.use_dynamic_batch:
+        if getattr(self.args, "use_adaptive_batch", False):
+            self.replay_buffer.setup_adaptive_batch(self.strategy)
+        elif getattr(self.args, "use_dynamic_batch", False):
             self.replay_buffer.setup_dynamic_batch(self.strategy)
 
         not_shuffle = (

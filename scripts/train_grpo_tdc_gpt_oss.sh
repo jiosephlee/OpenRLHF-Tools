@@ -70,8 +70,8 @@ if [ -n "$DEQUANT" ]; then
             exit 1
             ;;
     esac
-    CUDA_MODULE="${CUDA_MODULE:-cuda/13.1.0}"
-    CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern}"
+    CUDA_MODULE="${CUDA_MODULE:-cuda/12.8.1}"
+    CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/openrlhf}"
 else
     case "$QUANT_METHOD" in
         mxfp4)
@@ -101,7 +101,7 @@ else
 fi
 
 ### ENVIRONMENT SETUP ###
-module load "$CUDA_MODULE"
+# # module load "$CUDA_MODULE"
 eval "$(conda shell.bash hook)"
 conda activate "$CONDA_ENV"
 set -euo pipefail
@@ -144,8 +144,8 @@ AGENT_MAX_STEPS=30
 ZERO_STAGE=2
 PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-8192}"
 N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-8}"
-TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-4096}"
-ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')}"
+TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-8192}"
+ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.5" | bc | awk '{print int($1)}')}"
 
 COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-32}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
 
@@ -187,7 +187,7 @@ fi
 
 ### MODE FLAGS ###
 if [ "$MODE" = "colocated" ]; then
-    VLLM_SLEEP_LEVEL="${VLLM_SLEEP_LEVEL:-2}"
+    VLLM_SLEEP_LEVEL="${VLLM_SLEEP_LEVEL:-1}"
     MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --vllm_sleep_level $VLLM_SLEEP_LEVEL --deepspeed_enable_sleep --$REDUCE_OPTIMIZER"
 else
     MODE_FLAGS="--async_train --async_queue_size 1 --$REDUCE_OPTIMIZER"
@@ -483,6 +483,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --prompt_max_len $PROMPT_MAX_LEN \
     --generate_max_len 2048 \
     --max_samples 1000000 \
+    --use_liger_kernel \
     --enable_prefix_caching \
     --zero_stage $ZERO_STAGE \
     --param_dtype bf16 \

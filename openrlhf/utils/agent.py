@@ -176,6 +176,14 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
         if total_calls > 0 and "tool_time_total" in extra_logs:
             extra_logs["tool_time_avg"] = extra_logs["tool_time_total"] / total_calls
 
+        # Cap the total format reward to 0.005 to prevent linear buildup.
+        if "format_reward" in extra_logs:
+            format_reward = extra_logs["format_reward"]
+            if format_reward > 0.005:
+                excess = format_reward - 0.005
+                total_reward -= excess
+                extra_logs["format_reward"] = 0.005
+
         # Store the final response when agent execution is complete
         final_response = {
             "prompt": prompt,

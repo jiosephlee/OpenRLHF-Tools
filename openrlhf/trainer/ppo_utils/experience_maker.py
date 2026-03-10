@@ -1220,7 +1220,55 @@ class RemoteExperienceMaker:
         samples_list = []
         import math
 
-        if self.args.use_dynamic_batch:
+        if getattr(self.args, "use_adaptive_batch", False):
+            total_lengths = [int(s.info["total_length"].item()) for s in rollout_samples]
+            effective_actor_num = (
+                self.args.actor_num_nodes
+                * self.args.actor_num_gpus_per_node
+                // self.args.ring_attn_size
+                // self.args.ds_tensor_parallel_size
+            )
+            samples_with_idx = [(i, l) for i, l in enumerate(total_lengths)]
+            samples_with_idx.sort(key=lambda x: x[1], reverse=True)
+            
+            batch_indexes = []
+            current_partition = []
+            default_max_len = 0
+            
+            for idx, length in samples_with_idx:
+                new_size = len(current_partition) + 1
+                new_max_len = max(default_max_len, length) if current_partition else length
+                if current_partition and (new_size * new_max_len > self.args.rollout_max_tokens_per_gpu):
+                    batch_indexes.append([i for i, _ in current_partition])
+                    current_partition = [(idx, length)]
+                    default_max_len = length
+                else:
+                    current_partition.append((idx, length))
+                    default_max_len = new_max_len
+            if current_partition:
+                batch_indexes.append([i for i, _ in current_partition])
+                
+            # Ensure num partitions is multiple of effective_actor_num
+            while len(batch_indexes) % effective_actor_num != 0 or len(batch_indexes) < effective_actor_num:
+                biggest_idx = max(range(len(batch_indexes)), key=lambda k: len(batch_indexes[k]))
+                target = batch_indexes.pop(biggest_idx)
+                mid = len(target) // 2
+                if mid > 0:
+                    batch_indexes.append(target[:mid])
+                    batch_indexes.append(target[mid:])
+                else:
+                    batch_indexes.append([]) # Safety fallback
+
+            # Sort partitions descending by sum of lengths for the interval distribution
+            batch_indexes.sort(key=lambda p: sum([total_lengths[i] for i in p]) if p else 0, reverse=True)
+            
+            for micro_index in batch_indexes:
+                if not micro_index: continue
+                micro_batch = [rollout_samples[idx] for idx in micro_index]
+                concat_samples = Experience.concat_experiences(micro_batch, self.tokenizer.pad_token_id)
+                samples_list.append(concat_samples)
+
+        elif self.args.use_dynamic_batch:
             total_lengths = [int(s.info["total_length"].item()) for s in rollout_samples]
             effective_actor_num = (
                 self.args.actor_num_nodes

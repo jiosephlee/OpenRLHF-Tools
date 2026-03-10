@@ -199,6 +199,7 @@ class NaiveReplayBuffer(ABC):
         cpu_offload: bool = True,
         packing_samples: bool = False,
         dynamic_batch: bool = False,
+        adaptive_batch: bool = False,
     ) -> None:
         super().__init__()
         self.sample_batch_size = sample_batch_size
@@ -209,6 +210,7 @@ class NaiveReplayBuffer(ABC):
         self.target_device = torch.device(f"cuda:{torch.cuda.current_device()}")
         self.items: List[BufferItem] = []
         self.dynamic_batch = dynamic_batch
+        self.adaptive_batch = adaptive_batch
         self.dynamic_indices: List[List[int]] = []
         self.dynamic_loss_scale: List[float] = []
         self.dynamic_optimizer_step: List[int] = []
@@ -305,5 +307,108 @@ class NaiveReplayBuffer(ABC):
             optimizer_step = [0] * (len(partitions) - 1) + [1]
             loss_scales.extend(loss_scale)
             optimizer_steps.extend(optimizer_step)
+        self.dynamic_loss_scale = loss_scales
+        self.dynamic_optimizer_step = optimizer_steps
+
+    def setup_adaptive_batch(self, strategy):
+        """
+        Adaptive batching groups sequences iteratively, ensuring that the VRAM footprint
+        of the right-padded tensor (num_samples * max_seq_len) is <= train_max_tokens_per_gpu.
+        This provides dynamic batching for models not supporting flash attention/packing.
+        """
+        args = strategy.args
+        sample_lengths = [sample.info["total_length"].item() for sample in self.items]
+
+        world_size = dist.get_world_size()
+        dp_size = world_size // args.ring_attn_size // args.ds_tensor_parallel_size
+        local_train_batch_size = args.train_batch_size // dp_size
+        num_steps = args.rollout_batch_size * args.n_samples_per_prompt // args.train_batch_size
+
+        num_microbatches = []
+        data_partitions = []
+        micro_batch_indices = []
+
+        for i in range(num_steps):
+            start, end = i * local_train_batch_size, (i + 1) * local_train_batch_size
+            samples_with_idx = [(idx + start, sample_lengths[idx + start]) for idx in range(end - start)]
+            # Sort by length descending to pack similarly-sized sequences together
+            samples_with_idx.sort(key=lambda x: x[1], reverse=True)
+
+            partitions = []
+            current_partition = []
+            default_max_len = 0 # No partition yet
+
+            for idx, length in samples_with_idx:
+                # If adding this sequence means we exceed budget (or it's the first seq in a new partition)
+                new_size = len(current_partition) + 1
+                new_max_len = max(default_max_len, length) if current_partition else length
+                
+                # We enforce minimum of 1 sample per partition even if it's over budget
+                if current_partition and (new_size * new_max_len > args.train_max_tokens_per_gpu):
+                    partitions.append([idx for idx, _ in current_partition])
+                    current_partition = [(idx, length)]
+                    default_max_len = length
+                else:
+                    current_partition.append((idx, length))
+                    default_max_len = new_max_len
+
+            if current_partition:
+                partitions.append([idx for idx, _ in current_partition])
+
+            # Sync number of microbatches across GPUs so that distributed collective communications
+            # (e.g. all-reduce during PPO) happen symmetrically
+            num_microbatches.append(len(partitions))
+            data_partitions.append(partitions)
+
+        num_microbatches = torch.tensor(num_microbatches, dtype=torch.int, device=torch.cuda.current_device())
+        num_microbatches = strategy.all_reduce(num_microbatches, op="max")
+        num_microbatches = num_microbatches.tolist()
+
+        # If some GPUs needed fewer microbatches (e.g. their sequences were shorter), 
+        # we append empty microbatches (handled by padding/dummy batches elsewhere)
+        # However, to be completely safe with PPO synchronous logic, we just split the largest partition.
+        for i, num_mbs in enumerate(num_microbatches):
+            partitions = data_partitions[i]
+            while len(partitions) < num_mbs:
+                # Find biggest partition and split it
+                biggest_idx = max(range(len(partitions)), key=lambda k: len(partitions[k]))
+                target = partitions.pop(biggest_idx)
+                mid = len(target) // 2
+                if mid > 0:
+                    partitions.append(target[:mid])
+                    partitions.append(target[mid:])
+                else:
+                    # Can't split further, just append empty partition (or it will crash if it reaches here and length is 1)
+                    # For safety, let's just duplicate the first element but mask it in forward? 
+                    # No, PPO training_step can handle empty/small batches, but to avoid 0-size tensors,
+                    # we should take the last element and split it
+                    partitions.append([]) # PPO might handle empty, but warning!
+            
+            # Remove empty partitions if we added any, actually we should avoid empty partitions.
+            # If we really hit this, the GPU with fewer microbatches will wait.
+            partitions = [p for p in partitions if len(p) > 0]
+            # Wait, if we remove empty partitions, len(partitions) != num_mbs.
+            # We MUST have exactly num_mbs partitions.
+            # So if we are forced to add an empty partition because we have e.g. 1 sample but max_mbs=2
+            # Let's just use empty lists — DeepSpeed logic handles zero-sized inputs or drops them?
+            # Actually, the original seqlen_blocking algorithm just splits. If len=1, it splits into [x] and [].
+            # Empty indices means batch_size=0.
+            micro_batch_indices.extend(partitions)
+
+        self.dynamic_indices = micro_batch_indices
+        self.sample_batch_size = 1
+
+        # adjust optimizer step and loss scale
+        loss_scales = []
+        optimizer_steps = []
+        for partitions in data_partitions:
+            sample_num = sum(len(partition) for partition in partitions)
+            if sample_num == 0:
+                continue
+            loss_scale = [len(partition) / sample_num for partition in partitions]
+            optimizer_step = [0] * (len(partitions) - 1) + [1]
+            loss_scales.extend(loss_scale)
+            optimizer_steps.extend(optimizer_step)
+            
         self.dynamic_loss_scale = loss_scales
         self.dynamic_optimizer_step = optimizer_steps

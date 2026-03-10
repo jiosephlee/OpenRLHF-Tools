@@ -1,6 +1,14 @@
 import argparse
 import json
 import os
+import torch
+
+# Set Dynamo limits from environment variables if provided
+if "TORCH_DYNAMO_RECOMPILE_LIMIT" in os.environ:
+    torch._dynamo.config.recompile_limit = int(os.environ["TORCH_DYNAMO_RECOMPILE_LIMIT"])
+if "TORCH_DYNAMO_CACHE_SIZE_LIMIT" in os.environ:
+    torch._dynamo.config.cache_size_limit = int(os.environ["TORCH_DYNAMO_CACHE_SIZE_LIMIT"])
+
 from datetime import datetime
 
 import ray

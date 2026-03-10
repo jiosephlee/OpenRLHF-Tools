@@ -189,7 +189,7 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
         if self.length_penalty_max_length > 0:
             total_gen_len = sum(end - start for start, end in action_ranges)
             if total_gen_len > 8192:
-                penalty = (total_gen_len - 8192) / max(1, self.length_penalty_max_length - 8192)
+                penalty = 0.1 * (total_gen_len - 8192) / max(1, self.length_penalty_max_length - 8192)
                 extra_logs["length_penalty"] = penalty
                 if total_reward > 0:
                     total_reward = max(0.0, total_reward - penalty)
@@ -306,7 +306,7 @@ class SingleTurnAgentExecutor(AgentExecutorBase):
                     if self.length_penalty_max_length > 0:
                         total_gen_len = sum(end - start for start, end in action_ranges)
                         if total_gen_len > 8192:
-                            penalty = (total_gen_len - 8192) / max(1, self.length_penalty_max_length - 8192)
+                            penalty = 0.1 * (total_gen_len - 8192) / max(1, self.length_penalty_max_length - 8192)
                             el["length_penalty"] = penalty
                             if r is not None and r > 0:
                                 r = max(0.0, r - penalty)

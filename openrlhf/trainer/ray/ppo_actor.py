@@ -780,6 +780,25 @@ class PolicyModelActor(BaseModelActor):
         self.vllm_engines = vllm_engines
         self.max_steps = max_steps
 
+        #### Raise torch.compile recompile limit for flex_attention compat ####
+        # Must be set HERE (inside the Ray actor process), not in train_ppo_ray.py,
+        # because torch._dynamo.config doesn't cross process boundaries.
+        # flex_attention with variable sequence lengths (adaptive batching) triggers
+        # recompilation for each unique BlockMask shape. When the limit is hit,
+        # dynamo falls back to eager, which produces different tensor metadata and
+        # breaks gradient checkpointing (CheckpointError).
+        _recompile_limit = int(os.environ.get("TORCH_DYNAMO_RECOMPILE_LIMIT", "0"))
+        _cache_size_limit = int(os.environ.get("TORCH_DYNAMO_CACHE_SIZE_LIMIT", "0"))
+        if _recompile_limit > 0 or _cache_size_limit > 0:
+            import torch._dynamo.config as dynamo_config
+            if _recompile_limit > 0:
+                dynamo_config.recompile_limit = _recompile_limit
+                strategy.print(f"[dynamo] recompile_limit set to {_recompile_limit}")
+            if _cache_size_limit > 0:
+                dynamo_config.cache_size_limit = _cache_size_limit
+                strategy.print(f"[dynamo] cache_size_limit set to {_cache_size_limit}")
+        #### end raise torch.compile recompile limit ####
+
         # Skip for vLLM >= 0.16 where NCCL_CUMEM_ENABLE=0 causes ncclCommInitRank to fail
         # with "unhandled cuda error" under NCCL 2.27+.
         if getattr(args, "vllm_sync_backend", "nccl") == "nccl":

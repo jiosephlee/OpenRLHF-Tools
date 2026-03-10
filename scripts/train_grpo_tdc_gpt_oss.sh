@@ -307,6 +307,14 @@ export VLLM_NO_USAGE_STATS=1
 export VLLM_DISABLE_TELEMETRY=1
 export VLLM_ALLOW_INSECURE_SERIALIZATION=1  # vLLM v1 msgspec can't serialize torch.dtype; fall back to pickle
 
+# Raise torch.compile recompile/cache limits for flex_attention.
+# With adaptive batching, variable sequence lengths create many unique BlockMask
+# shapes. The default limit (8) causes dynamo to fall back to eager, which breaks
+# gradient checkpointing (recomputed tensors have different metadata).
+# These env vars are read by ppo_actor.py inside the Ray actor process.
+export TORCH_DYNAMO_RECOMPILE_LIMIT=1024
+export TORCH_DYNAMO_CACHE_SIZE_LIMIT=1024
+
 export OPENRLHF_MODEL_PATH="$PRETRAIN_PATH"
 export OPENRLHF_CHAT_PROTOCOL="$CHAT_PROTOCOL"
 export OPENRLHF_MAX_STEPS="$AGENT_MAX_STEPS"

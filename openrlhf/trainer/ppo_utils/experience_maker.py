@@ -305,7 +305,7 @@ class SamplesGenerator:
         self._step_missed_count = 0
         self._episode_missed_count = 0
         # Store reference to original dataset for index lookups during replay.
-        self._original_dataset = prompts_dataloader.dataset
+        self._original_dataset = prompts_dataloader.dataset if prompts_dataloader is not None else None
         #### end oversampling ####
 
     def _to_jsonable(self, value):

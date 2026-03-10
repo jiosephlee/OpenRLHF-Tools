@@ -794,33 +794,24 @@ class PolicyModelActor(BaseModelActor):
             f"warm_steps_multiplier={warmup_multiplier}, "
             f"num_warmup_steps={num_warmup_steps} ({raw_warmup or num_warmup_steps // steps_per_ppo_train} global steps)"
         )
+        actor_scheduler = get_scheduler(
+            args.lr_scheduler,
+            actor_optim,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=total_scheduler_steps,
+            scheduler_specific_kwargs={"min_lr": args.actor_learning_rate * 0.1},
+        )
+
         if args.gradient_checkpointing:
             actor.gradient_checkpointing_enable(
                 gradient_checkpointing_kwargs={"use_reentrant": args.gradient_checkpointing_use_reentrant}
             )
 
-        #### Deferred scheduler creation: nightly PyTorch + DeepSpeed fix ####
-        # Create scheduler AFTER strategy.prepare() so the optimizer's param
-        # groups are already consolidated by DeepSpeed (e.g. ZeRO-2 +
-        # adam_offload may flatten 2 groups → 1). Creating the scheduler
-        # before prepare causes mismatched per-group state (base_lrs,
-        # lr_lambdas) that nightly PyTorch's strict LRScheduler checks reject.
-        self.actor, self.actor_optim, _ = strategy.prepare(
-            (actor, actor_optim, None),
+        # prepare models/optimizers...
+        self.actor, self.actor_optim, self.actor_scheduler = strategy.prepare(
+            (actor, actor_optim, actor_scheduler),
             is_rlhf=True,
         )
-        self.actor_scheduler = get_scheduler(
-            args.lr_scheduler,
-            self.actor_optim,
-            num_warmup_steps=num_warmup_steps,
-            num_training_steps=total_scheduler_steps,
-            scheduler_specific_kwargs={"min_lr": args.actor_learning_rate * 0.1},
-        )
-        strategy.print(
-            f"[Scheduler] Created after strategy.prepare() — "
-            f"optimizer has {len(self.actor_optim.param_groups)} param group(s)"
-        )
-        #### end deferred scheduler creation ####
 
         if ema_model:
             ema_model._offload = True

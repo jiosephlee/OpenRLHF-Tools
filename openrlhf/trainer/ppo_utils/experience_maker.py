@@ -432,6 +432,7 @@ class SamplesGenerator:
         # Aggregate raw samples from all engines.
         all_raw_samples = []
         all_kv, all_running, all_waiting = [], [], []
+        all_pc_hit_rates = []
         total_poll_samples = 0
 
         for stats in per_engine:
@@ -443,11 +444,13 @@ class SamplesGenerator:
                 all_kv.append(kv["mean"])
                 all_running.append(stats["num_running_reqs"]["mean"])
                 all_waiting.append(stats["num_waiting_reqs"]["mean"])
+                all_pc_hit_rates.append(stats.get("prefix_cache_hit_rate", 0.0))
 
         if not all_kv:
             return {"num_engines": len(self.vllm_engines), "num_poll_samples": 0, "raw_samples": all_raw_samples}
 
         ne = len(all_kv)
+        avg_pc_hit_rate = sum(all_pc_hit_rates) / len(all_pc_hit_rates) if all_pc_hit_rates else 0.0
         return {
             "num_engines": len(self.vllm_engines),
             "num_poll_samples": total_poll_samples,
@@ -465,6 +468,7 @@ class SamplesGenerator:
                 "mean": round(sum(all_waiting) / ne, 2),
                 "max": max(s["num_waiting_reqs"]["max"] for s in per_engine if s.get("num_samples", 0) > 0),
             },
+            "prefix_cache_hit_rate": round(avg_pc_hit_rate, 4),
             "raw_samples": all_raw_samples,
         }
 
@@ -547,8 +551,12 @@ class SamplesGenerator:
         if "num_waiting_reqs" in engine_stats:
             flat["vllm_num_waiting_reqs_mean"] = engine_stats["num_waiting_reqs"]["mean"]
             flat["vllm_num_waiting_reqs_max"] = engine_stats["num_waiting_reqs"]["max"]
+        pc_hit_rate = engine_stats.get("prefix_cache_hit_rate", 0.0)
+        flat["vllm_prefix_cache_hit_rate"] = pc_hit_rate
 
         self.last_vllm_stats = flat
+
+        pc_info = f", prefix_cache_hit_rate={pc_hit_rate:.1%}"
 
         logger.info(
             f"vLLM stats (step {global_step}, {stats_type}): "
@@ -557,6 +565,7 @@ class SamplesGenerator:
             f"kv_cache={engine_stats.get('kv_cache_usage_pct', {}).get('mean', 0):.1%}, "
             f"running={engine_stats.get('num_running_reqs', {}).get('mean', 0):.1f}, "
             f"waiting={engine_stats.get('num_waiting_reqs', {}).get('mean', 0):.1f}"
+            f"{pc_info}"
         )
 
     def flush_timeseries_to_disk(self, global_step: int = -1) -> None:

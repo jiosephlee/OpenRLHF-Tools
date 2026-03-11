@@ -55,6 +55,7 @@ class _VLLMStatsPoller:
         self._kv_cache_vals: List[float] = []
         self._running_vals: List[int] = []
         self._waiting_vals: List[int] = []
+        self._pc_hit_rates: List[float] = []
 
         self._thread = threading.Thread(target=self._poll_loop, daemon=True)
         self._stop = threading.Event()
@@ -62,6 +63,29 @@ class _VLLMStatsPoller:
         self._thread.start()
 
     # -- polling loop --------------------------------------------------
+
+    def _read_prefix_cache_hit_rate(self) -> float:
+        """Read the prefix cache hit rate from vLLM's CachingMetrics.
+
+        CachingMetrics accumulates across scheduler steps (sliding window over
+        last 1000 requests), so a single poll gives an accurate rolling rate.
+        """
+        try:
+            lm = getattr(self._llm, "logger_manager", None)
+            if lm is None:
+                return 0.0
+            for sl in getattr(lm, "stat_loggers", []):
+                pcm = getattr(sl, "prefix_caching_metrics", None)
+                if pcm is not None and not pcm.empty:
+                    return pcm.hit_rate
+                # Nested: PerEngineStatLoggerAdapter
+                for pe_logger in getattr(sl, "per_engine_stat_loggers", {}).values():
+                    pcm = getattr(pe_logger, "prefix_caching_metrics", None)
+                    if pcm is not None and not pcm.empty:
+                        return pcm.hit_rate
+        except Exception:
+            pass
+        return 0.0
 
     def _read_scheduler_stats(self):
         """Read the latest SchedulerStats from vLLM V1's AsyncLLM.
@@ -160,6 +184,12 @@ class _VLLMStatsPoller:
             running = getattr(stats, "num_running_reqs", 0)
             waiting = getattr(stats, "num_waiting_reqs", 0)
 
+            # Prefix cache hit rate from vLLM's CachingMetrics (sliding window
+            # over last 1000 requests).  The per-step SchedulerStats only holds
+            # a single-step delta that we'd miss between polls, but the
+            # LoggingStatLogger accumulates them into prefix_caching_metrics.
+            pc_hit_rate = self._read_prefix_cache_hit_rate()
+
             sample = {
                 "t": time_mod.time(),
                 "global_step": self._current_global_step,
@@ -167,6 +197,7 @@ class _VLLMStatsPoller:
                 "kv_cache_usage": round(kv, 4),
                 "num_running": running,
                 "num_waiting": waiting,
+                "prefix_cache_hit_rate": round(pc_hit_rate, 4),
             }
 
             with self._lock:
@@ -174,6 +205,7 @@ class _VLLMStatsPoller:
                 self._kv_cache_vals.append(kv)
                 self._running_vals.append(running)
                 self._waiting_vals.append(waiting)
+                self._pc_hit_rates.append(pc_hit_rate)
 
     # -- public API ----------------------------------------------------
 
@@ -199,15 +231,21 @@ class _VLLMStatsPoller:
             kv = self._kv_cache_vals
             running = self._running_vals
             waiting = self._waiting_vals
+            pc_hit_rates = self._pc_hit_rates
 
             self._samples = []
             self._kv_cache_vals = []
             self._running_vals = []
             self._waiting_vals = []
+            self._pc_hit_rates = []
 
         n = len(kv)
         if n == 0:
             return {"num_samples": 0, "raw_samples": []}
+
+        # Use the last polled hit rate (it's a sliding window, so the most
+        # recent reading is the most accurate).
+        last_pc_hit_rate = pc_hit_rates[-1] if pc_hit_rates else 0.0
 
         return {
             "num_samples": n,
@@ -224,6 +262,7 @@ class _VLLMStatsPoller:
                 "mean": round(sum(waiting) / n, 2),
                 "max": max(waiting),
             },
+            "prefix_cache_hit_rate": round(last_pc_hit_rate, 4),
             "raw_samples": samples,
         }
 

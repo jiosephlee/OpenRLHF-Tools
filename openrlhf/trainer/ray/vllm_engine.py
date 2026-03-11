@@ -64,43 +64,88 @@ class _VLLMStatsPoller:
     # -- polling loop --------------------------------------------------
 
     def _read_scheduler_stats(self):
-        """Read the latest SchedulerStats from vLLM.
+        """Read the latest SchedulerStats from vLLM V1's AsyncLLM.
 
-        In current vLLM V1, OutputProcessor.update_scheduler_stats() only
-        forwards to lora_states — it does NOT store ``scheduler_stats`` as
-        an attribute.  The stats are instead persisted by
-        LoggingStatLogger.record() as ``last_scheduler_stats``.
+        Stats flow: EngineCore → output_handler → logger_manager.record()
+        which sets ``LoggingStatLogger.last_scheduler_stats``.
 
-        We read from logger_manager first, falling back to output_processor
-        for compatibility with older vLLM versions.  Returns None when no
-        real stats have been recorded yet (step_counter == 0).
+        The logger_manager.stat_loggers list contains AggregateStatLoggerBase
+        instances. A plain LoggingStatLogger is wrapped inside a
+        PerEngineStatLoggerAdapter.  We probe both direct and nested paths.
+
+        Returns None when no real stats have been recorded yet.
         """
         try:
-            # Handle AsyncLLMEngine wrapper by getting the inner engine
-            engine_core = getattr(self._llm, "engine", self._llm)
+            llm = self._llm  # vLLM V1 AsyncLLM instance
 
-            # Primary: logger_manager → stat_loggers → last_scheduler_stats
-            lm = getattr(engine_core, "logger_manager", None)
-            if lm is not None:
-                for sl in getattr(lm, "stat_loggers", []):
-                    stats = getattr(sl, "last_scheduler_stats", None)
-                    if stats is None and hasattr(sl, "per_engine_stat_loggers"):
-                        for pe_logger in sl.per_engine_stat_loggers.values():
-                            pe_stats = getattr(pe_logger, "last_scheduler_stats", None)
-                            if pe_stats is not None and getattr(pe_stats, "step_counter", 0) > 0:
-                                return pe_stats
-                    if stats is not None and getattr(stats, "step_counter", 0) > 0:
-                        return stats
+            lm = getattr(llm, "logger_manager", None)
+            if lm is None:
+                if not getattr(self, "_warned_no_logger_manager", False):
+                    self._warned_no_logger_manager = True
+                    logger.warning(
+                        "vLLM engine %d: logger_manager is None — "
+                        "stats polling will not work (log_stats disabled?)",
+                        self._engine_id,
+                    )
+                return None
 
-            # Fallback: older vLLM versions that store on output_processor.
-            op = getattr(engine_core, "output_processor", None)
-            if op is not None:
-                stats = getattr(op, "scheduler_stats", None)
-                if stats is not None:
+            def _is_active(s):
+                """Check if SchedulerStats represents actual scheduler activity."""
+                if s is None:
+                    return False
+                # Accept if any of these indicate real activity:
+                # - step_counter > 0 means scheduler has run at least once
+                # - running+waiting > 0 means there are active requests
+                # - kv_cache_usage > 0 means KV cache has been allocated
+                return (
+                    getattr(s, "step_counter", 0) > 0
+                    or getattr(s, "num_running_reqs", 0) > 0
+                    or getattr(s, "num_waiting_reqs", 0) > 0
+                    or getattr(s, "kv_cache_usage", 0.0) > 0
+                )
+
+            for sl in getattr(lm, "stat_loggers", []):
+                # Direct: LoggingStatLogger or AggregatedLoggingStatLogger
+                stats = getattr(sl, "last_scheduler_stats", None)
+                if _is_active(stats):
+                    if not getattr(self, "_logged_first_stats", False):
+                        self._logged_first_stats = True
+                        logger.info(
+                            "vLLM engine %d: first scheduler stats read — "
+                            "kv_cache=%.2f%%, running=%d, waiting=%d (via %s)",
+                            self._engine_id,
+                            getattr(stats, "kv_cache_usage", 0.0) * 100,
+                            getattr(stats, "num_running_reqs", 0),
+                            getattr(stats, "num_waiting_reqs", 0),
+                            type(sl).__name__,
+                        )
                     return stats
 
+                # Nested: PerEngineStatLoggerAdapter wraps per-engine loggers
+                pe_loggers = getattr(sl, "per_engine_stat_loggers", {})
+                for pe_logger in pe_loggers.values():
+                    pe_stats = getattr(pe_logger, "last_scheduler_stats", None)
+                    if _is_active(pe_stats):
+                        if not getattr(self, "_logged_first_stats", False):
+                            self._logged_first_stats = True
+                            logger.info(
+                                "vLLM engine %d: first scheduler stats read — "
+                                "kv_cache=%.2f%%, running=%d, waiting=%d "
+                                "(via %s → %s)",
+                                self._engine_id,
+                                getattr(pe_stats, "kv_cache_usage", 0.0) * 100,
+                                getattr(pe_stats, "num_running_reqs", 0),
+                                getattr(pe_stats, "num_waiting_reqs", 0),
+                                type(sl).__name__,
+                                type(pe_logger).__name__,
+                            )
+                        return pe_stats
+
             return None
-        except Exception:
+        except Exception as e:
+            if not getattr(self, "_warned_read_error", False):
+                self._warned_read_error = True
+                logger.warning("vLLM engine %d: error reading scheduler stats: %s", self._engine_id, e)
             return None
 
     def _poll_loop(self):

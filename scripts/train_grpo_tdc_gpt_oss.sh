@@ -23,8 +23,9 @@
 #   TRAIN_MAX_TOKENS_PER_GPU=1024 QUANT_METHOD=nvfp4 bash train_grpo_tdc_gpt_oss.sh
 #
 #   # Unsloth BF16:
-#   TRAIN_MAX_TOKENS_PER_GPU=8192 DEQUANT=unsloth bash train_grpo_tdc_gpt_oss.sh
-#
+#   LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo KV_CACHE_DTYPE=fp8 bash train_grpo_tdc_gpt_oss.sh
+#   USE_LORA=1 LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo KV_CACHE_DTYPE=fp8 bash train_grpo_tdc_gpt_oss.sh
+#   USE_LORA=1 LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=ppo KV_CACHE_DTYPE=fp8 bash train_grpo_tdc_gpt_oss.sh
 #   # Distributed:
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 bash scripts/train_grpo_tdc_gpt_oss.sh
 #       
@@ -54,6 +55,9 @@
 #   KV_CACHE_DTYPE=fp8                   # KV cache dtype for vLLM (default: off, i.e. vLLM default auto)
 #   REDUCE_OPTIMIZER=adam_offload        # Optimizer: adam_offload (default) or adam_8bit
 #   MAX_EPOCHS=2                         # Training epochs (default: 1)
+#   USE_LORA=1                           # Enable LoRA (default: off); tweak LORA_RANK and LORA_ALPHA manually
+#   LORA_RANK=16                         # LoRA rank (default: 16, used when USE_LORA=1)
+#   LORA_ALPHA=32                        # LoRA alpha (default: 32, used when USE_LORA=1)
 #   EXTRA_ARGS="..."                     # Additional CLI flags
 #
 ### QUANTIZATION MODE RESOLUTION ###
@@ -138,6 +142,9 @@ QAT="${QAT:-}"
 KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-}"
 REDUCE_OPTIMIZER="${REDUCE_OPTIMIZER:-adam_offload}"
 MAX_EPOCHS="${MAX_EPOCHS:-1}"
+USE_LORA="${USE_LORA:-0}"
+LORA_RANK="${LORA_RANK:-64}"
+LORA_ALPHA="${LORA_ALPHA:-64}"
 VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-256}"
 VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
@@ -151,10 +158,10 @@ AGENT_MAX_STEPS=30
 ZERO_STAGE=2
 PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-8192}"
 N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-8}"
-TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-20480}"
-ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')}"
+TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-24576}"
+ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.5" | bc | awk '{print int($1)}')}"
 
-COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-16}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
+COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-4}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
 
 ### MODE-DEPENDENT DEFAULTS ###
 if [ "$MODE" = "colocated" ]; then
@@ -205,7 +212,7 @@ WARMUP_STEPS=10
 WARM_STEPS_MULTIPLIER=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
 
 ### MULTI-TASK ###
-TASK_NAMES=(BBB_Martins ClinTox DILI)
+TASK_NAMES=(BBB_Martins)
 TASK_LABEL="Base"
 
 ### NCCL / IB / NETWORK CONFIG ###
@@ -323,6 +330,7 @@ export DEBUG_TRACES="$DEBUG_TRACES"
 export OPENRLHF_DEBUG_LOGITS=0
 export OPENRLHF_DEBUG_NAN_GUARD=0
 export OPENRLHF_VRAM_AUDIT="${OPENRLHF_VRAM_AUDIT:-1}"
+export OPENRLHF_SMILES_ERROR_LOG="$RUNS_DIR/smiles_errors.jsonl"
 
 ### RAY ###
 export RAY_NODE_IP_ADDRESS=$(hostname -I | awk '{print $1}')
@@ -405,6 +413,7 @@ echo "Curriculum Balanced: $CURRICULUM_BALANCED"
 
 echo "Loss Type: $LOSS_TYPE"
 echo "Liger GRPO Loss: $LIGER_GRPO_LOSS (backend=$LIGER_GRPO_BACKEND, chunk_size=$LIGER_CHUNK_SIZE)"
+echo "LoRA: USE_LORA=$USE_LORA (rank=$LORA_RANK, alpha=$LORA_ALPHA)"
 echo "TIS: $TIS (type=$TIS_TYPE, thresholds=$TIS_THRESHOLDS)"
 echo "KV Cache Dtype: ${KV_CACHE_DTYPE:-auto}"
 echo "VLLM_MAX_NUM_SEQS: $VLLM_MAX_NUM_SEQS"
@@ -466,6 +475,9 @@ if [ -n "$VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE" ]; then
 fi
 if [ "$LENGTH_PENALTY_MAX_LENGTH" -gt 0 ]; then
     OPTIONAL_FLAGS+=" --length_penalty_max_length $LENGTH_PENALTY_MAX_LENGTH"
+fi
+if [ "$USE_LORA" = "1" ]; then
+    OPTIONAL_FLAGS+=" --lora_rank $LORA_RANK --lora_alpha $LORA_ALPHA"
 fi
 
 ### TRAINING ###
@@ -541,8 +553,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
     --attn_implementation "flex_attention" \
     --length_penalty_max_length 10240 \
-    --enable_tool_calling_rewards \
-    --skip_eval_step_zero \
     $QUANT_FLAGS \
     $MODE_FLAGS \
     $OPTIONAL_FLAGS \

@@ -13,6 +13,7 @@ import json
 import os
 import re
 import time
+import datetime
 import torch
 from typing import Any, Callable, Dict, Optional
 
@@ -21,6 +22,86 @@ from transformers import AutoTokenizer
 from openrlhf.utils.tool_versions import get_version
 from openrlhf.utils.agent import AgentInstanceBase, MultiTurnAgentExecutor
 from openrlhf.utils.chat_protocol import GLMFlashProtocol, GPTOSSProtocol, InternS1Protocol, Qwen3Protocol
+
+
+# ---------------------------------------------------------------------------
+# RDKit log capture helpers
+# ---------------------------------------------------------------------------
+
+# Attempt to import RDKit log-capture utilities once at module load.
+try:
+    from rdkit.Chem import rdBase as _rdBase
+    _RDKIT_AVAILABLE = True
+except ImportError:
+    _RDKIT_AVAILABLE = False
+
+
+def _exec_with_rdkit_log_capture(fn: Callable, arguments: dict, tool_name: str):
+    """Call fn(**arguments), returning (error_msg_or_empty, result_json).
+
+    Runs the tool call inside a RDKit BlockLogs context so C++ parse
+    messages are silenced at the C++ layer (they were already reaching
+    the terminal anyway).  Any exception is caught and returned as an
+    empty error_str so the caller can still log the SMILES.
+
+    Returns (error_str, result_json).
+    error_str is empty when the call succeeded without RDKit errors.
+    When non-empty it contains a description of what went wrong.
+    """
+    smiles_arg = arguments.get("smiles", arguments.get("query_smiles", ""))
+
+    if _RDKIT_AVAILABLE:
+        ctx = _rdBase.BlockLogs()
+    else:
+        ctx = None
+
+    error_str = ""
+    try:
+        if ctx is not None:
+            ctx.__enter__()
+        raw = fn(**arguments)
+        result = json.dumps({"result": raw, "function_name": tool_name, "arguments": arguments})
+        # Check if RDKit reported an invalid molecule (MolFromSmiles returned None).
+        # Most wrappers raise ValueError for invalid SMILES, but some return 'invalid'.
+        if isinstance(raw, str) and "invalid" in raw.lower() and smiles_arg:
+            error_str = f"Tool returned indication of invalid SMILES: {raw!r}"
+    except Exception as e:
+        error_str = str(e)
+        result = json.dumps({"error": error_str, "function_name": tool_name, "arguments": arguments})
+    finally:
+        if ctx is not None:
+            ctx.__exit__(None, None, None)
+    return error_str, result
+
+
+_SMILES_ERROR_LOG_PATH: Optional[str] = None  # resolved once on first call
+
+
+def _write_smiles_error_log(tool_name: str, arguments: dict, error_str: str) -> None:
+    """Append a JSON record to the SMILES error log file (if configured).
+
+    The log path is read from the ``OPENRLHF_SMILES_ERROR_LOG`` environment
+    variable.  Nothing happens when the variable is unset.
+    """
+    global _SMILES_ERROR_LOG_PATH
+    if _SMILES_ERROR_LOG_PATH is None:
+        _SMILES_ERROR_LOG_PATH = os.environ.get("OPENRLHF_SMILES_ERROR_LOG", "")
+    if not _SMILES_ERROR_LOG_PATH:
+        return
+
+    record = {
+        "timestamp": datetime.datetime.now().isoformat(),
+        "tool": tool_name,
+        "smiles": arguments.get("smiles", arguments.get("query_smiles", None)),
+        "extra_args": {k: v for k, v in arguments.items() if k not in ("smiles", "query_smiles")},
+        "error": error_str,
+    }
+    try:
+        os.makedirs(os.path.dirname(_SMILES_ERROR_LOG_PATH), exist_ok=True)
+        with open(_SMILES_ERROR_LOG_PATH, "a") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass  # never crash training over a logging failure
 
 
 class ToolCallingTurn(AgentInstanceBase):
@@ -190,6 +271,7 @@ class ToolCallingTurn(AgentInstanceBase):
         arguments = tool_call.get("arguments", {})
 
         t0 = time.monotonic()
+        error_str = ""
         if tool_name not in self.tools:
             result = json.dumps(
                 {
@@ -199,12 +281,8 @@ class ToolCallingTurn(AgentInstanceBase):
             )
         else:
             try:
-                result = json.dumps(
-                    {
-                        "result": self.tools[tool_name](**arguments),
-                        "function_name": tool_name,
-                        "arguments": arguments,
-                    }
+                error_str, result = _exec_with_rdkit_log_capture(
+                    self.tools[tool_name], arguments, tool_name
                 )
             except Exception as e:
                 result = json.dumps(
@@ -214,7 +292,11 @@ class ToolCallingTurn(AgentInstanceBase):
                         "arguments": arguments,
                     }
                 )
-        return result, time.monotonic() - t0
+        duration = time.monotonic() - t0
+        # Log any invalid SMILES errors to the SMILES error log file.
+        if error_str:
+            _write_smiles_error_log(tool_name, arguments, error_str)
+        return result, duration
 
     _ANSWER_RE = re.compile(r"Answer\s*:\s*\(?\s*([A-Za-z])\s*\)?")
     _PAREN_ANSWER_RE = re.compile(r"\(\s*([A-Za-z])\s*\)")

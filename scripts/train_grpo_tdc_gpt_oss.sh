@@ -43,6 +43,7 @@
 #   TOOL_VERSION=v4                      # Tool schema version (default: v4)
 #   SMART_REPLAY=1                       # Enable smart replay with max_replay_rounds=2
 #   CURRICULUM_BALANCED=1                # Enable curriculum-balanced sampling
+#   OVERSAMPLE_RATIO=1.6                 # Oversample ratio for dynamic filtering (default: 1.6)
 
 #   LIGER_GRPO_LOSS=1                    # Enable Liger fused GRPO loss
 #   LIGER_GRPO_BACKEND=triton             # Liger backend: triton (default) or chunked
@@ -135,6 +136,7 @@ LIGER_GRPO_BACKEND="${LIGER_GRPO_BACKEND:-triton}"
 LOSS_TYPE="${LOSS_TYPE:-ppo}"
 LIGER_CHUNK_SIZE="${LIGER_CHUNK_SIZE:-1}"
 CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
+OVERSAMPLE_RATIO="${OVERSAMPLE_RATIO:-1.6}"
 TIS="${TIS:-0}"
 TIS_TYPE="${TIS_TYPE:-tis}"
 TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
@@ -410,6 +412,7 @@ echo "Warmup Steps: $WARMUP_STEPS (multiplier: $WARM_STEPS_MULTIPLIER)"
 echo "----------------------------------------"
 echo "Smart Replay: $SMART_REPLAY"
 echo "Curriculum Balanced: $CURRICULUM_BALANCED"
+echo "Oversample Ratio: $OVERSAMPLE_RATIO"
 
 echo "Loss Type: $LOSS_TYPE"
 echo "Liger GRPO Loss: $LIGER_GRPO_LOSS (backend=$LIGER_GRPO_BACKEND, chunk_size=$LIGER_CHUNK_SIZE)"
@@ -454,6 +457,7 @@ fi
 if [ "$CURRICULUM_BALANCED" = "1" ]; then
     OPTIONAL_FLAGS+=" --curriculum_balanced"
 fi
+OPTIONAL_FLAGS+=" --oversample_ratio $OVERSAMPLE_RATIO"
 
 if [ "$LIGER_GRPO_LOSS" = "1" ]; then
     OPTIONAL_FLAGS+=" --use_liger_grpo_loss --liger_grpo_backend $LIGER_GRPO_BACKEND"

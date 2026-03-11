@@ -898,6 +898,15 @@ if __name__ == "__main__":
             args.rollout_max_tokens_per_gpu = args.train_max_tokens_per_gpu
 
     if args.use_dynamic_batch:
+        # Token-level reduction loss types (dapo, bnpo, cispo) are incompatible with
+        # explicit --use_dynamic_batch because it uses sequence-proportional loss scaling.
+        # --use_adaptive_batch correctly uses token-proportional scaling for these losses.
+        if not args.use_adaptive_batch and args.loss_type in ("dapo", "bnpo", "cispo"):
+            raise ValueError(
+                f"--use_dynamic_batch with --loss_type {args.loss_type} is not supported because "
+                f"dynamic batching uses sequence-proportional loss scaling, which is incorrect for "
+                f"token-level reduction. Use --use_adaptive_batch instead."
+            )
         if not args.packing_samples and not args.use_adaptive_batch:
             print("[Warning] Please --packing_samples to accelerate when --use_dynamic_batch is enabled.")
             args.packing_samples = True

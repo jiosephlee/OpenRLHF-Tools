@@ -36,7 +36,7 @@ class ToolCallingTurn(AgentInstanceBase):
       - ``render_tool_feedback``: produce the bridge text between turns
     """
 
-    def __init__(self, hf_tokenizer=None, reward_fn=None):
+    def __init__(self, hf_tokenizer=None, reward_fn=None, enable_tool_calling_rewards=True):
         # ---- tokenizer (needed by protocol parsers) ----
         if hf_tokenizer is not None:
             self.tokenizer = hf_tokenizer
@@ -50,6 +50,7 @@ class ToolCallingTurn(AgentInstanceBase):
         # Signature: (generated_text: str, label: str) -> float
         # Falls back to _default_reward_fn (A/B letter extraction) when None.
         self._reward_fn = reward_fn
+        self._enable_tool_calling_rewards = enable_tool_calling_rewards
 
         # ---- protocol (parse + feedback only, not initial rendering) ----
         protocol_name = os.environ.get("OPENRLHF_CHAT_PROTOCOL", "glm_flash")
@@ -123,7 +124,9 @@ class ToolCallingTurn(AgentInstanceBase):
             # parse_method is only set by GPTOSSProtocol; None means a
             # non-GPT-OSS protocol parsed successfully — no bonus/penalty.
             parse_method = action.get("parse_method")
-            if parse_method is None:
+            if not self._enable_tool_calling_rewards:
+                format_reward = 0
+            elif parse_method is None:
                 # Non-GPT-OSS protocol: no format shaping
                 format_reward = 0
             elif parse_method == "primary":
@@ -153,10 +156,11 @@ class ToolCallingTurn(AgentInstanceBase):
         # Apply an explicit penalty to discourage malformed harmony headers.
         parse_failed = action.get("parse_failed", False)
         if parse_failed:
-            base_logs["format_reward"] = -0.0025
+            parse_penalty = -0.0025 if self._enable_tool_calling_rewards else 0
+            base_logs["format_reward"] = parse_penalty
             return {
                 "environment_feedback": "",
-                "rewards": torch.tensor(-0.0025),
+                "rewards": torch.tensor(parse_penalty),
                 "done": True,
                 "scores": 0.0,
                 "extra_logs": base_logs,
@@ -254,8 +258,8 @@ class ToolCallingTurn(AgentInstanceBase):
 # Executor (required name for vllm_engine._load_agent_executor)
 # ---------------------------------------------------------------------------
 class AgentExecutor(MultiTurnAgentExecutor):
-    def __init__(self, reward_fn=None, length_penalty_max_length: int = 0, **kwargs):
-        super().__init__(ToolCallingTurn, reward_fn=reward_fn, length_penalty_max_length=length_penalty_max_length, **kwargs)
+    def __init__(self, reward_fn=None, length_penalty_max_length: int = 0, enable_tool_calling_rewards: bool = True, **kwargs):
+        super().__init__(ToolCallingTurn, reward_fn=reward_fn, length_penalty_max_length=length_penalty_max_length, enable_tool_calling_rewards=enable_tool_calling_rewards, **kwargs)
 
 
 __all__ = ["ToolCallingTurn", "AgentExecutor"]

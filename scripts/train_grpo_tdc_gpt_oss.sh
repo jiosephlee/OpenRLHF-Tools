@@ -541,6 +541,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
     --attn_implementation "flex_attention" \
     --length_penalty_max_length 10240 \
+    --enable_tool_calling_rewards \
     --skip_eval_step_zero \
     $QUANT_FLAGS \
     $MODE_FLAGS \

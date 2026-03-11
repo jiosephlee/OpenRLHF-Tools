@@ -113,6 +113,7 @@ def train(args):
             chat_protocol=args.chat_protocol,
             tool_version=args.tool_version,
             length_penalty_max_length=args.length_penalty_max_length,
+            enable_tool_calling_rewards=args.enable_tool_calling_rewards,
             reduce_cuda_graph=args.optimal_flags_b200_gpt_oss,
             vllm_cudagraph_max_capture_size=args.vllm_cudagraph_max_capture_size,
             kv_cache_dtype=args.kv_cache_dtype,
@@ -670,6 +671,13 @@ if __name__ == "__main__":
         type=int,
         default=0,
         help="Upper limit of length penalty; 0 disables it",
+    )
+    parser.add_argument(
+        "--enable_tool_calling_rewards",
+        action="store_true",
+        default=False,
+        help="Enable format/parse shaping rewards for tool-calling turns. "
+        "When off (default), all tool-calling rewards (format_reward, parse_failed penalty) are zeroed.",
     )
     parser.add_argument(
         "--vllm_stop_strings",

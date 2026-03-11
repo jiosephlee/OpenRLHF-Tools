@@ -209,6 +209,7 @@ class LLMRayActor:
         chat_protocol: str = "glm_flash",
         tool_version: Optional[str] = None,
         length_penalty_max_length: int = 0,
+        enable_tool_calling_rewards: bool = True,
         **kwargs,
     ):
         self._configure_device_env(
@@ -240,6 +241,7 @@ class LLMRayActor:
             self.executor = _load_agent_executor(
                 agent_func_path,
                 length_penalty_max_length=length_penalty_max_length,
+                enable_tool_calling_rewards=enable_tool_calling_rewards,
             )
         else:
             self.executor = SingleTurnAgentExecutor(
@@ -520,6 +522,7 @@ def create_vllm_engines(
     chat_protocol: str = "glm_flash",
     tool_version: Optional[str] = None,
     length_penalty_max_length: int = 0,
+    enable_tool_calling_rewards: bool = True,
     reduce_cuda_graph: bool = False,
     vllm_cudagraph_max_capture_size: Optional[int] = None,
     kv_cache_dtype: str = "auto",
@@ -631,6 +634,7 @@ def create_vllm_engines(
                 "chat_protocol": chat_protocol,
                 "tool_version": tool_version,
                 "length_penalty_max_length": length_penalty_max_length,
+                "enable_tool_calling_rewards": enable_tool_calling_rewards,
             }
         )
 

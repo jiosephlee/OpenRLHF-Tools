@@ -361,6 +361,158 @@ class Qwen3Protocol(InternS1Protocol):
         return feedback
 
 
+class Qwen3CoderProtocol(Qwen3Protocol):
+    """Qwen3.5 Coder XML tool calling format protocol.
+
+    Tool call format::
+
+        <tool_call>
+        <function=tool_name>
+        <parameter=key>value</parameter>
+        </function>
+        </tool_call>
+
+    Observation format is identical to Qwen3Protocol (chatml with <tool_response>).
+    Parsing logic adapted from vLLM's Qwen3CoderToolParser.
+    """
+
+    # Regex patterns (from vLLM Qwen3CoderToolParser)
+    _TOOL_CALL_RE = re.compile(
+        r"<tool_call>(.*?)</tool_call>|<tool_call>(.*?)$", re.DOTALL
+    )
+    _FUNCTION_RE = re.compile(
+        r"<function=(.*?)</function>|<function=(.*)$", re.DOTALL
+    )
+    _PARAMETER_RE = re.compile(
+        r"<parameter=(.*?)(?:</parameter>|(?=<parameter=)|(?=</function>)|$)",
+        re.DOTALL,
+    )
+
+    # Override start/end markers for content extraction
+    _START = "<tool_call>"
+    _END = "</tool_call>"
+    _START_RE = re.compile(r"<tool_call>")
+    _END_RE = re.compile(r"</tool_call>")
+
+    def parse_assistant_text(self, text: str, token_ids: Optional[List[int]] = None) -> Dict[str, Any]:
+        """Parse Qwen3.5 Coder XML tool call format.
+
+        Extracts ``<tool_call><function=name><parameter=key>value</parameter></function></tool_call>``
+        blocks.  Text before the first ``<tool_call>`` is treated as content.
+        """
+        if "<function=" not in text:
+            return {"content": text, "tool_calls": []}
+
+        try:
+            function_calls = self._get_function_calls(text)
+            if not function_calls:
+                return {"content": text, "tool_calls": []}
+
+            tool_calls = []
+            for fc_str in function_calls:
+                tc = self._parse_xml_function_call(fc_str)
+                if tc:
+                    tool_calls.append(tc)
+
+            # Extract content before tool calls
+            content_idx = text.find(self._START)
+            if content_idx < 0:
+                content_idx = text.find("<function=")
+            content = text[:content_idx].strip() if content_idx > 0 else ""
+
+            return {
+                "content": content,
+                "tool_calls": tool_calls,
+            }
+        except Exception as e:
+            logger.warning("Qwen3Coder parse error: %s", e)
+            return {"content": text, "tool_calls": []}
+
+    def _get_function_calls(self, model_output: str) -> List[str]:
+        """Extract raw function call strings from model output."""
+        matched_ranges = self._TOOL_CALL_RE.findall(model_output)
+        raw_tool_calls = [m[0] if m[0] else m[1] for m in matched_ranges]
+
+        # Back-off: if no <tool_call> tags found, treat entire output
+        if not raw_tool_calls:
+            raw_tool_calls = [model_output]
+
+        raw_function_calls = []
+        for tc in raw_tool_calls:
+            raw_function_calls.extend(self._FUNCTION_RE.findall(tc))
+
+        return [m[0] if m[0] else m[1] for m in raw_function_calls]
+
+    def _parse_xml_function_call(self, function_call_str: str) -> Optional[Dict[str, Any]]:
+        """Parse a single ``<function=name>..params..</function>`` block."""
+        try:
+            end_idx = function_call_str.index(">")
+        except ValueError:
+            return None
+
+        function_name = function_call_str[:end_idx].strip()
+        parameters_text = function_call_str[end_idx + 1:]
+
+        param_dict: Dict[str, Any] = {}
+        for match_text in self._PARAMETER_RE.findall(parameters_text):
+            try:
+                idx = match_text.index(">")
+            except ValueError:
+                continue
+            param_name = match_text[:idx].strip()
+            param_value = match_text[idx + 1:]
+            # Strip leading/trailing newlines (Qwen3 Coder convention)
+            if param_value.startswith("\n"):
+                param_value = param_value[1:]
+            if param_value.endswith("\n"):
+                param_value = param_value[:-1]
+
+            param_dict[param_name] = self._coerce_param_value(param_value)
+
+        if not function_name:
+            return None
+
+        return {"name": function_name, "arguments": param_dict}
+
+    @staticmethod
+    def _coerce_param_value(value: str) -> Any:
+        """Best-effort type coercion for XML parameter values.
+
+        Tries JSON parse first (handles arrays, objects, booleans, numbers),
+        then falls back to the raw string.
+        """
+        stripped = value.strip()
+
+        # null
+        if stripped.lower() == "null":
+            return None
+
+        # Try JSON (covers numbers, bools, arrays, objects, quoted strings)
+        try:
+            return json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Bare booleans
+        if stripped.lower() in ("true", "false"):
+            return stripped.lower() == "true"
+
+        # Bare integers / floats
+        try:
+            int_val = int(stripped)
+            return int_val
+        except ValueError:
+            pass
+        try:
+            float_val = float(stripped)
+            return int(float_val) if float_val == int(float_val) else float_val
+        except ValueError:
+            pass
+
+        # Default: string
+        return value
+
+
 class GPTOSSProtocol(ChatProtocol):
     """GPT-OSS Harmony protocol using token-ID parser.
 
@@ -488,13 +640,19 @@ class GPTOSSProtocol(ChatProtocol):
             try:
                 args: Any = json.loads(args_text)
             except json.JSONDecodeError:
-                args = args_text
+                try:
+                    args = json.loads(_repair_invalid_json_escapes(args_text))
+                except Exception:
+                    args = args_text
             # Unwrap double-encoded JSON strings
             if isinstance(args, str):
                 try:
                     args = json.loads(args)
                 except (json.JSONDecodeError, TypeError):
-                    args = {"raw": args}
+                    try:
+                        args = json.loads(_repair_invalid_json_escapes(args))
+                    except Exception:
+                        args = {"raw": args}
             if not isinstance(args, dict):
                 args = {"raw": args}
             tool_calls.append({"name": name, "arguments": args})
@@ -529,7 +687,10 @@ class GPTOSSProtocol(ChatProtocol):
                     try:
                         args: Any = json.loads(msg_text)
                     except json.JSONDecodeError:
-                        args = msg_text
+                        try:
+                            args = json.loads(_repair_invalid_json_escapes(msg_text))
+                        except Exception:
+                            args = msg_text
                 else:
                     args = msg_text
                 # Double-encoded JSON strings (model quirk)
@@ -537,7 +698,10 @@ class GPTOSSProtocol(ChatProtocol):
                     try:
                         args = json.loads(args)
                     except (json.JSONDecodeError, TypeError):
-                        args = {"raw": args}
+                        try:
+                            args = json.loads(_repair_invalid_json_escapes(args))
+                        except Exception:
+                            args = {"raw": args}
                 if not isinstance(args, dict):
                     args = {"raw": args}
                 tool_calls.append({"name": name, "arguments": args})
@@ -617,4 +781,4 @@ class GPTOSSProtocol(ChatProtocol):
 
 
 # Export public API
-__all__ = ["ChatProtocol", "GLMFlashProtocol", "InternS1Protocol", "Qwen3Protocol", "GPTOSSProtocol"]
+__all__ = ["ChatProtocol", "GLMFlashProtocol", "InternS1Protocol", "Qwen3Protocol", "Qwen3CoderProtocol", "GPTOSSProtocol"]

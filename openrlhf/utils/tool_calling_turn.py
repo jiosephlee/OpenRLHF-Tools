@@ -21,7 +21,7 @@ from transformers import AutoTokenizer
 
 from openrlhf.utils.tool_versions import get_version
 from openrlhf.utils.agent import AgentInstanceBase, MultiTurnAgentExecutor
-from openrlhf.utils.chat_protocol import GLMFlashProtocol, GPTOSSProtocol, InternS1Protocol, Qwen3Protocol
+from openrlhf.utils.chat_protocol import GLMFlashProtocol, GPTOSSProtocol, InternS1Protocol, Qwen3Protocol, Qwen3CoderProtocol
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +48,19 @@ def _exec_with_rdkit_log_capture(fn: Callable, arguments: dict, tool_name: str):
     error_str is empty when the call succeeded without RDKit errors.
     When non-empty it contains a description of what went wrong.
     """
+    # Fix for gpt-oss "raw" keyword argument issue:
+    # If arguments contains 'raw', it's usually a string that failed to parse as JSON.
+    # Try to parse it and extract 'smiles' or 'query_smiles'.
+    if "raw" in arguments and len(arguments) == 1:
+        raw_val = arguments["raw"]
+        if isinstance(raw_val, str):
+            try:
+                parsed = json.loads(raw_val)
+                if isinstance(parsed, dict):
+                    arguments = parsed
+            except Exception:
+                pass
+
     smiles_arg = arguments.get("smiles", arguments.get("query_smiles", ""))
 
     if _RDKIT_AVAILABLE:
@@ -59,6 +72,9 @@ def _exec_with_rdkit_log_capture(fn: Callable, arguments: dict, tool_name: str):
     try:
         if ctx is not None:
             ctx.__enter__()
+        
+        # If the function doesn't take **kwargs, we might still hit issues if extra args are present.
+        # But most of these tools take specific arguments.
         raw = fn(**arguments)
         result = json.dumps({"result": raw, "function_name": tool_name, "arguments": arguments})
         # Check if RDKit reported an invalid molecule (MolFromSmiles returned None).
@@ -67,7 +83,19 @@ def _exec_with_rdkit_log_capture(fn: Callable, arguments: dict, tool_name: str):
             error_str = f"Tool returned indication of invalid SMILES: {raw!r}"
     except Exception as e:
         error_str = str(e)
-        result = json.dumps({"error": error_str, "function_name": tool_name, "arguments": arguments})
+        # If it's an "unexpected keyword argument" error, try to fall back to just the SMILES if possible
+        if "got an unexpected keyword argument" in error_str and smiles_arg:
+             try:
+                 # Try calling with only the smiles/query_smiles arg
+                 key = "smiles" if "smiles" in arguments else "query_smiles"
+                 raw = fn(**{key: smiles_arg})
+                 error_str = "" # suppress error since we recovered
+                 result = json.dumps({"result": raw, "function_name": tool_name, "arguments": {key: smiles_arg}})
+             except Exception as e2:
+                 error_str = f"{error_str} | Fallback failed: {e2}"
+                 result = json.dumps({"error": error_str, "function_name": tool_name, "arguments": arguments})
+        else:
+            result = json.dumps({"error": error_str, "function_name": tool_name, "arguments": arguments})
     finally:
         if ctx is not None:
             ctx.__exit__(None, None, None)
@@ -141,6 +169,8 @@ class ToolCallingTurn(AgentInstanceBase):
             self.protocol = GPTOSSProtocol(self.tokenizer)
         elif protocol_name == "qwen3":
             self.protocol = Qwen3Protocol(self.tokenizer)
+        elif protocol_name == "qwen3_5":
+            self.protocol = Qwen3CoderProtocol(self.tokenizer)
         elif protocol_name == "glm_flash":
             self.protocol = GLMFlashProtocol(self.tokenizer)
         else:

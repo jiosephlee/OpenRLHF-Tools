@@ -254,6 +254,9 @@ class Actor(nn.Module):
         # Only trigger when we ONLY need action_log_probs (e.g. experience_maker pass)
         if not return_output and not return_logprobs and not return_entropy and not allgather_logits and not self.packing_samples and action_mask is not None:
             causal_lm = self.model
+            # Unwrap DeepSpeedEngine to get the underlying HuggingFace CausalLM
+            if hasattr(causal_lm, "module"):
+                causal_lm = causal_lm.module
             try:
                 from peft import PeftModel
                 if isinstance(causal_lm, PeftModel):
@@ -404,6 +407,9 @@ class Actor(nn.Module):
         # a base_model property (returns self.model), so it's True for ALL HF models.
         # Must check for PeftModel explicitly (same approach as TRL's is_peft_model).
         causal_lm = self.model
+        # Unwrap DeepSpeedEngine to get the underlying HuggingFace CausalLM
+        if hasattr(causal_lm, "module"):
+            causal_lm = causal_lm.module
         try:
             from peft import PeftModel
 
@@ -454,6 +460,9 @@ class Actor(nn.Module):
     def get_lm_head(self) -> nn.Linear:
         """Return the lm_head module, handling PEFT wrapping."""
         model = self.model
+        # Unwrap DeepSpeedEngine to get the underlying HuggingFace CausalLM
+        if hasattr(model, "module"):
+            model = model.module
         try:
             from peft import PeftModel
 

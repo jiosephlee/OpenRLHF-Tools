@@ -124,6 +124,7 @@ def train(args):
             erl_memory=args.erl_memory,
             erl_max_memory=args.erl_max_memory,
             erl_max_reflection_tokens=args.erl_max_reflection_tokens,
+            language_model_only=args.language_model_only,
         )
 
     actor_model = RayActorGroup(
@@ -697,8 +698,14 @@ if __name__ == "__main__":
         "--chat_protocol",
         type=str,
         default="glm_flash",
-        choices=["glm_flash", "intern_s1", "gpt_oss", "qwen3"],
+        choices=["glm_flash", "intern_s1", "gpt_oss", "qwen3", "qwen3_5"],
         help="Chat protocol for tool-calling format.",
+    )
+    parser.add_argument(
+        "--language_model_only",
+        action="store_true",
+        default=False,
+        help="Skip loading vision encoder in VLMs (e.g. Qwen3.5) to save memory for text-only tasks.",
     )
 
     # Custom dataset

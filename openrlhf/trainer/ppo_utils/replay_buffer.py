@@ -216,6 +216,7 @@ class NaiveReplayBuffer(ABC):
         self.dynamic_indices: List[List[int]] = []
         self.dynamic_loss_scale: List[float] = []
         self.dynamic_optimizer_step: List[int] = []
+        self.micro_batch_stats: dict = {}
 
     @torch.no_grad()
     def append(self, experience: Experience) -> None:
@@ -258,6 +259,43 @@ class NaiveReplayBuffer(ABC):
             batch = batch[0]
         experience = make_experience_batch(batch, self.packing_samples)
         return experience
+
+    def _compute_micro_batch_stats(self, data_partitions, sample_lengths):
+        """Compute per-step micro batch statistics for monitoring vRAM pressure.
+
+        Stored as self.micro_batch_stats dict with keys:
+          - micro_batch/max_seq_len: longest sequence in any micro batch
+          - micro_batch/mean_seq_len: mean of max-seq-len across all micro batches
+          - micro_batch/max_batch_size: most sequences in any single micro batch
+          - micro_batch/mean_batch_size: mean micro batch size
+          - micro_batch/max_tokens_footprint: max (batch_size * max_seq_len) across micro batches
+          - micro_batch/num_microbatches: total number of micro batches
+        """
+        all_max_lens = []
+        all_batch_sizes = []
+        all_token_footprints = []
+        for partitions in data_partitions:
+            for partition in partitions:
+                if not partition:
+                    continue
+                max_len = max(sample_lengths[idx] for idx in partition)
+                bs = len(partition)
+                all_max_lens.append(max_len)
+                all_batch_sizes.append(bs)
+                all_token_footprints.append(bs * max_len)
+
+        if all_max_lens:
+            n = len(all_max_lens)
+            self.micro_batch_stats = {
+                "micro_batch/max_seq_len": max(all_max_lens),
+                "micro_batch/mean_seq_len": sum(all_max_lens) / n,
+                "micro_batch/max_batch_size": max(all_batch_sizes),
+                "micro_batch/mean_batch_size": sum(all_batch_sizes) / n,
+                "micro_batch/max_tokens_footprint": max(all_token_footprints),
+                "micro_batch/num_microbatches": n,
+            }
+        else:
+            self.micro_batch_stats = {}
 
     def setup_dynamic_batch(self, strategy):
         args = strategy.args
@@ -302,6 +340,10 @@ class NaiveReplayBuffer(ABC):
             data_partitions.append(partitions)
         self.dynamic_indices = micro_batch_indices
         self.sample_batch_size = 1
+
+        #### Micro batch stats tracking ####
+        self._compute_micro_batch_stats(data_partitions, sample_lengths)
+        #### end micro batch stats tracking ####
 
         #### Loss scaling: sequence-count-aware for GRPO, token-proportional for DAPO/BNPO ####
         loss_scales = []
@@ -429,6 +471,10 @@ class NaiveReplayBuffer(ABC):
 
         self.dynamic_indices = micro_batch_indices
         self.sample_batch_size = 1
+
+        #### Micro batch stats tracking ####
+        self._compute_micro_batch_stats(data_partitions, sample_lengths)
+        #### end micro batch stats tracking ####
 
         #### Adaptive batch: loss scaling ####
         loss_scales = []

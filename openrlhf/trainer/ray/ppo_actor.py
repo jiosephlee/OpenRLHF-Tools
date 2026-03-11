@@ -350,6 +350,11 @@ class ActorPPOTrainer(ABC):
                     status_mean[k] = status_mean.get(k, 0.0) + v
             for k in status_mean.keys():
                 status_mean[k] /= len(status_list)
+
+        # Inject micro batch partition stats (computed once per setup, not per step).
+        if self.replay_buffer.micro_batch_stats:
+            status_mean.update(self.replay_buffer.micro_batch_stats)
+
         return status_mean
 
     def _assert_finite_actor_state(self, step: int, stage: str, check_grad: bool) -> None:

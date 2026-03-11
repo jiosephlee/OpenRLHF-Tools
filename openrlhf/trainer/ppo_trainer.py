@@ -1343,6 +1343,8 @@ class PPOTrainer(BasePPOTrainer):
                 }
                 _extra["iteration_wall_sec"] = iteration_wall_sec
                 _extra["misc_gap_sec"] = misc_gap_sec
+                # Include micro batch partition stats for local tracking.
+                _extra.update({k: v for k, v in status.items() if k.startswith("micro_batch/")})
                 self._write_run_timing(
                     global_step=global_step,
                     rollout_wall_sec=rollout_wall_sec,

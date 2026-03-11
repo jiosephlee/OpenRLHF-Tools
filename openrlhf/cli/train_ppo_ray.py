@@ -434,6 +434,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--use_liger_kernel", action="store_true", default=False, help="Enable Liger Kernel")
     parser.add_argument(
+        "--use_unsloth_moe_kernels",
+        action="store_true",
+        default=False,
+        help="Replace MoE expert loops with grouped GEMM kernels (Triton on A100+, torch._grouped_mm on H100+)",
+    )
+    parser.add_argument(
         "--use_liger_grpo_loss",
         action="store_true",
         default=False,

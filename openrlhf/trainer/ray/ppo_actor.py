@@ -784,6 +784,7 @@ class PolicyModelActor(BaseModelActor):
             packing_samples=strategy.args.packing_samples,
             temperature=strategy.args.temperature,
             use_liger_kernel=strategy.args.use_liger_kernel,
+            use_unsloth_moe_kernels=getattr(strategy.args, "use_unsloth_moe_kernels", False),
             mxfp4_dequantize=getattr(strategy.args, "mxfp4_dequantize", False),
             fp4_config=getattr(strategy.args, "fp4_config", None),
         )

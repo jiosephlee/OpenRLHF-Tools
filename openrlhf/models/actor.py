@@ -43,6 +43,7 @@ class Actor(nn.Module):
         packing_samples (bool, optional): Whether to pack samples during training. Defaults to False.
         temperature (float, optional): Temperature for action selection. Defaults to 1.0.
         use_liger_kernel (bool, optional): Whether to use Liger Kernel for the model. Defaults to False.
+        use_unsloth_moe_kernels (bool, optional): Whether to use grouped GEMM kernels for MoE. Defaults to False.
     """
 
     def __init__(
@@ -60,6 +61,7 @@ class Actor(nn.Module):
         packing_samples=False,
         temperature=1.0,
         use_liger_kernel=False,
+        use_unsloth_moe_kernels=False,
         mxfp4_dequantize=False,
         fp4_config: Optional["FP4Config"] = None,
         **kwargs,
@@ -109,6 +111,11 @@ class Actor(nn.Module):
             else:
                 model_class = AutoModelForCausalLM
 
+            # Patch known MoE classes before model loading so instances get the patched forward
+            if use_unsloth_moe_kernels:
+                from openrlhf.kernels.moe.patch import patch_moe_kernels
+                patch_moe_kernels()
+
             self.model = model_class.from_pretrained(
                 pretrain_or_model,
                 trust_remote_code=True,
@@ -117,6 +124,11 @@ class Actor(nn.Module):
                 torch_dtype=torch_dtype,  # default: bf16
                 device_map=device_map,
             )
+
+            # Instance-level patching for trust_remote_code models (e.g. GPT-OSS)
+            if use_unsloth_moe_kernels:
+                from openrlhf.kernels.moe.patch import patch_moe_model_instance
+                patch_moe_model_instance(self.model)
 
             # Verify dequantization worked — log param dtypes and requires_grad
             if mxfp4_dequantize:

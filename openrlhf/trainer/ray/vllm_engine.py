@@ -579,6 +579,7 @@ def create_vllm_engines(
     erl_memory: bool = False,
     erl_max_memory: int = 5,
     erl_max_reflection_tokens: int = 512,
+    language_model_only: bool = False,
 ):
     """Spin up a set of vLLM Ray actors with consistent placement."""
     # Propagate ERL config via env vars so ERLExecutor can read them
@@ -635,6 +636,12 @@ def create_vllm_engines(
             "kv_cache_dtype": kv_cache_dtype,
         }
 
+        if language_model_only:
+            actor_kwargs["limit_mm_per_prompt"] = {}
+            # vLLM uses --limit-mm-per-prompt with empty dict to skip vision encoder loading
+            # when the model has a vision component but we only need text.
+            # This is the programmatic equivalent of --language-model-only.
+
         if max_num_batched_tokens is not None:
             actor_kwargs["max_num_batched_tokens"] = max_num_batched_tokens
 
@@ -649,7 +656,7 @@ def create_vllm_engines(
             # saving VRAM from CUDA graph storage while keeping max capture size.
             # vLLM pads to next captured size; the tighter spacing reduces
             # wasted padding for common batch sizes.
-            cudagraph_sizes = [s for s in [1, 2, 4, 8, 12, 16, 24, 32, 64, 80, 96, 112, 128] if s <= max_capture]
+            cudagraph_sizes = [s for s in [1, 2, 4, 8, 12, 16, 20, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128] if s <= max_capture]
             if max_capture not in cudagraph_sizes:
                 cudagraph_sizes.append(max_capture)
             actor_kwargs["compilation_config"] = CompilationConfig(
@@ -686,9 +693,9 @@ def create_vllm_engines(
         if logprobs_mode:
             actor_kwargs["logprobs_mode"] = logprobs_mode
             actor_kwargs["max_logprobs"] = 1
-            assert version.parse(vllm.__version__) > version.parse("0.10.0"), (
-                "vLLM > 0.10.0 is required for logprobs_mode"
-            )
+            # assert version.parse(vllm.__version__) > version.parse("0.10.0"), (
+            #     "vLLM > 0.10.0 is required for logprobs_mode"
+            # )
 
         vllm_engines.append(
             LLMRayActor.options(

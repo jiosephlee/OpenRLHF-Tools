@@ -23,8 +23,9 @@
 #   TRAIN_MAX_TOKENS_PER_GPU=1024 QUANT_METHOD=nvfp4 bash train_grpo_tdc_gpt_oss.sh
 #
 #   # Unsloth BF16:
-#   OVERSAMPLE_RATIO=1.6 LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss.sh
-#   USE_LORA=1 LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss.sh
+#   SMART_REPLAY=1 OVERSAMPLE_RATIO=1 LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss.sh
+#   USE_LORA=1 LEARNING_RATE=2e-5 SMART_REPLAY=1 OVERSAMPLE_RATIO=1 LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss.sh
+#   TIS=1 TIS_TYPE=seq-mask=tis SMART_REPLAY=1 OVERSAMPLE_RATIO=1 LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss.sh
 #   USE_LORA=1 LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss.sh
 #   # Distributed:
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 bash scripts/train_grpo_tdc_gpt_oss.sh
@@ -117,6 +118,9 @@ export DS_SKIP_CUDA_CHECK=1
 # Prevent corrupted torch inductor cache from crashing vLLM compilation.
 rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ ~/.cache/vllm/torch_compile_cache/ 2>/dev/null || true
 
+export VLLM_USE_FLASHINFER_MOE_FP16=1
+export VLLM_FLASHINFER_MOE_BACKEND=latency
+
 ### ARGS ###
 LEARNING_RATE="${LEARNING_RATE:-1e-6}"
 NUM_GPUS="${SLURM_GPUS_ON_NODE:-$(nvidia-smi -L 2>/dev/null | wc -l)}"
@@ -160,10 +164,10 @@ AGENT_MAX_STEPS=30
 ZERO_STAGE=2
 PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-8192}"
 N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-8}"
-TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-65536}"
-ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.1" | bc | awk '{print int($1)}')}"
+TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-16384}"
+ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.6" | bc | awk '{print int($1)}')}"
 
-COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-4}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
+COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-8}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
 
 ### MODE-DEPENDENT DEFAULTS ###
 if [ "$MODE" = "colocated" ]; then
@@ -204,7 +208,7 @@ fi
 ### MODE FLAGS ###
 if [ "$MODE" = "colocated" ]; then
     VLLM_SLEEP_LEVEL="${VLLM_SLEEP_LEVEL:-1}"
-    MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --vllm_sleep_level $VLLM_SLEEP_LEVEL --deepspeed_enable_sleep --$REDUCE_OPTIMIZER"
+    MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --vllm_sleep_level $VLLM_SLEEP_LEVEL --deepspeed_enable_sleep"
 else
     MODE_FLAGS="--async_train --async_queue_size 1 --$REDUCE_OPTIMIZER"
 fi
@@ -214,7 +218,7 @@ WARMUP_STEPS=10
 WARM_STEPS_MULTIPLIER=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
 
 ### MULTI-TASK ###
-TASK_NAMES=(BBB_Martins)
+TASK_NAMES=(BBB_Martins ClinTox CYP3A4_Substrate_CarbonMangels)
 TASK_LABEL="Base"
 
 ### NCCL / IB / NETWORK CONFIG ###

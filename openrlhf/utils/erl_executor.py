@@ -272,16 +272,18 @@ class ERLExecutor(AgentExecutorBase):
     def _get_protocol(self, hf_tokenizer):
         """Lazily initialize the chat protocol for reflection injection."""
         if self._protocol is None:
-            from openrlhf.utils.chat_protocol import InternS1Protocol, Qwen3Protocol
+            from openrlhf.utils.chat_protocol import InternS1Protocol, Qwen3Protocol, Qwen3CoderProtocol
 
             if self._chat_protocol_name == "intern_s1":
                 self._protocol = InternS1Protocol(hf_tokenizer)
             elif self._chat_protocol_name == "qwen3":
                 self._protocol = Qwen3Protocol(hf_tokenizer)
+            elif self._chat_protocol_name == "qwen3_5":
+                self._protocol = Qwen3CoderProtocol(hf_tokenizer)
             else:
                 raise NotImplementedError(
                     f"ERL inject_reflection not implemented for chat_protocol={self._chat_protocol_name!r}. "
-                    "Currently only 'intern_s1' and 'qwen3' are supported."
+                    "Currently only 'intern_s1', 'qwen3', and 'qwen3_5' are supported."
                 )
         return self._protocol
 

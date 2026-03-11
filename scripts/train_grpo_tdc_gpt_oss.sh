@@ -23,9 +23,9 @@
 #   TRAIN_MAX_TOKENS_PER_GPU=1024 QUANT_METHOD=nvfp4 bash train_grpo_tdc_gpt_oss.sh
 #
 #   # Unsloth BF16:
-#   LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo KV_CACHE_DTYPE=fp8 bash train_grpo_tdc_gpt_oss.sh
-#   USE_LORA=1 LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo KV_CACHE_DTYPE=fp8 bash train_grpo_tdc_gpt_oss.sh
-#   USE_LORA=1 LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=ppo KV_CACHE_DTYPE=fp8 bash train_grpo_tdc_gpt_oss.sh
+#   OVERSAMPLE_RATIO=1.6 LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss.sh
+#   USE_LORA=1 LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss.sh
+#   USE_LORA=1 LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss.sh
 #   # Distributed:
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 bash scripts/train_grpo_tdc_gpt_oss.sh
 #       
@@ -160,8 +160,8 @@ AGENT_MAX_STEPS=30
 ZERO_STAGE=2
 PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-8192}"
 N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-8}"
-TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-24576}"
-ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.5" | bc | awk '{print int($1)}')}"
+TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-65536}"
+ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.1" | bc | awk '{print int($1)}')}"
 
 COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-4}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
 

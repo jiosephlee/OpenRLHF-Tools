@@ -116,6 +116,8 @@ class WandbLogger:
 
         logs = {"train/global_step": global_step}
         for k, v in logs_dict.items():
+            if k.startswith("time/"):
+                continue
             if v is not None:
                 section = self._route_key(k)
                 logs[f"{section}/{k}"] = v
@@ -180,6 +182,8 @@ class TensorboardLogger:
     def log_train(self, global_step: int, logs_dict: Dict[str, Any]) -> None:
         generated_samples = logs_dict.get("generated_samples")
         for k, v in logs_dict.items():
+            if k.startswith("time/"):
+                continue
             if k == "generated_samples" and v is not None:
                 text, reward = generated_samples
                 formatted_text = f"Sample:\\n{text}\\n\\nReward: {reward:.4f}"

@@ -205,6 +205,7 @@ class ActorPPOTrainer(ABC):
             getattr(self.args, "packing_samples", False),
             getattr(self.args, "use_dynamic_batch", False),
             getattr(self.args, "use_adaptive_batch", False),
+            loss_type=getattr(self.args, "loss_type", "ppo"),
         )
 
         # Init torch group for weights sync

@@ -456,13 +456,6 @@ if __name__ == "__main__":
         help="Chunk size for Liger fused GRPO loss. chunk_size=1 means max chunking (one sequence per chunk, "
         "minimum memory). Higher values process more sequences together (faster but more memory).",
     )
-    parser.add_argument(
-        "--liger_loss_type",
-        type=str,
-        default="dapo",
-        choices=["grpo", "dapo", "bnpo", "dr_grpo", "cispo", "sapo"],
-        help="Loss type for Liger fused GRPO loss (default: dapo)",
-    )
     #### end Liger GRPO loss args ####
 
     parser.add_argument("--grad_accum_dtype", type=str, default=None, help="Adam grad accum data type")
@@ -589,19 +582,23 @@ if __name__ == "__main__":
     parser.add_argument("--kl_target", type=float, default=None)
     parser.add_argument("--kl_horizon", type=int, default=10000)
     parser.add_argument("--init_kl_coef", type=float, default=0.01, help="KL penalty in PPO")
-    parser.add_argument("--policy_loss_type", type=str, default="ppo", choices=["ppo", "gspo"])
+    #### Unified loss_type: controls ratio, reduction, and Liger variant ####
     parser.add_argument(
-        "--token_level_loss",
+        "--loss_type",
         type=str,
-        default="local_rank",
-        choices=["none", "local_rank", "global"],
+        default="ppo",
+        choices=["ppo", "dapo", "bnpo", "dr_grpo", "gspo", "cispo", "sapo"],
         help=(
-            "Loss reduction mode. "
-            "'none': per-sequence mean then batch mean (grpo-style). "
-            "'local_rank': flat token mean within rank (bnpo). "
-            "'global': flat token mean with cross-rank all-reduce normalizer (dapo)."
+            "Unified loss type controlling ratio computation, reduction strategy, and Liger variant. "
+            "'ppo' (default): token-level PPO ratio, per-sequence mean with cross-rank seq-count sync. "
+            "'dapo': token-level PPO ratio, flat token mean with cross-rank all-reduce. "
+            "'bnpo': token-level PPO ratio, flat token mean within rank. "
+            "'dr_grpo': token-level PPO ratio, per-sequence mean with cross-rank seq-count sync. "
+            "'gspo': sequence-level IS ratio, per-sequence mean with cross-rank seq-count sync. "
+            "'cispo'/'sapo': Liger-only variants (require --use_liger_grpo_loss)."
         ),
     )
+    #### end unified loss_type ####
     parser.add_argument(
         "--kl_estimator",
         type=str,
@@ -863,10 +860,28 @@ if __name__ == "__main__":
             print("[Warning] --ring_attn_size > 1 requires --packing_samples.")
             args.packing_samples = True
 
-    #### Convert token_level_loss "none" string to None ####
-    if args.token_level_loss == "none":
+    #### Derive internal flags from --loss_type ####
+    # token_level_loss: controls reduction in PolicyLoss
+    if args.loss_type in ("ppo", "gspo", "dr_grpo", "sapo"):
+        args.token_level_loss = None  # per-sequence mean
+    elif args.loss_type in ("dapo", "cispo"):
+        args.token_level_loss = "global"  # flat token mean with cross-rank all-reduce
+    elif args.loss_type == "bnpo":
+        args.token_level_loss = "local_rank"  # flat token mean within rank
+    else:
         args.token_level_loss = None
-    #### end token_level_loss conversion ####
+
+    # policy_loss_type: controls ratio computation in PolicyLoss
+    args.policy_loss_type = "gspo" if args.loss_type == "gspo" else "ppo"
+
+    # liger_loss_type: maps to Liger's internal loss_type enum
+    LIGER_LOSS_TYPE_MAP = {"ppo": "grpo", "gspo": "grpo"}
+    args.liger_loss_type = LIGER_LOSS_TYPE_MAP.get(args.loss_type, args.loss_type)
+
+    # Validate Liger-only variants
+    if args.loss_type in ("cispo", "sapo") and not getattr(args, "use_liger_grpo_loss", False):
+        raise ValueError(f"--loss_type {args.loss_type} requires --use_liger_grpo_loss")
+    #### end derive from loss_type ####
 
     if args.use_adaptive_batch:
         args.use_dynamic_batch = True

@@ -45,12 +45,11 @@
 
 #   LIGER_GRPO_LOSS=1                    # Enable Liger fused GRPO loss
 #   LIGER_GRPO_BACKEND=triton             # Liger backend: triton (default) or chunked
-#   LIGER_LOSS_TYPE=grpo                 # Loss type: grpo, dapo, bnpo, dr_grpo, cispo, sapo
+#   LOSS_TYPE=ppo                        # Loss type: ppo, dapo, bnpo, dr_grpo, gspo, cispo, sapo (controls ratio+reduction)
 #   LIGER_CHUNK_SIZE=1                   # Chunk size for chunked backend (1=max chunking)
 #   TIS=1                                # Enable Truncated Importance Sampling (off-policy correction)
 #   TIS_TYPE=tis                         # TIS variant: tis (default), icepop, seq-mask-tis
 #   TIS_THRESHOLDS="0.5 5.0"            # Low and high clamp thresholds (default: 0.5 5.0)
-#   GSPO=1                               # Use GSPO loss (sequence-level IS ratio) instead of PPO
 #   QAT=fp4_fake_quantize                 # QAT method (default: off). fp4_fake_quantize derives format from QUANT_METHOD
 #   KV_CACHE_DTYPE=fp8                   # KV cache dtype for vLLM (default: off, i.e. vLLM default auto)
 #   REDUCE_OPTIMIZER=adam_offload        # Optimizer: adam_offload (default) or adam_8bit
@@ -129,13 +128,12 @@ MAX_REPLAY_ROUNDS="${MAX_REPLAY_ROUNDS:-2}"
 
 LIGER_GRPO_LOSS="${LIGER_GRPO_LOSS:-0}"
 LIGER_GRPO_BACKEND="${LIGER_GRPO_BACKEND:-triton}"
-LIGER_LOSS_TYPE="${LIGER_LOSS_TYPE:-dapo}"
+LOSS_TYPE="${LOSS_TYPE:-ppo}"
 LIGER_CHUNK_SIZE="${LIGER_CHUNK_SIZE:-1}"
 CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
 TIS="${TIS:-0}"
 TIS_TYPE="${TIS_TYPE:-tis}"
 TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
-GSPO="${GSPO:-0}"
 QAT="${QAT:-}"
 KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-}"
 REDUCE_OPTIMIZER="${REDUCE_OPTIMIZER:-adam_offload}"
@@ -156,7 +154,7 @@ N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-8}"
 TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-20480}"
 ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')}"
 
-COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-32}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
+COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-16}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
 
 ### MODE-DEPENDENT DEFAULTS ###
 if [ "$MODE" = "colocated" ]; then
@@ -265,7 +263,7 @@ CHAT_PROTOCOL="gpt_oss"
 # Build suffix tags for active features
 SUFFIX=""
 [ "$SMART_REPLAY" = "1" ] && SUFFIX+="-sr${MAX_REPLAY_ROUNDS}"
-[ "$GSPO" = "1" ] && SUFFIX+="-gspo"
+[ "$LOSS_TYPE" != "ppo" ] && SUFFIX+="-${LOSS_TYPE}"
 [ "$TIS" = "1" ] && SUFFIX+="-tis"
 
 if [ "$MODE" = "colocated" ]; then
@@ -405,9 +403,9 @@ echo "----------------------------------------"
 echo "Smart Replay: $SMART_REPLAY"
 echo "Curriculum Balanced: $CURRICULUM_BALANCED"
 
-echo "Liger GRPO Loss: $LIGER_GRPO_LOSS (backend=$LIGER_GRPO_BACKEND, loss_type=$LIGER_LOSS_TYPE, chunk_size=$LIGER_CHUNK_SIZE)"
+echo "Loss Type: $LOSS_TYPE"
+echo "Liger GRPO Loss: $LIGER_GRPO_LOSS (backend=$LIGER_GRPO_BACKEND, chunk_size=$LIGER_CHUNK_SIZE)"
 echo "TIS: $TIS (type=$TIS_TYPE, thresholds=$TIS_THRESHOLDS)"
-echo "GSPO: $GSPO"
 echo "KV Cache Dtype: ${KV_CACHE_DTYPE:-auto}"
 echo "VLLM_MAX_NUM_SEQS: $VLLM_MAX_NUM_SEQS"
 echo "VLLM_MAX_NUM_BATCHED_TOKENS: $VLLM_MAX_NUM_BATCHED_TOKENS"
@@ -449,16 +447,13 @@ if [ "$CURRICULUM_BALANCED" = "1" ]; then
 fi
 
 if [ "$LIGER_GRPO_LOSS" = "1" ]; then
-    OPTIONAL_FLAGS+=" --use_liger_grpo_loss --liger_grpo_backend $LIGER_GRPO_BACKEND --liger_loss_type $LIGER_LOSS_TYPE"
+    OPTIONAL_FLAGS+=" --use_liger_grpo_loss --liger_grpo_backend $LIGER_GRPO_BACKEND"
     if [ "$LIGER_GRPO_BACKEND" = "chunked" ]; then
         OPTIONAL_FLAGS+=" --liger_chunk_size $LIGER_CHUNK_SIZE"
     fi
 fi
 if [ "$TIS" = "1" ]; then
     OPTIONAL_FLAGS+=" --enable_vllm_is_correction --vllm_is_correction_type $TIS_TYPE --vllm_is_truncated_threshold $TIS_THRESHOLDS"
-fi
-if [ "$GSPO" = "1" ]; then
-    OPTIONAL_FLAGS+=" --policy_loss_type gspo"
 fi
 if [ -n "$QAT" ]; then
     OPTIONAL_FLAGS+=" --qat $QAT"
@@ -507,7 +502,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --prompt_max_len $PROMPT_MAX_LEN \
     --generate_max_len 2048 \
     --max_samples 1000000 \
-    --token_level_loss global \
+    --loss_type $LOSS_TYPE \
     --use_adaptive_batch \
     --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
     --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \

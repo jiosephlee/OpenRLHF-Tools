@@ -318,7 +318,10 @@ class Actor(nn.Module):
         """Forward pass returning last hidden state (before lm_head) for fused loss kernels.
 
         Returns:
-            (hidden_states, aux_loss): hidden_states shape [B, T-1, D], aux_loss scalar or None.
+            (hidden_states, aux_loss): hidden_states shape [B, T, D] (full sequence),
+            aux_loss scalar or None.  The caller is responsible for slicing the
+            appropriate positions for next-token prediction (the triton and chunked
+            Liger backends require different numbers of positions).
         """
         batch, seqlen = sequences.size()
         forward_attention_mask = attention_mask
@@ -353,8 +356,9 @@ class Actor(nn.Module):
                 last_hidden_state, ring_attn_group, ring_attn_pad_len, indices, batch, seqlen
             )
 
-        # Slice off last token (next-token prediction: predict token t+1 from hidden state t)
-        last_hidden_state = last_hidden_state[:, :-1, :]
+        # NOTE: Do NOT slice :-1 here. The triton Liger backend needs L+1
+        # hidden-state positions for L completion tokens (next-token prediction),
+        # while the chunked backend needs L. The caller handles the slicing.
 
         # aux_loss (MoE load-balancing loss) — available when output_router_logits=True
         aux_loss = getattr(output, "aux_loss", None)

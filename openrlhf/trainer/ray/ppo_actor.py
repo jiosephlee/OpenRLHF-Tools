@@ -428,8 +428,16 @@ class ActorPPOTrainer(ABC):
             L = action_mask.shape[1]
             lm_head = self.actor.get_lm_head()
             backend = getattr(self.args, "liger_grpo_backend", "chunked")
-            # Triton needs L+1 positions (next-token prediction); chunked needs L
-            hs_slice = hidden_states[:, -(L + 1) :, :] if backend == "triton" else hidden_states[:, -L:, :]
+            # hidden_states is (B, S, D) — full sequence, no pre-slicing.
+            # Triton needs L+1 positions: h[t] → logits[t] → predicts token[t+1].
+            #   For L completion tokens we need L+1 hidden states (the one before
+            #   the first completion token through the last completion token).
+            # Chunked needs L positions: same L hidden states but shifted by one
+            #   (h[t-1] for each completion token t), so we slice -(L+1):-1.
+            if backend == "triton":
+                hs_slice = hidden_states[:, -(L + 1) :, :]   # (B, L+1, D)
+            else:
+                hs_slice = hidden_states[:, -(L + 1) : -1, :]  # (B, L, D)
 
             actor_loss, clip_ratio, ppo_kl, vllm_kl = self.actor_loss_fn(
                 hidden_states=hs_slice,

@@ -1,265 +1,98 @@
 # OpenRLHF-Tools: Extended OpenRLHF Fork
 
-## Overview
+## Section 1: Original OpenRLHF Architecture & Abstractions
 
-This fork extends OpenRLHF with multi-turn tool-calling support for GRPO training, along with several infrastructure improvements: transformers v5 compatibility, DeepSpeed OOM fixes, eval improvements, and TDC (Therapeutics Data Commons) dataset integration.
+OpenRLHF is built around a flexible, Ray-based distributed architecture designed to decouple stateful components for massive scaling. 
 
-**Key Features:**
-- Multi-turn agent-based rollouts with tool execution (including parallel tool calls)
-- Token-level masking (only LLM actions contribute to loss, observations excluded)
-- Clean abstraction layer (ToolCallingTurn + ChatProtocol)
-- Multiple chat protocol support: GLM Flash XML, Intern-S1, Qwen3, GPT-OSS
-- Transformers v4/v5 backward compatibility
+### Ray-Based Distributed Infrastructure
+OpenRLHF provisions different models (e.g., Actor, Critic, Reference Model, Reward Model) inside independent Ray actor groups:
+- **Actor process**: Runs training (forward/backward passes) on the policy model using PyTorch + DeepSpeed.
+- **Reference process**: Hosts the frozen reference model for KL penalty calculations during RL.
+- **vLLM Engine**: Inference and rollout generation happens entirely in separate `LLMRayActor` instances wrapping vLLM, decoupled from the memory-intensive Actor training loop.
+- **Colocate Mode**: A cost-saving technique where vLLM and the PyTorch Actor map to the same physical GPUs. They take turns using the GPUs by aggressively unloading and reloading weights into VRAM.
 
-- AutoTP OOM fix (free pre-sharded weights before DeepSpeed init)
-- NaN-safe masked operations (`torch.where` instead of `tensor * mask` in action log probs)
-- Eval at step 0, macro-F1 for TDC, `eval/global_step` W&B axis
-- Checkpoint uploading to HF Hub
-- Rollout trace logging to `runs/<run_name>/traces/`
-- On-the-fly MXFP4 quantization for bf16→MXFP4 weight sync to vLLM
-- Unified bash scripting system and 1a1v lightweight distributed training
+### Core Training Loop Abstractions
+The main orchestrator of the training loop lies in `PPOTrainer` (or `GRPOTrainer`):
+- **`ExperienceMaker`**: Before adjusting gradients, the trainer delegates to the Experience Maker. It takes the prompt dataset, ships prompts to the associated vLLM engine, extracts generated tokens, and runs them through the Reward and Reference models to prepare full trajectory tensors (states, actions, logprobs, rewards, advantages).
+- **Mini-Batches & Updates**: The Trainer slices the massive experience buffer into micro-batches for DeepSpeed ZeRO gradient accumulation.
 
-## Major Changes from Upstream OpenRLHF
+---
 
-### 1. Transformers v5 Compatibility
-**Files:** `openrlhf/cli/batch_inference.py`, `openrlhf/cli/interactive_chat.py`
+## Section 2: ML Flow of the GRPO Recipe
 
-Detects transformers major version at import time and branches on `batch_decode` (v4) vs `decode` (v5). `requirements.txt` allows either version.
+Group Relative Policy Optimization (GRPO) modifies standard PPO by dropping the Critic model (Value network). Instead, it normalizes rewards within groups to compute advantages.
 
-### 3. DeepSpeed AutoTP OOM Fix
-**File:** `openrlhf/utils/deepspeed/deepspeed.py`
+### 1. Rollout Generation
+The `ExperienceMaker` extracts a batch of prompts. For each prompt, it asks vLLM to sample $G$ independent completions.
 
-After `tp_model_init()` shards the model, the old optimizer still holds references to full-size pre-sharded parameters (~80 GiB). Fix: explicitly delete old optimizer, break scheduler reference, recreate optimizer over sharded params, force `gc.collect()` + `torch.cuda.empty_cache()` before `deepspeed.initialize()`.
+### 2. Group Advantage Estimation
+Instead of querying a trained Critic model to determine baseline expected return, GRPO looks at all $G$ completions for a single prompt.
+Calculates the mean $\mu$ and standard deviation $\sigma$ of the rewards for these $G$ responses.
+The advantage for standard completion $i$ is calculated as: $A_i = \frac{R_i - \mu}{\sigma}$.
 
-### 4. NaN-Safe Masked Operations
-**File:** `openrlhf/models/actor.py`
+### 3. PPO-Style Optimization
+Using the pre-computed advantages, the Actor model runs mini-batch gradient descent for multiple optimization epochs. To prevent catastrophically large policy shifts:
+- The likelihood ratio $r_t(\theta) = \frac{\pi_\theta(a_t|s_t)}{\pi_{old}(a_t|s_t)}$ is clipped using standard PPO bounds: $clip(r_t(\theta), 1-\epsilon, 1+\epsilon)$.
 
-Changed `(tensor * mask).sum()` to `torch.where(mask.bool(), tensor, torch.zeros_like(tensor)).sum()` in `action_log_probs`. Prevents NaN propagation through masked positions during action log prob calculation. (Note: `masked_mean` was reverted to `tensor * mask`).
+### 4. KL Divergence & Masking
+- The Reference Model's log probabilities are computed for the generated actions.
+- An exact KL divergence penalty ensures the updated policy stays anchored close to the base model.
+- **Token-Level Masking**: Only the LLM's generated response tokens contribute to the backward pass loss. Prompt tokens and intermediate observation tokens (in multi-turn tool calling) are completely masked out using `action_ranges`, ensuring the model isn't penalized for environmental output.
 
-### 5. Eval Improvements
-**Files:** `openrlhf/trainer/ppo_trainer.py`, `openrlhf/trainer/ppo_trainer_async.py`, `openrlhf/utils/logging_utils.py`
+---
 
-- Moved `evaluate()` from `PPOTrainer` to `BasePPOTrainer` (shared by sync/async)
-- Added eval at step 0 (`--skip_eval_step_zero` to disable)
-- Changed W&B metric axis from `eval/epoch` to `eval/global_step`
-- Added macro-F1 computation for TDC binary classification tasks
+## Section 3: Our Custom Changes
 
-### 6. TDC Dataset Integration
-**Files:** `openrlhf/datasets/tdc_loader.py`, `openrlhf/utils/tdc_reward_model.py`, `openrlhf/datasets/prompts_dataset.py`
+This fork extends OpenRLHF extensively with multi-turn tool-calling, quantization algorithms, and infrastructural stability patches.
 
-- `TDCDatasetLoader`: converts TDC CSVs to OpenAI message format with fuzzy prompt matching, Tox21 multi-subtask support
-- Per-task tool schema injection via `--tdc_tools` pointing to `tools_per_task.json`
-- Binary answer extraction (A/B) for eval with macro-F1
+### A. Multi-turn Tool Calling & Parallel Tool Execution natively
+- **Parallel Tool Calls**: Added support for executing parallel tool calls natively within trajectories.
+- **`ChatProtocol` Extensions**: Modular format-handling interface to support varying LLM prompt schemes.
+  - implementations: `GLMFlashProtocol`, `InternS1Protocol` (with SMILES JSON-escape repairs), `Qwen3Protocol`, `GPTOSSProtocol` (Harmony-format syntax).
+- **`ToolCallingTurn` & Agent Flow**: Single-class agent abstracting the back-and-forth multi-turn flow of prompting -> parsing -> executing tools -> generating observations -> appending history.
+- **TDC Agent Integration**: `TDCDatasetLoader` loads Therapeutics Data Commons tasks and automatically formats tool schemas via the `--tdc_tools` mapping file.
 
-### 7. Checkpoint Uploading
-**Files:** `openrlhf/cli/train_ppo_ray.py`, `openrlhf/trainer/ppo_trainer.py`
+### B. Tracking, Monitoring and Logging
+- **Rollout Traces**: Auto-saves one readable, decoded rollout trace per step into `runs/<run_name>/traces/` for rapid prompting iteration and debugging.
+- **Improved Evals**: Moved evaluate logic to `BasePPOTrainer`, disabled by default until later steps but `--skip_eval_step_zero` allows testing zero-shot behavior. Supports macro-F1 computations for TDC binary classification and logs cleanly to `eval/global_step` in wandb.
+- **SmartReplay Telemetry**: Added new logging metrics and buffer logging after each experience-making step to closely monitor recycling phases and W&B QoL improvements tracking oversample/missed prompt counts.
+- **Performance Timing & Bottleneck Auditing**: Implemented a precise, end-to-end timing tracking mechanism for the entire training loop. Distinct time intervals between stages (e.g., `gap_train_to_rollout`, `rollout_time`, `advantage_time`, `train_time`) are captured and stored in `runs/<run_name>/vllm_stats/run_timing.jsonl` to reliably audit run bottlenecks.
 
-New CLI args: `--push_to_hub`, `--push_to_hub_private`, `--delete_local_after_push`, `--save_steps`
+### C. Learning Recipes & Core Modifications
+- **ERL (Experiential Reinforcement Learning) & Smart Replay** *(Experimental)*:
+  Based on [Experiential Reinforcement Learning](https://arxiv.org/abs/2602.13949) (Shi et al., Feb 2026). For hard prompts where all samples fail (avg reward < threshold), generates structured reflections from failed attempts and retries with reflection-augmented prompts. Key components:
+  - **`ERLExecutor`**: Wraps any `AgentExecutorBase` with ERL reflection+retry logic.
+  - **Prompt-level gating**: Only hard prompts trigger reflection+retry; easy prompts use standard path.
+  - **k diverse reflections**: $k$ reflection+retry pairs per hard prompt, each conditioned on a different failed attempt.
+  - **Variable group sizes**: Hard prompt groups expand from $n$ to $n+k$; advantage computation uses dynamic `torch.split` instead of a fixed reshape.
+  - **Reflection injection**: Inserts reflection into the system message (implemented for InternS1Protocol and Qwen3Protocol).
+  - **Distillation loss**: Optional SFT loss (`--distill_coef`) on experiences tagged with `extra_logs["distill"] = 1`.
+  - **Per-task memory**: Optional (`OPENRLHF_ERL_MEMORY=1`) cross-episode reflection storage keyed by TDC task name.
 
-### 8. Rollout Trace Logging
-**File:** `openrlhf/trainer/ppo_utils/experience_maker.py`
+### D. Performance Tuning & Stability
+- **Prompt-Level Oversampling with Early Termination**: Added `--oversample_ratio` flag to dispatch additional prompts per step. Drains unused or slow generation references mid-flight aggressively utilizing a `ray.cancel(ref)` early termination to abort stragglers and clean up vLLM scheduler state without waiting. 
+- **Ceiling fix for dynamic batch splitting**: Ensures `math.ceil()` is used during microbatch generation, preventing packing algorithms from emitting 0 batches and accidentally exceeding `rollout_max_tokens_per_gpu`.
+- **Liger Kernels Fused GRPO Loss (`loss.py`)**: Abstracted Liger's fused kernels into `LigerPolicyLoss` keeping API signatures compatible with `PolicyLoss`. Adding the chunked backend (`--liger_grpo_backend chunked`) fusing `lm_head` dramatically solves Actor OOM issues.
+- **Token-Level Loss Normalization**: Replaced uniform 1/N batch division with token-proportional adaptive batch scaling `--token_level_loss` (`none`, `local_rank`, `global`). Guarantees equal accumulated gradients from all valid tokens across all dynamic micro-batches.
+- **DeepSpeed AutoTP OOM Fix**: Enforces a `gc.collect()` and `cuda.empty_cache()` immediately after model sharding alongside explicit wiping of the PyTorch optimizer references. Saves ~80 GiB memory spikes.
+- **Colocate Mode CUDA cache**: Forces `torch.cuda.empty_cache()` inside the `vllm_engine`'s `sleep()` sequence to forcibly relinquish reserved memory pages back to the driver before the Actor begins its backward pass.
+- **NaN-Safe Masked Operations**: Prevents masked NaN errors propagating backwards by rewriting `(tensor * mask).sum()` explicitly into `torch.where(mask.bool(), tensor, 0).sum()`.
 
-Saves one decoded rollout trace per step to `runs/<run_name>/traces/`. Annotates each record with prompt/action/observation sections decoded from token IDs using action ranges.
+### E. Quantization
+- **On-the-Fly FP4 Quantization for Weight Sync *(Experimental)***: Automatically dynamically compresses full bf16 actor weights down to FP4/MXFP4 packing using ModelOpt logic prior to broadcasting synced parameters to the vLLM Actor.
+- **FP4 Quantization-Aware Training (QAT) *(Experimental)***: Bridges the domain shift when training against FP4-served targets. Batched Triton prefetches concatenate and fake-quantize all MoE expert weights dynamically within a single kernel launch on the default stream before each standard PyTorch forward pass.
 
-### 9. Memory Optimization & ZeRO-2 Fixes
-- **Liger Kernels**: Experimental support to reduce vRAM OOM issues. We also implemented Liger GRPO loss (currently experimental/WIP) along with Liger PEFT detection fixes.
-- **DeepSpeed ZeRO-2 & Optimizers**: Testing `adam_offload` vs `8bit_adam`:
-  - `adam_offload` avoids CUDA OOM but faces unpredictable SIGKILLs (usually mitigated if sufficient system RAM/GPUs are available).
-  - `8bit_adam` is technically faster but requires smaller batch sizes and has potential compatibility issues on B200s.
+### F. Infrastructure, Refactors, and bugs
+- **Fixing bug for PyTorch Nightly**: Added checks for nightly PyTorch `isinstance` on the DeepSpeed optimizers and deferred LR schedule definitions appropriately to avoid crashes.
+- **Unified Bash Staging**: Complete refactor of run scripts (e.g. `1a1v` light, `intern_s1`, `gpt_oss`) simplifying configurations between local nodes, distributed SLURM setups, interactive debugging modes, and Liger backend permutations.
+- **Transformers v4 / v5**: Dual compatibility at runtime via import branching `batch_decode` (v4) vs `decode` (v5).
+- **Seamless HF Hub Uploads**: Added native CLI options for automatically streaming checkpoints (`--push_to_hub`, `--push_to_hub_private`, dropping local temp files).
 
-### 10. Unified Bash Scripts & 1a1v Setup
-- Refactored shell scripts into a simplified unified bash staging system. Recently heavily revamped to sync `unsloth`, `intern-s1`, and `gpt-oss` scripts. Added TIS and GSPO feature flags.
-- Fixed multiple Ray cluster setup bugs in both interactive and bash scripts.
-- Added `1a1v` distributed training setup (1 actor + 1 vLLM) for a 2-GPU footprint, improving rapid iteration and debugging compared to full 1a3v multi-node sweeps.
+---
+**Last Updated:** 2026-03-10
+**Base Version:** OpenRLHF (latest main branch)
 
-### 11. Parallel Tool Calls & GPT-OSS
-- Added support for executing parallel tool calls natively.
-- Full support and bug fixes for OpenAI/GPT-OSS schema parsing and generation formatting.
-
-### 12. Colocate Mode CUDA Cache Clearing
-**Files:** `openrlhf/trainer/ray/vllm_engine.py`
-
-In colocate mode, vLLM's `sleep()` releases weights but doesn't return the memory to the CUDA driver. The Actor process then OOMs during backward passes because `torch.cuda.memory.caching_allocator` still holds the pages. Fix: call `torch.cuda.empty_cache()` in both `sleep()` and `gc_collect()` so freed GPU memory is actually returned to the driver and available to the Actor.
-
-### 14. On-the-Fly FP4 Quantization for Weight Sync (Experimental)
-**Files:** `openrlhf/trainer/ray/vllm_worker_wrap.py`, `openrlhf/utils/mxfp4_quantize.py`
-
-When the Actor trains in bf16 but vLLM serves with FP4-quantized weights (e.g. GPT-OSS MoE), the weight sync must quantize on the fly. `quantize_to_mxfp4()` reimplements NVIDIA ModelOpt's E8M0-scaled FP4 E2M1 packing (transpose, per-expert block scaling, uint8 nibble packing). After writing packed weights + scales into vLLM's parameter storage, `reprocess_mxfp4_weights()` calls `process_weights_after_loading()` on dirty layers to re-run FlashInfer's swizzle/interleave pass. Recently, we fixed MXFP4 sync bugs and added support for NVFP4 formats (WIP on the vLLM end).
-
-### 15. FP4 Quantization-Aware Training (QAT) (Experimental)
-**Files:** `openrlhf/utils/mxfp4_quantize.py`, `openrlhf/models/actor.py`, `openrlhf/trainer/ray/ppo_actor.py`, `openrlhf/cli/train_ppo_ray.py`
-
-Closes the train/inference distribution gap when vLLM serves with FP4-quantized MoE expert weights but the actor trains in bf16. Uses a batched Triton kernel prefetch: before each forward pass, all expert weights are concatenated and fake-quantized in a single kernel launch on the default stream, eliminating the previous multi-stream approach and its race conditions.
-
-- Only MoE expert projections are targeted (same name filter as `vllm_worker_wrap`: `"experts"` in path AND one of `gate_up_proj`/`down_proj`/`w13_weight`/`w2_weight`).
-- Weight sync unaffected: `named_parameters()` yields true bf16.
-- Enabled via `--qat fp4_fake_quantize` (along with `--mxfp4_dequantize_base_model` / `--nvfp4_dequantize_base_model`).
-
-### 16. Ceiling Fix for Dynamic Batch Splitting
-**File:** `openrlhf/trainer/ppo_utils/experience_maker.py`
-
-`minimum_batch_num` was rounded down with floor division (`//`), which could produce 0 microbatches when `minimum_batch_num < effective_actor_num`, causing packed sequences to accidentally exceed `rollout_max_tokens_per_gpu`. Fix: use `math.ceil()` to round up, ensuring at least one microbatch per actor and respecting the token budget.
-
-### 17. Asymmetric PPO Clipping (Clip-Higher)
-
-Uses asymmetric `--eps_clip_low_high 0.3 0.372`, for instance, to give exploration tokens more room to increase probability per update (inspired by DAPO's Clip-Higher). GPT-OSS runs show ~24% clip ratio vs ~0.6% for smaller baselines, so wider bounds help avoid suppressing the gradient signal. Lower clip (ε=0.3) limits how aggressively bad actions are suppressed; upper clip (ε=0.372) limits reinforcement of good actions, with the asymmetry favoring exploration. Usual values are 0.2 and 0.272.
-
-### 18. ERL: Experiential Reinforcement Learning (EXPERIMENTAL — not yet tested)
-**Files:** `openrlhf/utils/erl_executor.py`, `openrlhf/utils/erl_tdc_agent.py`, `openrlhf/utils/chat_protocol.py`, `openrlhf/trainer/ppo_utils/experience_maker.py`, `openrlhf/trainer/ray/ppo_actor.py`
-
-Based on [Experiential Reinforcement Learning](https://arxiv.org/abs/2602.13949) (Shi et al., Feb 2026). For hard prompts where all samples fail (avg reward < threshold), generates structured reflections from failed attempts and retries with reflection-augmented prompts. Key components:
-
-- **`ERLExecutor`** (`openrlhf/utils/erl_executor.py`): Wraps any `AgentExecutorBase` with ERL reflection+retry logic. Loaded via `--agent_func_path` pointing to an agent .py that exports it as `AgentExecutor` (see `erl_tdc_agent.py`). Implements `execute_batch()` which `LLMRayActor.generate_responses()` calls when available, returning variable-size result lists. Config read from env vars (`OPENRLHF_ERL_HARD_THRESHOLD`, `OPENRLHF_ERL_K`, etc.).
-- **`erl_tdc_agent.py`**: Agent file for TDC tasks — exports `ERLExecutor(ToolCallingTurn executor)` as `AgentExecutor`. Point `--agent_func_path` here (or set `AGENT_FUNC_PATH` env var before running the training script).
-- **Prompt-level gating**: Only hard prompts (avg r1 < threshold) trigger reflection+retry; easy prompts use standard path
-- **k diverse reflections**: k reflection+retry pairs per hard prompt, each conditioned on a different failed attempt
-- **Variable group sizes**: Hard prompt groups expand from n to n+k; advantage computation uses dynamic `torch.split` instead of fixed reshape
-- **Reflection injection**: `ChatProtocol.inject_reflection()` inserts reflection into system message (implemented for InternS1Protocol and Qwen3Protocol)
-- **Distillation loss**: Optional SFT loss (`--distill_coef`) on experiences tagged with `extra_logs["distill"] = 1` (generic — any executor can use)
-- **Per-task memory**: Optional (`OPENRLHF_ERL_MEMORY=1`) cross-episode reflection storage keyed by TDC task name
-- **Training script**: `scripts/train_grpo_tdc_erl.sh` sets ERL env vars + `AGENT_FUNC_PATH` and delegates to intern_s1 script
-### 19. Prompt-Level Oversampling with Early Termination
-**Files:** `openrlhf/cli/train_ppo_ray.py`, `openrlhf/trainer/ppo_trainer.py`, `openrlhf/trainer/ppo_utils/experience_maker.py`, `openrlhf/trainer/ray/vllm_engine.py`
-
-- Added `--oversample_ratio` flag to dispatch extra prompts per step and accept the first `batch_size` completed that pass dynamic filtering (reduces wasted rollouts).
-- Early termination uses `ray.cancel()` to abort in-flight abandoned rollouts, cascading to vLLM via `await self.llm.abort(request_id)`.
-- Implements leftover prompts recycling phases.
-
-### 20. Token-Level Loss Normalization & Token-Proportional Adaptive Batch Scaling
-**Files:** `openrlhf/models/loss.py`, `openrlhf/trainer/ray/ppo_actor.py`, `openrlhf/trainer/ppo_utils/experience_maker.py`
-
-- Introduced a tri-state `--token_level_loss` (`none`, `local_rank`, `global`) for different DAPO/GRPO loss normalization modes.
-- Fixed adaptive batch scaling to be token-proportional instead of uniform 1/N, ensuring every token contributes equally despite microbatching.
-
-### 21. Unified Liger GRPO Loss (Experimental)
-**Files:** `openrlhf/models/loss.py`
-
-- Refactored ad-hoc Liger logic into a dedicated `LigerPolicyLoss` class matching the standard `PolicyLoss` API signature.
-- Added `--liger_grpo_backend` (`triton` vs `chunked`), `--liger_chunk_size`, and `--liger_loss_type`.
-- Chunked backend significantly reduces OOMs by fusing `lm_head` and avoiding full `[B, L, V]` logit materialization.
-
-## Architecture
-
-### Tool-Calling Components
-
-#### ToolCallingTurn (`openrlhf/utils/tool_calling_turn.py`)
-Single-class agent implementing `AgentInstanceBase`. Handles conversation history, tool execution, reward computation, and format rendering.
-
-```python
-class ToolCallingTurn(AgentInstanceBase):
-    async def reset(self, states) -> dict    # Returns {"observation": formatted_prompt}
-    async def step(self, state_dict) -> dict  # Returns {"environment_feedback", "rewards", "done", ...}
-```
-
-#### ChatProtocol (`openrlhf/utils/chat_protocol.py`)
-Abstract interface for model-specific tool-call formats.
-
-**Implementations:**
-- `GLMFlashProtocol`: XML format (`<tool_call>func<arg_key>k</arg_key><arg_value>v</arg_value></tool_call>`)
-- `InternS1Protocol`: JSON format with `<|action_start|><|plugin|>` delimiters, includes SMILES-safe JSON escape repair
-- `Qwen3Protocol`: JSON format with `<tool_call>` / `</tool_call>` delimiters, `<|im_start|>tool` observation wrappers (subclass of `InternS1Protocol`)
-- `GPTOSSProtocol`: Harmony-format parser for `gpt_oss` using generated token IDs
-
-Selected via `OPENRLHF_CHAT_PROTOCOL` env var (propagated by `vllm_engine.py`).
-
-### Token-Level Masking
-
-Only LLM-generated action tokens contribute to policy loss:
-```
-Trajectory: [prompt | action_1 | observation_1 | action_2 | observation_2 | final_answer]
-action_ranges = [(N, M), (K, L), (P, Q)]  # Only LLM-generated spans
-loss_mask = action_mask * attention_mask
-actor_loss = -(log_probs * advantages * loss_mask).sum() / loss_mask.sum()
-```
-
-### Multi-Turn Flow
-```
-GRPO Training Loop
-  -> Experience Maker
-    -> vLLM Engine (LLMRayActor)
-      -> MultiTurnAgentExecutor (agent.py, tracks action_ranges)
-        -> ToolCallingTurn (tool_calling_turn.py)
-          -> ChatProtocol (parse/render)
-```
-
-## CLI Arguments
-
-**Tool-Calling:**
-- `--agent_func_path`: Path to agent implementation
-- `--agent_max_steps`: Max turns per episode (default: 5)
-- `--vllm_stop_strings`: Stop generation tokens (e.g., `"</tool_call>"`)
-- `--chat_protocol`: Protocol name (`glm_flash`, `intern_s1`, `gpt_oss`, `qwen3`)
-- `--tool_version`: Tool schema version descriptor
-
-**TDC:**
-- `--tdc_tools`: Path to per-task tool schema JSON
-
-**Eval:**
-- `--skip_eval_step_zero`: Skip evaluation at step 0
-- `--skip_training`: Run only the step-0 eval and exit (skips training loop, for benchmarking eval speed and efficiency reports)
-
-
-**Checkpointing:**
-- `--push_to_hub <repo_id>`: Upload checkpoints to HF Hub
-- `--push_to_hub_private`: Make repo private
-- `--delete_local_after_push`: Delete local checkpoint after upload
-- `--save_steps <int>`: Save checkpoint every N steps
-
-**ERL (Experimental):**
-- `--agent_func_path <path>`: Point to `openrlhf/utils/erl_tdc_agent.py` to enable ERL
-- `--erl_hard_threshold <float>`: Avg reward threshold for hard prompt gating (None=disabled, 0.2 recommended for TDC)
-- `--erl_k <int>`: Number of reflection+retry pairs per hard prompt (default: 4)
-- `--erl_memory`: Enable cross-episode reflection memory (off by default)
-- `--erl_max_memory <int>`: Max reflections per task in memory (default: 5)
-- `--erl_max_reflection_tokens <int>`: Max tokens for reflection generation (default: 512)
-- `--distill_coef <float>`: Distillation loss coefficient for tagged experiences (generic, 0=disabled)
-
-**Environment Variables:**
-Set automatically by vllm_engine.py:
-- `OPENRLHF_MODEL_PATH`: Model path for tokenizer
-- `OPENRLHF_MAX_STEPS`: Max agent steps
-- `OPENRLHF_CHAT_PROTOCOL`: Chat protocol name
-- `OPENRLHF_TOOL_VERSION`: Tool version descriptor
-
-**GRPO & Liger Engine:**
-- `--oversample_ratio <float>`: Ratio of prompts to dispatch over batch size (default: 1.0)
-- `--token_level_loss <str>`: Normalization mode: `none`, `local_rank`, `global`
-- `--liger_grpo_backend <str>`: `triton` or `chunked` (significantly reduces OOMs)
-- `--liger_chunk_size <int>`: Processing chunks for Liger loss
-- `--liger_loss_type <str>`: Sub-loss types like `grpo`, `dapo`, `bnpo`
-
-Debug flags:
-- `OPENRLHF_DEBUG_NAN_GUARD=1`: Enable NaN assertions in actor forward/backward
-- `OPENRLHF_DEBUG_LOGITS=1`: Enable verbose logit/log_prob diagnostics
-
-## Key Files Changed from Upstream
-
-| File | Changes |
-|---|---|
-| `openrlhf/utils/chat_protocol.py` | New: ChatProtocol ABC, GLMFlashProtocol, InternS1Protocol, Qwen3Protocol, GPTOSSProtocol, `inject_reflection()` for ERL |
-| `openrlhf/utils/tool_calling_turn.py` | New: ToolCallingTurn agent class; injectable `reward_fn` param; `_default_reward_fn` fallback |
-| `openrlhf/utils/erl_executor.py` | New: ERLExecutor wrapping AgentExecutorBase with `execute_batch()`, reflection+retry, memory, protocol handling |
-| `openrlhf/utils/erl_tdc_agent.py` | New: Agent file exporting ERLExecutor(ToolCallingTurn) as AgentExecutor for --agent_func_path |
-| `openrlhf/utils/fp4_config.py` | New: FP4Config dataclass consolidating vllm_sync_fp4/qat/dequantize_base flags |
-| `openrlhf/utils/tdc_reward_model.py` | New: binary answer extractor for TDC eval |
-| `openrlhf/datasets/tdc_loader.py` | New: TDCDatasetLoader |
-| `openrlhf/datasets/prompts_dataset.py` | Per-task tool schema injection via tools_map |
-| `openrlhf/trainer/ppo_utils/experience_maker.py` | Trace logging, filtered count logging, ERL variable group sizes |
-| `openrlhf/trainer/ppo_trainer.py` | evaluate() in BasePPOTrainer, step-0 eval, macro-F1, hub push |
-| `openrlhf/trainer/ppo_trainer_async.py` | Eval wired into async trainer, missing logging/cleanup fixes |
-| `openrlhf/trainer/ray/vllm_engine.py` | Passes chat_protocol env var to Ray actors, reduced CUDA graphs, MXFP4 weight sync, `execute_batch()` dispatch in `generate_responses()` |
-| `openrlhf/trainer/ray/vllm_worker_wrap.py` | On-the-fly bf16→MXFP4 quantization for vLLM weight sync |
-| `openrlhf/utils/mxfp4_quantize.py` | MXFP4 quantization utility + QAT: `fake_quantize_mxfp4`, `_Mxfp4FakeQuant`, `register_mxfp4_qat_parametrization` |
-| `openrlhf/trainer/ray/ppo_actor.py` | NaN guard assertions; `fp4_config` forwarded to Actor(); weight sync reads `fp4_config.sync_format`; ERL distillation loss |
-| `openrlhf/models/actor.py` | torch.where NaN fix, logit diagnostics; `fp4_config: FP4Config` param replaces `qat`/`qat_fp4_format` |
-| `openrlhf/models/utils.py` | torch.where in masked_mean |
-| `openrlhf/utils/deepspeed/deepspeed.py` | Recreate optimizer after AutoTP to free pre-sharded weights |
-| `openrlhf/utils/distributed_util.py` | NCCL diagnostic logging |
-| `openrlhf/utils/logging_utils.py` | eval/global_step W&B axis |
-| `openrlhf/cli/batch_inference.py` | Transformers v4/v5 compat |
-| `openrlhf/cli/interactive_chat.py` | Transformers v4/v5 compat |
-| `openrlhf/cli/train_ppo_ray.py` | New CLI args for tools, eval, checkpointing, ERL args; validation builds `args.fp4_config` |
-| `openrlhf/utils/agent.py` | Pass hf_tokenizer + `**agent_kwargs` through to agent instance |
+---
 
 ## Storage Guidelines
 
@@ -268,8 +101,3 @@ Debug flags:
 - **Large file storage:** `/vast/projects/myatskar/design-documents/hf_home/`
 - **Never** save large checkpoints or model weights under `$PROJECT_ROOT/saves/` or commit them to the repo.
 - Scripts use `LOCAL_SAVE_DIR=/vast/projects/myatskar/design-documents/hf_home` as the default save path.
-
----
-
-**Last Updated:** 2026-03-03
-**Base Version:** OpenRLHF (latest main branch)

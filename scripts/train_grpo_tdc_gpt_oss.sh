@@ -44,7 +44,7 @@
 #   CURRICULUM_BALANCED=1                # Enable curriculum-balanced sampling
 
 #   LIGER_GRPO_LOSS=1                    # Enable Liger fused GRPO loss
-#   LIGER_GRPO_BACKEND=triton            # Liger backend: triton (default) or chunked
+#   LIGER_GRPO_BACKEND=triton             # Liger backend: triton (default) or chunked
 #   LIGER_LOSS_TYPE=grpo                 # Loss type: grpo, dapo, bnpo, dr_grpo, cispo, sapo
 #   LIGER_CHUNK_SIZE=1                   # Chunk size for chunked backend (1=max chunking)
 #   TIS=1                                # Enable Truncated Importance Sampling (off-policy correction)

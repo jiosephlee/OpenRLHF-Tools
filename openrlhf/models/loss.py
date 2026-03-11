@@ -369,7 +369,7 @@ class LigerPolicyLoss(nn.Module):
             # log-softmax + loss + backward without storing log-softmax.
             logits = F.linear(
                 hidden_states, lm_head.weight, getattr(lm_head, "bias", None)
-            )  # (B, L+1, V)
+            ).contiguous()  # (B, L+1, V) — must be contiguous for Triton kernel
 
             loss, metrics = self._triton_grpo_loss(
                 logits=logits,

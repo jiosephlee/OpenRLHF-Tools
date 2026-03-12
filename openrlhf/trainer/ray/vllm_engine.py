@@ -12,6 +12,7 @@ from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from transformers import AutoTokenizer
 from vllm.inputs import TokensPrompt
+from vllm.sampling_params import RequestOutputKind
 from vllm.utils import random_uuid
 
 from openrlhf.utils.agent import AgentExecutorBase, SingleTurnAgentExecutor
@@ -467,9 +468,11 @@ class LLMRayActor:
         """Token-level generation for rollout executors."""
         #### ray.cancel() graceful abort ####
         request_id = random_uuid()
+        params = deepcopy(sampling_params)
+        params.output_kind = RequestOutputKind.FINAL_ONLY
         generator = self.llm.generate(
             TokensPrompt(prompt_token_ids=prompt_token_ids),
-            deepcopy(sampling_params),
+            params,
             request_id=request_id,
         )
 

@@ -202,15 +202,36 @@ _EXCLUDED_TOOLS: set = {
     "get_exact_molecular_weight",
 }
 
+# Tools that upstream RDKIT_BASIC_OPENAI_TOOLS bundles but we manage via
+# Haydn wrappers only.  Strip them from the base import so they don't leak
+# into every version; versions that want them add them explicitly from
+# HAYDN_OPENAI_TOOLS.
+_HAYDN_ONLY_TOOLS: set = {
+    "analyze_ring_systems",
+    "classify_ionization",
+    "compute_similarity",
+    "score_structural_alerts",
+    "extract_pharmacophore_features",
+    "match_substructure",
+    "find_mcs",
+}
 
-def _filter_schemas(schemas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Remove any tool whose function name is in _EXCLUDED_TOOLS."""
-    return [t for t in schemas if t["function"]["name"] not in _EXCLUDED_TOOLS]
+_ALL_STRIPPED: set = _EXCLUDED_TOOLS | _HAYDN_ONLY_TOOLS
 
 
-def _filter_callables(callables: Dict[str, Callable]) -> Dict[str, Callable]:
-    """Remove any callable whose name is in _EXCLUDED_TOOLS."""
-    return {k: v for k, v in callables.items() if k not in _EXCLUDED_TOOLS}
+def _filter_schemas(schemas: List[Dict[str, Any]], *, haydn_passthrough: bool = False) -> List[Dict[str, Any]]:
+    """Remove globally-excluded and (by default) Haydn-only tools.
+
+    Set *haydn_passthrough=True* when adding Haydn tools explicitly so that
+    only the global exclusion set applies.
+    """
+    blocked = _EXCLUDED_TOOLS if haydn_passthrough else _ALL_STRIPPED
+    return [t for t in schemas if t["function"]["name"] not in blocked]
+
+
+def _filter_callables(callables: Dict[str, Callable], *, haydn_passthrough: bool = False) -> Dict[str, Callable]:
+    blocked = _EXCLUDED_TOOLS if haydn_passthrough else _ALL_STRIPPED
+    return {k: v for k, v in callables.items() if k not in blocked}
 
 
 # ---------------------------------------------------------------------------
@@ -234,15 +255,19 @@ except ImportError:
     HAYDN_CALLABLES = {}
 
 # v4: v2 + pKa + logD + Haydn structural alerts (no 3DEPSA)
+if PKA_TOOL is None or LOGD_TOOL is None:
+    raise ImportError(
+        "v4 requires predict_pka and estimate_logd but molgpka is not installed. "
+        "Install it with: pip install molgpka"
+    )
 _V4_HAYDN_NAMES = {"score_structural_alerts"}
-_V4_EXTRA_SCHEMAS: List[Dict[str, Any]] = []
-if PKA_TOOL is not None:
-    _V4_EXTRA_SCHEMAS.append(PKA_TOOL)
-if LOGD_TOOL is not None:
-    _V4_EXTRA_SCHEMAS.append(LOGD_TOOL)
-_V4_SCHEMAS: List[Dict[str, Any]] = _V2_SCHEMAS + _filter_schemas(_V4_EXTRA_SCHEMAS + [
-    t for t in HAYDN_OPENAI_TOOLS if t["function"]["name"] in _V4_HAYDN_NAMES
-])
+_V4_EXTRA_SCHEMAS: List[Dict[str, Any]] = [PKA_TOOL, LOGD_TOOL]
+_V4_SCHEMAS: List[Dict[str, Any]] = _V2_SCHEMAS + _filter_schemas(
+    _V4_EXTRA_SCHEMAS + [
+        t for t in HAYDN_OPENAI_TOOLS if t["function"]["name"] in _V4_HAYDN_NAMES
+    ],
+    haydn_passthrough=True,
+)
 
 # ---------------------------------------------------------------------------
 # Version callables (incremental)
@@ -259,12 +284,12 @@ if estimate_logd is not None:
 if get_3d_exposed_polar_surface is not None:
     _V3_CALLABLES["get_3d_exposed_polar_surface"] = get_3d_exposed_polar_surface
 
-_V4_CALLABLES: Dict[str, Callable] = dict(_V2_CALLABLES)
-if predict_pka is not None:
-    _V4_CALLABLES["predict_pka"] = predict_pka
-if estimate_logd is not None:
-    _V4_CALLABLES["estimate_logd"] = estimate_logd
-_V4_CALLABLES.update({k: v for k, v in HAYDN_CALLABLES.items() if k in _V4_HAYDN_NAMES})
+_V4_CALLABLES: Dict[str, Callable] = {
+    **_V2_CALLABLES,
+    "predict_pka": predict_pka,
+    "estimate_logd": estimate_logd,
+    **{k: v for k, v in HAYDN_CALLABLES.items() if k in _V4_HAYDN_NAMES},
+}
 
 # v5: v4 + RAscore + SyGMa metabolism + GFN2-xTB electronic properties
 _V5_EXTRA_SCHEMAS: List[Dict[str, Any]] = []

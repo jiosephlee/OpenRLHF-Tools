@@ -130,12 +130,16 @@ def forward_native_grouped_mm(self, hidden_states, top_k_index, top_k_weights):
     offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
 
     # Gate + Up projection
+    # torch._grouped_mm(X, W) needs W=[E, K, N_out] where K=hidden_dim.
+    # HF models store weights in two conventions:
+    #   GPT-OSS: [E, hidden, 2*inter] — already [E, K, N_out], no transpose
+    #   Qwen:    [E, 2*inter, hidden] — needs transpose to [E, hidden, 2*inter]
     if hasattr(self, "gate_up_proj"):
         gate_up_base = self.gate_up_proj
         if gate_up_base.shape[-1] == hidden_dim:
-            w1 = gate_up_base
-        else:
             w1 = gate_up_base.transpose(-2, -1).contiguous()
+        else:
+            w1 = gate_up_base
         mm1_out = _grouped_mm_with_backward_fix(permuted_input, w1, offsets)
 
         if "GptOssExperts" in self.__class__.__name__:
@@ -163,9 +167,12 @@ def forward_native_grouped_mm(self, hidden_states, top_k_index, top_k_weights):
         inter = F.silu(gate) * up
 
     # Down projection
+    # torch._grouped_mm(X, W) needs W=[E, K, N_out] where K=intermediate_dim.
+    #   GPT-OSS: [E, inter, hidden] — already [E, K, N_out], no transpose
+    #   Qwen:    [E, hidden, inter] — needs transpose to [E, inter, hidden]
     if hasattr(self, "down_proj"):
         down_base = self.down_proj
-        if down_base.shape[2] == hidden_dim:
+        if down_base.shape[-1] == hidden_dim:
             w2 = down_base
         else:
             w2 = down_base.transpose(-2, -1).contiguous()

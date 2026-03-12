@@ -363,14 +363,22 @@ class NaiveReplayBuffer(ABC):
                 loss_scales.extend(loss_scale)
                 optimizer_steps.extend(optimizer_step)
         else:
-            # DAPO/BNPO: the loss function itself handles token-level normalization
-            # (DAPO does cross-rank all-reduce internally, BNPO uses local rank).
-            # Here we just need uniform accumulation across microbatches — each
-            # microbatch's loss is already correctly normalized by the loss function.
+            # DAPO/BNPO/CISPO: token-level reduction needs token-proportional scaling
+            # so every action token contributes equally to the gradient.
             for partitions in data_partitions:
-                sample_num = sum(len(partition) for partition in partitions)
-                loss_scale = [len(partition) / max(sample_num, 1) for partition in partitions]
-                optimizer_step = [0] * (len(partitions) - 1) + [1]
+                num_mbs = len(partitions)
+                if num_mbs == 0:
+                    continue
+                token_counts = []
+                for partition in partitions:
+                    tc = sum(self.items[idx].action_mask.sum().item() for idx in partition)
+                    token_counts.append(tc)
+                total_tokens = sum(token_counts)
+                if total_tokens > 0:
+                    loss_scale = [tc / total_tokens for tc in token_counts]
+                else:
+                    loss_scale = [1.0 / num_mbs] * num_mbs
+                optimizer_step = [0] * (num_mbs - 1) + [1]
                 loss_scales.extend(loss_scale)
                 optimizer_steps.extend(optimizer_step)
 

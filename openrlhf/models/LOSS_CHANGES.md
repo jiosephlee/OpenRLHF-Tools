@@ -39,6 +39,8 @@ When using per-sequence reduction (`token_level_loss=None`), the replay buffer n
 
 **When ranks have unequal counts** (e.g., ERL variable group sizes, partial batches from oversampling), this prevents the gradient from being biased toward ranks with fewer samples.
 
+Both `--use_dynamic_batch` and `--use_adaptive_batch` support all loss types. For token-level reduction losses (`dapo`, `bnpo`, `cispo`), both modes use token-proportional scaling — each microbatch's loss scale is proportional to its action token count, ensuring every token contributes equally to the gradient.
+
 ### 4. Unified `--loss_type` CLI flag
 
 The three previously independent flags (`--policy_loss_type`, `--token_level_loss`, `--liger_loss_type`) are replaced by a single `--loss_type` flag. Internal parameters are derived automatically:

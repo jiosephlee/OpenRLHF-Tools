@@ -459,6 +459,10 @@ class BasePPOTrainer(ABC):
                 f"preview={sample_preview!r}"
             )
 
+        # Log interesting reward group trajectories every 4 steps.
+        if global_step % 4 == 0:
+            self._log_interesting_groups(experiences, global_step)
+
         # Balance experiences across DP ranks if needed.
         if self.args.use_dynamic_batch:
             experiences = balance_experiences(experiences, self.args)
@@ -582,6 +586,92 @@ class BasePPOTrainer(ABC):
 
         # NOTE: We keep vLLM in weights-only state after weight sync.
         # KV cache will be woken up before generation in SamplesGenerator.
+
+    def _log_interesting_groups(self, experiences, global_step: int) -> None:
+        """Find and log decoded trajectories for 'needle' and 'mixed' reward groups."""
+        try:
+            trace_dir = getattr(self.samples_generator, "rollout_trace_run_dir", None)
+            if not trace_dir:
+                return
+
+            n_samples = self.args.n_samples_per_prompt
+            if n_samples < 2:
+                return
+
+            # Collect rewards and indices across all experience shards, sort into prompt order.
+            indices = torch.tensor(sum([exp.index for exp in experiences], []))
+            raw_rewards = torch.cat([exp.rewards for exp in experiences], dim=0)
+            rewards = torch.empty_like(raw_rewards)
+            rewards[indices] = raw_rewards
+
+            # Also collect sequences, prompts, labels in the same sorted order.
+            all_sequences = torch.cat([exp.sequences for exp in experiences], dim=0)
+            sequences = torch.empty_like(all_sequences)
+            sequences[indices] = all_sequences
+
+            all_prompts = sum([exp.prompts for exp in experiences], [])
+            all_labels = sum([exp.labels for exp in experiences], [])
+            sorted_prompts = [""] * len(all_prompts)
+            sorted_labels = [""] * len(all_labels)
+            for i, idx in enumerate(indices.tolist()):
+                sorted_prompts[idx] = all_prompts[i]
+                sorted_labels[idx] = all_labels[i]
+
+            num_prompts = len(rewards) // n_samples
+            if num_prompts == 0:
+                return
+
+            reward_groups = rewards[: num_prompts * n_samples].view(num_prompts, n_samples)
+
+            found = {}  # type -> group_index
+            for gi in range(num_prompts):
+                group = reward_groups[gi]
+                high_mask = group > 0.5
+                n_high = high_mask.sum().item()
+                n_total = n_samples
+
+                if "needle" not in found and n_high == 1 and (n_total - n_high) >= 1:
+                    found["needle"] = gi
+                if "mixed" not in found:
+                    frac = n_high / n_total
+                    if 0.4 <= frac <= 0.6:
+                        found["mixed"] = gi
+
+                if len(found) == 2:
+                    break
+
+            if not found:
+                return
+
+            _decode_fn = self.tokenizer.decode if _TRANSFORMERS_V5 else lambda seq: self.tokenizer.batch_decode([seq], skip_special_tokens=True)[0]
+
+            for gtype, gi in found.items():
+                start = gi * n_samples
+                end = start + n_samples
+                group_rewards = rewards[start:end].tolist()
+                samples = []
+                for si in range(start, end):
+                    decoded = _decode_fn(sequences[si], skip_special_tokens=True) if _TRANSFORMERS_V5 else self.tokenizer.decode(sequences[si], skip_special_tokens=True)
+                    samples.append({
+                        "reward": group_rewards[si - start],
+                        "decoded_text": decoded,
+                        "prompt": sorted_prompts[si] if si < len(sorted_prompts) else "",
+                        "label": sorted_labels[si] if si < len(sorted_labels) else "",
+                    })
+
+                record = {
+                    "step": global_step,
+                    "type": gtype,
+                    "group_rewards": group_rewards,
+                    "samples": samples,
+                }
+                trace_path = os.path.join(trace_dir, f"group_trace_step{global_step}_{gtype}.json")
+                with open(trace_path, "w") as f:
+                    json.dump(record, f, ensure_ascii=True, indent=2)
+                logger.info(f"[group_trace] step={global_step} type={gtype} rewards={group_rewards} -> {trace_path}")
+
+        except Exception as e:
+            logger.warning(f"[group_trace] Failed to log interesting groups at step {global_step}: {e}")
 
     def _empty_all_model_caches(self) -> None:
         """Force PyTorch caching allocator to release memory back to CUDA/OS

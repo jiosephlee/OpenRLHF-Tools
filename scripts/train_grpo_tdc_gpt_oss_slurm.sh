@@ -307,6 +307,7 @@ run_task() {
     [ "$SMART_REPLAY" = "1" ] && SUFFIX+="-sr${MAX_REPLAY_ROUNDS}"
     [ "$GSPO" = "1" ] && SUFFIX+="-gspo"
     [ "$TIS" = "1" ] && SUFFIX+="-tis"
+    [ "$USE_LORA" = "1" ] && SUFFIX+="-lora"
 
     if [ "$MODE" = "colocated" ]; then
         MODE_TAG="colo"

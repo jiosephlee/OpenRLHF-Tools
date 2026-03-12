@@ -229,6 +229,7 @@ SUFFIX=""
 [ "$SMART_REPLAY" = "1" ] && SUFFIX+="-sr${MAX_REPLAY_ROUNDS}"
 [ "$LOSS_TYPE" != "ppo" ] && SUFFIX+="-${LOSS_TYPE}"
 [ "$TIS" = "1" ] && SUFFIX+="-tis"
+[ "$USE_LORA" = "1" ] && SUFFIX+="-lora"
 
 if [ "$MODE" = "colocated" ]; then
     MODE_TAG="colo"

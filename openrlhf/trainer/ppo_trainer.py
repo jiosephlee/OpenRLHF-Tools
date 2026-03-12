@@ -485,6 +485,14 @@ class BasePPOTrainer(ABC):
 
 
         ###### Sync Weights ######
+        # Flush PyTorch's caching allocator on Actor/Critic workers so that
+        # freed GPU memory is returned to the driver.  In colocate mode the
+        # Actor and vLLM share the same physical GPUs — without this flush
+        # vLLM's cumem allocator cannot reclaim memory that PyTorch still
+        # holds in its cache, causing OOM when waking KV cache later.
+        if self.vllm_engines is not None and self.args.vllm_enable_sleep:
+            self._empty_all_model_caches()
+
         # Sync weights to vLLM.
         sync_start_time = time.time()
         if self.vllm_engines is not None:

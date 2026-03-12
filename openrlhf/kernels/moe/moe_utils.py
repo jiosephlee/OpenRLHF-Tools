@@ -329,8 +329,18 @@ def forward_native_moe_loop(self, hidden_states, top_k_index, top_k_weights):
     return final_hidden_states
 
 
-def forward_moe_backend(self, hidden_states, top_k_index, top_k_weights):
-    """Dispatch MoE forward to the selected backend."""
+def forward_moe_backend(self, hidden_states, top_k_index=None, top_k_weights=None,
+                        router_indices=None, routing_weights=None, **kwargs):
+    """Dispatch MoE forward to the selected backend.
+
+    Accepts both Qwen-style (top_k_index, top_k_weights) and
+    GPT-OSS-style (router_indices, routing_weights) keyword arguments.
+    """
+    # Normalize parameter names across model conventions
+    if top_k_index is None:
+        top_k_index = router_indices
+    if top_k_weights is None:
+        top_k_weights = routing_weights
     backend = select_moe_backend()
     if backend == "grouped_mm":
         return forward_native_grouped_mm(self, hidden_states, top_k_index, top_k_weights)

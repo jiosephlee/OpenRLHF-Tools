@@ -23,10 +23,10 @@ def patch_moe_kernels():
     Monkey-patch HF Transformers MoE expert modules to use grouped GEMM kernels.
 
     Supports:
-    - Qwen3MoE (Qwen3MoeSparseMoeBlock / Qwen3MoeExperts)
-    - GPT-OSS (GptOssExperts via trust_remote_code)
-    - Qwen2MoE (Qwen2MoeSparseMoeBlock)
-    - DeepSeek V3 / GLM4 MoE
+    - Qwen3MoE (Qwen3MoeExperts / Qwen3MoeSparseMoeBlock)
+    - Qwen3.5MoE (Qwen3_5MoeExperts / Qwen3_5MoeSparseMoeBlock)
+    - Qwen2MoE (Qwen2MoeExperts / Qwen2MoeSparseMoeBlock)
+    - GPT-OSS (GptOssExperts via trust_remote_code / instance-level)
 
     The patching replaces the expert-level forward (the inner loop over experts)
     with `forward_moe_backend` which dispatches to grouped_mm / Triton / loop fallback.
@@ -48,6 +48,19 @@ def patch_moe_kernels():
         elif hasattr(modeling_qwen3_moe, "Qwen3MoeSparseMoeBlock"):
             _patch_experts_class(modeling_qwen3_moe.Qwen3MoeSparseMoeBlock, "Qwen3MoeSparseMoeBlock")
             patched.append("Qwen3MoeSparseMoeBlock")
+    except (ImportError, ModuleNotFoundError):
+        pass
+
+    # --- Qwen3.5 MoE ---
+    try:
+        from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe
+
+        if hasattr(modeling_qwen3_5_moe, "Qwen3_5MoeExperts"):
+            _patch_experts_class(modeling_qwen3_5_moe.Qwen3_5MoeExperts, "Qwen3_5MoeExperts")
+            patched.append("Qwen3_5MoeExperts")
+        elif hasattr(modeling_qwen3_5_moe, "Qwen3_5MoeSparseMoeBlock"):
+            _patch_experts_class(modeling_qwen3_5_moe.Qwen3_5MoeSparseMoeBlock, "Qwen3_5MoeSparseMoeBlock")
+            patched.append("Qwen3_5MoeSparseMoeBlock")
     except (ImportError, ModuleNotFoundError):
         pass
 

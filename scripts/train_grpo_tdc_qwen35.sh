@@ -34,11 +34,12 @@
 #   TIS_TYPE=tis                         # TIS variant: tis (default), icepop, seq-mask-tis
 #   TIS_THRESHOLDS="0.5 5.0"            # Low and high clamp thresholds
 #   KV_CACHE_DTYPE=fp8                   # KV cache dtype for vLLM
-#   REDUCE_OPTIMIZER=adam_offload        # Optimizer: adam_offload (default) or adam_8bit
+#   REDUCE_OPTIMIZER=adam_offload        # Optimizer: adam_offload (default), adam_8bit, or none
 #   MAX_EPOCHS=2                         # Training epochs (default: 1)
 #   USE_LORA=1                           # Enable LoRA
 #   LORA_RANK=16                         # LoRA rank (default: 16)
 #   LORA_ALPHA=32                        # LoRA alpha (default: 32)
+#   UNSLOTH_MOE=1                        # Enable grouped GEMM MoE kernels (Triton A100+, grouped_mm H100+)
 #   EXTRA_ARGS="..."                     # Additional CLI flags
 #   LANGUAGE_MODEL_ONLY=1                 # Skip vision encoder (default: 1 for text-only TDC)
 
@@ -142,11 +143,16 @@ if [ "$MODE" = "distributed" ]; then
 fi
 
 ### MODE FLAGS ###
+OPTIMIZER_FLAG=""
+if [ "$REDUCE_OPTIMIZER" != "none" ]; then
+    OPTIMIZER_FLAG="--$REDUCE_OPTIMIZER"
+fi
+
 if [ "$MODE" = "colocated" ]; then
     VLLM_SLEEP_LEVEL="${VLLM_SLEEP_LEVEL:-1}"
-    MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --vllm_sleep_level $VLLM_SLEEP_LEVEL --deepspeed_enable_sleep --$REDUCE_OPTIMIZER"
+    MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --vllm_sleep_level $VLLM_SLEEP_LEVEL --deepspeed_enable_sleep $OPTIMIZER_FLAG"
 else
-    MODE_FLAGS="--async_train --async_queue_size 1 --$REDUCE_OPTIMIZER"
+    MODE_FLAGS="--async_train --async_queue_size 1 $OPTIMIZER_FLAG"
 fi
 
 ### WARMUP LOGIC ###
@@ -411,6 +417,9 @@ if [ "$USE_LORA" = "1" ]; then
 fi
 if [ "$LANGUAGE_MODEL_ONLY" = "1" ]; then
     OPTIONAL_FLAGS+=" --language_model_only"
+fi
+if [ "${UNSLOTH_MOE:-0}" = "1" ]; then
+    OPTIONAL_FLAGS+=" --use_unsloth_moe_kernels"
 fi
 
 ### TRAINING ###

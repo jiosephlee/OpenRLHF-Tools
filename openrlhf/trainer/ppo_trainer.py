@@ -1141,7 +1141,7 @@ class PPOTrainer(BasePPOTrainer):
 
             fig, axes = plt.subplots(4, 1, figsize=(14, 12), sharex=True)
             titles = ["KV Cache Usage %", "Running Requests", "Waiting Requests", "Prefix Cache Hit Rate"]
-            keys = ["kv_cache_usage", "num_running", "num_waiting", "prefix_hit_rate"]
+            keys = ["kv_cache_usage", "num_running", "num_waiting", "prefix_cache_hit_rate"]
 
             # Alternating background shading per step.
             for ax in axes:

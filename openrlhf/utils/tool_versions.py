@@ -195,17 +195,36 @@ _RDKIT_ACCFG_CALLABLES: Dict[str, Callable] = {
 }
 
 # ---------------------------------------------------------------------------
+# Global exclusion set — tool names listed here are stripped from ALL versions
+# (both schemas and callables).  Edit this set to trim the tool surface.
+# ---------------------------------------------------------------------------
+_EXCLUDED_TOOLS: set = {
+    "get_exact_molecular_weight",
+}
+
+
+def _filter_schemas(schemas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Remove any tool whose function name is in _EXCLUDED_TOOLS."""
+    return [t for t in schemas if t["function"]["name"] not in _EXCLUDED_TOOLS]
+
+
+def _filter_callables(callables: Dict[str, Callable]) -> Dict[str, Callable]:
+    """Remove any callable whose name is in _EXCLUDED_TOOLS."""
+    return {k: v for k, v in callables.items() if k not in _EXCLUDED_TOOLS}
+
+
+# ---------------------------------------------------------------------------
 # Version schemas (incremental)
 # ---------------------------------------------------------------------------
-_V1_SCHEMAS: List[Dict[str, Any]] = RDKIT_BASIC_OPENAI_TOOLS + AccFG_OPENAI_TOOLS
-_V2_SCHEMAS: List[Dict[str, Any]] = _V1_SCHEMAS + STANDARDIZE_OPENAI_TOOLS
+_V1_SCHEMAS: List[Dict[str, Any]] = _filter_schemas(RDKIT_BASIC_OPENAI_TOOLS + AccFG_OPENAI_TOOLS)
+_V2_SCHEMAS: List[Dict[str, Any]] = _V1_SCHEMAS + _filter_schemas(STANDARDIZE_OPENAI_TOOLS)
 
 _V3_EXTRA_SCHEMAS: List[Dict[str, Any]] = []
 if PKA_TOOL is not None:
     _V3_EXTRA_SCHEMAS.append(PKA_TOOL)
 if LOGD_TOOL is not None:
     _V3_EXTRA_SCHEMAS.append(LOGD_TOOL)
-_V3_SCHEMAS: List[Dict[str, Any]] = _V2_SCHEMAS + _V3_EXTRA_SCHEMAS + SASA_OPENAI_TOOLS
+_V3_SCHEMAS: List[Dict[str, Any]] = _V2_SCHEMAS + _filter_schemas(_V3_EXTRA_SCHEMAS + SASA_OPENAI_TOOLS)
 
 # v4: v3 + Haydn (lazy import to avoid hard dep)
 try:
@@ -221,16 +240,16 @@ if PKA_TOOL is not None:
     _V4_EXTRA_SCHEMAS.append(PKA_TOOL)
 if LOGD_TOOL is not None:
     _V4_EXTRA_SCHEMAS.append(LOGD_TOOL)
-_V4_SCHEMAS: List[Dict[str, Any]] = _V2_SCHEMAS + _V4_EXTRA_SCHEMAS + [
+_V4_SCHEMAS: List[Dict[str, Any]] = _V2_SCHEMAS + _filter_schemas(_V4_EXTRA_SCHEMAS + [
     t for t in HAYDN_OPENAI_TOOLS if t["function"]["name"] in _V4_HAYDN_NAMES
-]
+])
 
 # ---------------------------------------------------------------------------
 # Version callables (incremental)
 # ---------------------------------------------------------------------------
-_V1_CALLABLES: Dict[str, Callable] = dict(_RDKIT_ACCFG_CALLABLES)
+_V1_CALLABLES: Dict[str, Callable] = _filter_callables(_RDKIT_ACCFG_CALLABLES)
 
-_V2_CALLABLES: Dict[str, Callable] = {**_V1_CALLABLES, "remove_salts": remove_salts}
+_V2_CALLABLES: Dict[str, Callable] = _filter_callables({**_V1_CALLABLES, "remove_salts": remove_salts})
 
 _V3_CALLABLES: Dict[str, Callable] = dict(_V2_CALLABLES)
 if predict_pka is not None:
@@ -252,7 +271,7 @@ _V5_EXTRA_SCHEMAS: List[Dict[str, Any]] = []
 for _tool_schema in [RASCORE_TOOL, METABOLISM_TOOL, ELECTRONIC_TOOL]:
     if _tool_schema is not None:
         _V5_EXTRA_SCHEMAS.append(_tool_schema)
-_V5_SCHEMAS: List[Dict[str, Any]] = _V4_SCHEMAS + _V5_EXTRA_SCHEMAS
+_V5_SCHEMAS: List[Dict[str, Any]] = _V4_SCHEMAS + _filter_schemas(_V5_EXTRA_SCHEMAS)
 
 _V5_CALLABLES: Dict[str, Callable] = dict(_V4_CALLABLES)
 for _name, _fn in [

@@ -10,6 +10,7 @@
 # Usage:
 #   # Colocated (default — actor and vLLM share GPUs via sleep mode):
 #   SMART_REPLAY=1 bash train_grpo_tdc_intern_s1.sh
+#   KV_CACHE_DTYPE=fp8 TIS=1 TIS_TYPE=tis SMART_REPLAY=1 OVERSAMPLE_RATIO=1 LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo bash train_grpo_tdc_intern_s1.sh
 #
 #   # Distributed (actor and vLLM on separate GPUs):
 #   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=6 bash train_grpo_tdc_intern_s1.sh
@@ -24,18 +25,29 @@
 #   EFFECTIVE_MINI_GRADIENT_STEPS=2      # Mini gradient steps in distributed/async mode
 #   ASYNC_ADVANTAGE=4                    # Scale factor: colocated uses ASYNC_ADVANTAGE * EFFECTIVE_* for both
 #                                        # ROLLOUT and MINI, keeping ROLLOUT/MINI ratio constant across modes.
+#                                        # Reflects that colocated is synchronous and can afford more rollouts
+#                                        # before each update without the 1-step off-policy lag of async.
 #   COLO_EVAL_STEPS=32                   # Eval frequency (global steps) for colocated; distributed scales by ASYNC_ADVANTAGE
 #   TOOL_VERSION=v4                      # Tool schema version (default: v4)
 #   SMART_REPLAY=1                       # Enable smart replay with max_replay_rounds=2
 #   CURRICULUM_BALANCED=1                # Enable curriculum-balanced sampling
+#   OVERSAMPLE_RATIO=1.6                 # Oversample ratio for dynamic filtering (default: 1.6)
 
 #   LIGER_GRPO_LOSS=1                    # Enable Liger fused GRPO loss
+#   LIGER_GRPO_BACKEND=triton             # Liger backend: triton (default) or chunked
+#   LOSS_TYPE=ppo                        # Loss type: ppo, dapo, bnpo, dr_grpo, gspo, cispo, sapo (controls ratio+reduction)
+#   LIGER_CHUNK_SIZE=1                   # Chunk size for chunked backend (1=max chunking)
 #   TIS=1                                # Enable Truncated Importance Sampling (off-policy correction)
 #   TIS_TYPE=tis                         # TIS variant: tis (default), icepop, seq-mask-tis
 #   TIS_THRESHOLDS="0.5 5.0"            # Low and high clamp thresholds (default: 0.5 5.0)
-#   GSPO=1                               # Use GSPO loss (sequence-level IS ratio) instead of PPO
-#   REDUCE_OPTIMIZER=adam_offload        # Optimizer: adam_offload (default) or adam_8bit
+#   QAT=fp4_fake_quantize                 # QAT method (default: off)
+#   KV_CACHE_DTYPE=fp8                   # KV cache dtype for vLLM (default: off, i.e. vLLM default auto)
+#   REDUCE_OPTIMIZER=adam_offload        # Optimizer: adam_offload (default), adam_8bit, or none
 #   MAX_EPOCHS=2                         # Training epochs (default: 1)
+#   USE_LORA=1                           # Enable LoRA (default: off)
+#   LORA_RANK=64                         # LoRA rank (default: 64, used when USE_LORA=1)
+#   LORA_ALPHA=64                        # LoRA alpha (default: 64, used when USE_LORA=1)
+#   UNSLOTH_MOE=1                        # Enable grouped GEMM MoE kernels
 #   EXTRA_ARGS="..."                     # Additional CLI flags
 #
 
@@ -44,13 +56,12 @@ set -euo pipefail
 module load cuda/13.1.0
 
 # Prevent corrupted torch inductor cache from crashing vLLM compilation.
-# We nuke any leftover default-location cache from prior runs.
 rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ ~/.cache/vllm/torch_compile_cache/ 2>/dev/null || true
 
 ### ARGS ###
 PRETRAIN_PATH=${1:-"jiosephlee/sft_intern_distillation_Intern-S1-mini-lm_complet_only_chat_think_lr5e-05"}
 LEARNING_RATE=${2:-"1e-6"}
-NUM_GPUS=$SLURM_GPUS_ON_NODE
+NUM_GPUS="${SLURM_GPUS_ON_NODE:-$(nvidia-smi -L 2>/dev/null | wc -l)}"
 DEBUG_TRACES=${3:-"0"}
 
 ### FEATURE FLAGS ###
@@ -60,27 +71,39 @@ EFFECTIVE_MINI_GRADIENT_STEPS="${EFFECTIVE_MINI_GRADIENT_STEPS:-2}"
 ASYNC_ADVANTAGE="${ASYNC_ADVANTAGE:-4}"
 TOOL_VERSION="${TOOL_VERSION:-v4}"
 SMART_REPLAY="${SMART_REPLAY:-0}"
-MAX_REPLAY_ROUNDS="${MAX_REPLAY_ROUNDS:-2}"
+MAX_REPLAY_ROUNDS="${MAX_REPLAY_ROUNDS:-1}"
 
 LIGER_GRPO_LOSS="${LIGER_GRPO_LOSS:-0}"
+LIGER_GRPO_BACKEND="${LIGER_GRPO_BACKEND:-triton}"
+LOSS_TYPE="${LOSS_TYPE:-ppo}"
+LIGER_CHUNK_SIZE="${LIGER_CHUNK_SIZE:-1}"
 CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
+OVERSAMPLE_RATIO="${OVERSAMPLE_RATIO:-1.6}"
 TIS="${TIS:-0}"
 TIS_TYPE="${TIS_TYPE:-tis}"
 TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
-GSPO="${GSPO:-0}"
+QAT="${QAT:-}"
+KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-}"
 REDUCE_OPTIMIZER="${REDUCE_OPTIMIZER:-adam_offload}"
 MAX_EPOCHS="${MAX_EPOCHS:-1}"
+USE_LORA="${USE_LORA:-0}"
+LORA_RANK="${LORA_RANK:-64}"
+LORA_ALPHA="${LORA_ALPHA:-64}"
 VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-256}"
 VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE="${VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE:-}"
+LENGTH_PENALTY_MAX_LENGTH="${LENGTH_PENALTY_MAX_LENGTH:-0}"
+
+export TORCH_DYNAMO_CACHE_SIZE_LIMIT=1024
+export TORCH_DYNAMO_RECOMPILE_LIMIT=1024
 
 ### UNIFIED CONSTANTS ###
 AGENT_MAX_STEPS=30
 ZERO_STAGE=2
 PROMPT_MAX_LEN=12288 # Any responses longer than this will be truncated.
 N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-8}"
-TRAIN_MAX_TOKENS_PER_GPU=36864 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
+TRAIN_MAX_TOKENS_PER_GPU=65536 # Used with dynamic batching; Increasing this will increase the memory usage of the actor, and increase the speed of the training by reducing gradient accumulation steps.
 ROLLOUT_MAX_TOKENS_PER_GPU=$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')
 
 COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-32}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
@@ -91,7 +114,7 @@ if [ "$MODE" = "colocated" ]; then
     VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
     ROLLOUT_BATCH_SIZE=$(( EFFECTIVE_ROLLOUT_BATCH_SIZE * ASYNC_ADVANTAGE ))
     MINI_GRADIENT_STEPS=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
-    VLLM_GPU_MEM_UTIL=0.83
+    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.83}"
     VLLM_SYNC_BACKEND=nccl
     EVAL_STEPS="${EVAL_STEPS:-$COLO_EVAL_STEPS}"
 elif [ "$MODE" = "distributed" ]; then
@@ -99,7 +122,7 @@ elif [ "$MODE" = "distributed" ]; then
     VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:?"MODE=distributed requires VLLM_NUM_ENGINES"}"
     ROLLOUT_BATCH_SIZE=$EFFECTIVE_ROLLOUT_BATCH_SIZE  # Distributed uses the effective value directly; smaller than colocated to be more on-policy (only 1-step async lag).
     MINI_GRADIENT_STEPS=$EFFECTIVE_MINI_GRADIENT_STEPS  # Fewer mini gradient steps to match; ROLLOUT/MINI ratio is identical to colocated, same total gradient steps.
-    VLLM_GPU_MEM_UTIL=0.975
+    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.975}"
     VLLM_SYNC_BACKEND=gloo
     EVAL_STEPS="${EVAL_STEPS:-$(( COLO_EVAL_STEPS * ASYNC_ADVANTAGE ))}"  # Distributed takes ASYNC_ADVANTAGE more global steps per colocated step, so scale eval frequency accordingly.
 else
@@ -128,10 +151,16 @@ if [ "$MODE" = "distributed" ] && [ "$ACTOR_GPUS" -gt 1 ]; then
 fi
 
 ### MODE FLAGS ###
+OPTIMIZER_FLAG=""
+if [ "$REDUCE_OPTIMIZER" != "none" ]; then
+    OPTIMIZER_FLAG="--$REDUCE_OPTIMIZER"
+fi
+
 if [ "$MODE" = "colocated" ]; then
-    MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --deepspeed_enable_sleep"
+    VLLM_SLEEP_LEVEL="${VLLM_SLEEP_LEVEL:-1}"
+    MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --vllm_sleep_level $VLLM_SLEEP_LEVEL --deepspeed_enable_sleep"
 else
-    MODE_FLAGS="--async_train --async_queue_size 1 --$REDUCE_OPTIMIZER"
+    MODE_FLAGS="--async_train --async_queue_size 1 $OPTIMIZER_FLAG"
 fi
 
 ### WARMUP LOGIC ###
@@ -139,8 +168,8 @@ WARMUP_STEPS=10
 WARM_STEPS_MULTIPLIER=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
 
 ### MULTI-TASK ###
-#TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
-TASK_NAMES=(BBB_Martins)
+TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
+# TASK_NAMES=(BBB_Martins)
 TASK_LABEL="Base"
 
 ### NCCL / IB / NETWORK CONFIG ###
@@ -198,14 +227,16 @@ CHAT_PROTOCOL="intern_s1"
 # Build suffix tags for active features
 SUFFIX=""
 [ "$SMART_REPLAY" = "1" ] && SUFFIX+="-sr${MAX_REPLAY_ROUNDS}"
-[ "$GSPO" = "1" ] && SUFFIX+="-gspo"
+[ "$LOSS_TYPE" != "ppo" ] && SUFFIX+="-${LOSS_TYPE}"
 [ "$TIS" = "1" ] && SUFFIX+="-tis"
 
 if [ "$MODE" = "colocated" ]; then
-    RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}${SUFFIX}-${DATE_TAG}"
+    MODE_TAG="colo"
+    RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
     WANDB_GROUP="TDC-InternS1-colo-$TASK_LABEL"
 else
-    RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}${SUFFIX}-dist-${LAYOUT_TAG}-${DATE_TAG}"
+    MODE_TAG="dist-${LAYOUT_TAG}"
+    RUN_NAME="grpo-tdc-s1-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
     WANDB_GROUP="TDC-InternS1-dist-${LAYOUT_TAG}-$TASK_LABEL"
 fi
 RUN_ID="${RUN_NAME}"
@@ -241,12 +272,22 @@ export VLLM_NO_USAGE_STATS=1
 export VLLM_DISABLE_TELEMETRY=1
 export VLLM_ALLOW_INSECURE_SERIALIZATION=1  # vLLM v1 msgspec can't serialize torch.dtype; fall back to pickle
 
+# Raise torch.compile recompile/cache limits for flex_attention.
+# With adaptive batching, variable sequence lengths create many unique BlockMask
+# shapes. The default limit (8) causes dynamo to fall back to eager, which breaks
+# gradient checkpointing (recomputed tensors have different metadata).
+# These env vars are read by ppo_actor.py inside the Ray actor process.
+export TORCH_DYNAMO_RECOMPILE_LIMIT=1024
+export TORCH_DYNAMO_CACHE_SIZE_LIMIT=1024
+
 export OPENRLHF_MODEL_PATH="$PRETRAIN_PATH"
 export OPENRLHF_CHAT_PROTOCOL="$CHAT_PROTOCOL"
 export OPENRLHF_MAX_STEPS="$AGENT_MAX_STEPS"
 export DEBUG_TRACES="$DEBUG_TRACES"
 export OPENRLHF_DEBUG_LOGITS=0
 export OPENRLHF_DEBUG_NAN_GUARD=0
+export OPENRLHF_VRAM_AUDIT="${OPENRLHF_VRAM_AUDIT:-1}"
+export OPENRLHF_SMILES_ERROR_LOG="$RUNS_DIR/smiles_errors.jsonl"
 
 ### RAY ###
 export RAY_NODE_IP_ADDRESS=$(hostname -I | awk '{print $1}')
@@ -256,17 +297,24 @@ ulimit -n 65535 2>/dev/null || true
 CONDA_RAY="$(which python) -m ray.scripts.scripts"
 echo "Using ray from: $(which python)"
 
+# Clear any stale RAY_ADDRESS from the environment to prevent
+# connecting to another user's cluster on shared nodes.
+unset RAY_ADDRESS
+
 $CONDA_RAY stop --force 2>/dev/null || true
 rm -rf "$RAY_TMPDIR"/ray/session_* 2>/dev/null || true
 
-echo "Starting Ray head node at $RAY_NODE_IP_ADDRESS"
+# Use a unique port to avoid collisions with other users on the same node.
+RAY_PORT=$(( 6379 + (RANDOM % 1000) ))
+echo "Starting Ray head node at $RAY_NODE_IP_ADDRESS:$RAY_PORT"
 $CONDA_RAY start --head \
     --node-ip-address "$RAY_NODE_IP_ADDRESS" \
+    --port "$RAY_PORT" \
     --num-gpus "$NUM_GPUS" \
     --temp-dir "$RAY_TMPDIR"
 
 # Set explicit address immediately — avoids "multiple active Ray instances" from other users
-export RAY_ADDRESS="$RAY_NODE_IP_ADDRESS:6379"
+export RAY_ADDRESS="$RAY_NODE_IP_ADDRESS:$RAY_PORT"
 
 echo "Waiting for Ray..."
 RAY_READY=0
@@ -306,6 +354,8 @@ echo "ROLLOUT_BATCH_SIZE: $ROLLOUT_BATCH_SIZE"
 echo "TRAIN_BATCH_SIZE: $TRAIN_BATCH_SIZE"
 echo "VLLM_NUM_ENGINES: $VLLM_NUM_ENGINES"
 echo "EVAL_STEPS: $EVAL_STEPS"
+echo "TRAIN_MAX_TOKENS_PER_GPU: $TRAIN_MAX_TOKENS_PER_GPU"
+echo "ROLLOUT_MAX_TOKENS_PER_GPU: $ROLLOUT_MAX_TOKENS_PER_GPU"
 if [ -n "$AUTOTP_FLAGS" ]; then
     echo "AutoTP: $AUTOTP_FLAGS"
 fi
@@ -318,10 +368,13 @@ echo "Warmup Steps: $WARMUP_STEPS (multiplier: $WARM_STEPS_MULTIPLIER)"
 echo "----------------------------------------"
 echo "Smart Replay: $SMART_REPLAY"
 echo "Curriculum Balanced: $CURRICULUM_BALANCED"
+echo "Oversample Ratio: $OVERSAMPLE_RATIO"
 
-echo "Liger GRPO Loss: $LIGER_GRPO_LOSS"
+echo "Loss Type: $LOSS_TYPE"
+echo "Liger GRPO Loss: $LIGER_GRPO_LOSS (backend=$LIGER_GRPO_BACKEND, chunk_size=$LIGER_CHUNK_SIZE)"
+echo "LoRA: USE_LORA=$USE_LORA (rank=$LORA_RANK, alpha=$LORA_ALPHA)"
 echo "TIS: $TIS (type=$TIS_TYPE, thresholds=$TIS_THRESHOLDS)"
-echo "GSPO: $GSPO"
+echo "KV Cache Dtype: ${KV_CACHE_DTYPE:-auto}"
 echo "VLLM_MAX_NUM_SEQS: $VLLM_MAX_NUM_SEQS"
 echo "VLLM_MAX_NUM_BATCHED_TOKENS: $VLLM_MAX_NUM_BATCHED_TOKENS"
 echo "Tool Version: $TOOL_VERSION"
@@ -360,18 +413,34 @@ fi
 if [ "$CURRICULUM_BALANCED" = "1" ]; then
     OPTIONAL_FLAGS+=" --curriculum_balanced"
 fi
+OPTIONAL_FLAGS+=" --oversample_ratio $OVERSAMPLE_RATIO"
 
 if [ "$LIGER_GRPO_LOSS" = "1" ]; then
-    OPTIONAL_FLAGS+=" --use_liger_grpo_loss"
+    OPTIONAL_FLAGS+=" --use_liger_grpo_loss --liger_grpo_backend $LIGER_GRPO_BACKEND"
+    if [ "$LIGER_GRPO_BACKEND" = "chunked" ]; then
+        OPTIONAL_FLAGS+=" --liger_chunk_size $LIGER_CHUNK_SIZE"
+    fi
 fi
 if [ "$TIS" = "1" ]; then
     OPTIONAL_FLAGS+=" --enable_vllm_is_correction --vllm_is_correction_type $TIS_TYPE --vllm_is_truncated_threshold $TIS_THRESHOLDS"
 fi
-if [ "$GSPO" = "1" ]; then
-    OPTIONAL_FLAGS+=" --policy_loss_type gspo"
+if [ -n "$QAT" ]; then
+    OPTIONAL_FLAGS+=" --qat $QAT"
+fi
+if [ -n "$KV_CACHE_DTYPE" ]; then
+    OPTIONAL_FLAGS+=" --kv_cache_dtype $KV_CACHE_DTYPE"
 fi
 if [ -n "$VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE" ]; then
     OPTIONAL_FLAGS+=" --vllm_cudagraph_max_capture_size $VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE"
+fi
+if [ "$LENGTH_PENALTY_MAX_LENGTH" -gt 0 ]; then
+    OPTIONAL_FLAGS+=" --length_penalty_max_length $LENGTH_PENALTY_MAX_LENGTH"
+fi
+if [ "$USE_LORA" = "1" ]; then
+    OPTIONAL_FLAGS+=" --lora_rank $LORA_RANK --lora_alpha $LORA_ALPHA"
+fi
+if [ "${UNSLOTH_MOE:-0}" = "1" ]; then
+    OPTIONAL_FLAGS+=" --use_unsloth_moe_kernels"
 fi
 
 ### TRAINING ###
@@ -387,6 +456,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --actor_num_gpus_per_node $ACTOR_GPUS \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size 1 \
+    --optimal_flags_b200_gpt_oss \
     --max_num_batched_tokens $VLLM_MAX_NUM_BATCHED_TOKENS \
     --vllm_gpu_memory_utilization $VLLM_GPU_MEM_UTIL \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
@@ -397,6 +467,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_hf_ckpt \
     --disable_ds_ckpt \
     --logging_steps 1 \
+    --micro_train_batch_size 2 \
+    --micro_rollout_batch_size 4 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $ROLLOUT_BATCH_SIZE \
@@ -404,6 +476,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --prompt_max_len $PROMPT_MAX_LEN \
     --generate_max_len 2048 \
     --max_samples 1000000 \
+    --loss_type $LOSS_TYPE \
     --enable_prefix_caching \
     --zero_stage $ZERO_STAGE \
     --param_dtype bf16 \
@@ -450,4 +523,4 @@ python -m openrlhf.cli.train_ppo_ray \
 
 ### CLEANUP ###
 echo "Training complete! Stopping Ray..."
-ray stop --force || true
+$CONDA_RAY stop --force || true

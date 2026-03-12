@@ -618,6 +618,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--aux_loss_coef", type=float, default=0, help="MoE balancing loss")
     parser.add_argument(
+        "--freeze_router",
+        action="store_true",
+        default=False,
+        help="Freeze MoE router/gate weights during training (matches mlp.gate, mlp.router, shared_expert_gate)",
+    )
+    parser.add_argument(
         "--entropy_loss_coef",
         type=float,
         default=None,

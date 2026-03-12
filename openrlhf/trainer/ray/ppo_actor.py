@@ -788,6 +788,19 @@ class PolicyModelActor(BaseModelActor):
             mxfp4_dequantize=getattr(strategy.args, "mxfp4_dequantize", False),
             fp4_config=getattr(strategy.args, "fp4_config", None),
         )
+
+        # Freeze MoE router/gate parameters if requested
+        if getattr(args, "freeze_router", False):
+            _ROUTER_PATTERNS = ("mlp.gate.", "mlp.router.", "shared_expert_gate.")
+            frozen_names = []
+            for name, param in actor.model.named_parameters():
+                if any(pat in name for pat in _ROUTER_PATTERNS):
+                    param.requires_grad = False
+                    frozen_names.append(name)
+            strategy.print(f"[freeze_router] Froze {len(frozen_names)} router parameters")
+            for n in frozen_names:
+                strategy.print(f"  frozen: {n}")
+
         strategy.print(actor)
 
         # configure tokenizer

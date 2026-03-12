@@ -8,7 +8,7 @@
 #
 # Usage:
 #   # Standard BF16 (colocated, all GPUs shared):
-#   LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo bash scripts/train_grpo_tdc_qwen35.sh
+#    SMART_REPLAY=1 OVERSAMPLE_RATIO=1 LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss.sh bash train_grpo_tdc_qwen35.sh
 #
 #   # With LoRA:
 #   USE_LORA=1 LEARNING_RATE=2e-5 LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo bash scripts/train_grpo_tdc_qwen35.sh

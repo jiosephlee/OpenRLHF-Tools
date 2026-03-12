@@ -4,7 +4,7 @@ set -euo pipefail
 export VLLM_USE_FLASHINFER_MOE_FP16=1
 export VLLM_FLASHINFER_MOE_BACKEND=latency
 
-MODEL="unsloth/gpt-oss-20b-BF16"
+MODEL="Qwen/Qwen3.5-35B-A3B"
 HOST="127.0.0.1"
 PORT="8000"
 

@@ -25,7 +25,7 @@
 #   # Unsloth BF16:
 #   SMART_REPLAY=1 OVERSAMPLE_RATIO=1 LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss.sh
 #   USE_LORA=1 LEARNING_RATE=2e-5 SMART_REPLAY=1 OVERSAMPLE_RATIO=1 LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss.sh
-#   TIS=1 TIS_TYPE=seq-mask=tis SMART_REPLAY=1 OVERSAMPLE_RATIO=1 LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss.sh
+#   TIS=1 TIS_TYPE=icepop SMART_REPLAY=1 OVERSAMPLE_RATIO=1 LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss.sh
 #   USE_LORA=1 LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss.sh
 #   # Distributed:
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 bash scripts/train_grpo_tdc_gpt_oss.sh

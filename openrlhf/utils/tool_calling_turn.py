@@ -332,28 +332,43 @@ class ToolCallingTurn(AgentInstanceBase):
     _PAREN_ANSWER_RE = re.compile(r"\(\s*([A-Za-z])\s*\)")
 
     def _default_reward_fn(self, generated_text: str, label: Optional[str]) -> float:
-        """Default reward: 1.0 iff the model's Answer: (X) after </think> matches the label."""
+        """Default reward: 1.0 iff the model's Answer: (X) matches the label."""
         if not label:
             return 0.0
 
-        # Prefer the post-think region when present; otherwise evaluate full text.
+        # Prefer the post-think region when present; fall back to full text
+        # if the answer is inside the <think> block (common with Qwen3.5).
         think_end = generated_text.find("</think>")
-        answer_region = generated_text[think_end:] if think_end != -1 else generated_text
+        if think_end != -1:
+            answer_region = generated_text[think_end:]
+        else:
+            answer_region = generated_text
 
         match = self._ANSWER_RE.search(answer_region)
+        # If nothing found in post-think region, search the full text
+        # (models like Qwen3.5 may place Answer: inside the <think> block).
+        if not match and think_end != -1:
+            match = self._ANSWER_RE.search(generated_text)
         if match:
             pred = match.group(1).upper()
         else:
             # GPT-OSS frequently emits bare "(A)"/"(B)" without "Answer:" prefix.
-            paren_matches = self._PAREN_ANSWER_RE.findall(answer_region)
-            if paren_matches:
-                pred = paren_matches[-1].upper()
-            else:
-                stripped = answer_region.strip()
-                if len(stripped) == 1 and stripped.isalpha():
-                    pred = stripped.upper()
-                else:
-                    return 0.0
+            # Search post-think first, then fall back to full text.
+            search_regions = [answer_region] if think_end == -1 else [answer_region, generated_text]
+            pred = None
+            for region in search_regions:
+                paren_matches = self._PAREN_ANSWER_RE.findall(region)
+                if paren_matches:
+                    pred = paren_matches[-1].upper()
+                    break
+            if pred is None:
+                for region in search_regions:
+                    stripped = region.strip()
+                    if len(stripped) == 1 and stripped.isalpha():
+                        pred = stripped.upper()
+                        break
+            if pred is None:
+                return 0.0
 
         # Extract letter from label too (handles "A", "(A)", "Answer: (A)", etc.)
         label_match = self._ANSWER_RE.search(label)

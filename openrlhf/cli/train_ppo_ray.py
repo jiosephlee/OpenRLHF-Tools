@@ -624,6 +624,12 @@ if __name__ == "__main__":
         help="Freeze MoE router/gate weights during training (matches mlp.gate, mlp.router, shared_expert_gate)",
     )
     parser.add_argument(
+        "--freeze_visual",
+        action="store_true",
+        default=False,
+        help="Freeze the entire visual encoder (matches model.visual.*)",
+    )
+    parser.add_argument(
         "--entropy_loss_coef",
         type=float,
         default=None,

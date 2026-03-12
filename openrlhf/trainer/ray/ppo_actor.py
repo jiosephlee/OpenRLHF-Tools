@@ -789,17 +789,25 @@ class PolicyModelActor(BaseModelActor):
             fp4_config=getattr(strategy.args, "fp4_config", None),
         )
 
-        # Freeze MoE router/gate parameters if requested
+        # Freeze selected parameter groups if requested
+        _freeze_patterns = []
         if getattr(args, "freeze_router", False):
-            _ROUTER_PATTERNS = ("mlp.gate.", "mlp.router.", "shared_expert_gate.")
-            frozen_names = []
+            _freeze_patterns.extend([("mlp.gate.", "router"), ("mlp.router.", "router"), ("shared_expert_gate.", "router")])
+        if getattr(args, "freeze_visual", False):
+            _freeze_patterns.append(("visual.", "visual"))
+
+        if _freeze_patterns:
+            frozen_counts = {}
             for name, param in actor.model.named_parameters():
-                if any(pat in name for pat in _ROUTER_PATTERNS):
-                    param.requires_grad = False
-                    frozen_names.append(name)
-            strategy.print(f"[freeze_router] Froze {len(frozen_names)} router parameters")
-            for n in frozen_names:
-                strategy.print(f"  frozen: {n}")
+                for pat, group in _freeze_patterns:
+                    if pat in name:
+                        param.requires_grad = False
+                        frozen_counts.setdefault(group, []).append(name)
+                        break
+            for group, names in frozen_counts.items():
+                strategy.print(f"[freeze_{group}] Froze {len(names)} parameters")
+                for n in names:
+                    strategy.print(f"  frozen: {n}")
 
         strategy.print(actor)
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL="Qwen/Qwen3.5-35B-A3B"
+MODEL="unsloth/gpt-oss-20b-BF16"
 HOST="127.0.0.1"
 PORT="8000"
 

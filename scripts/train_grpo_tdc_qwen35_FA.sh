@@ -8,7 +8,7 @@
 #
 # Usage:
 #   # Standard BF16 (colocated, all GPUs shared):
-#   USE_LORA=1 REDUCE_OPTIMIZER=none SMART_REPLAY=1 OVERSAMPLE_RATIO=1 LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=ppo bash train_grpo_tdc_qwen35_FA.sh
+#   TIS=1 REDUCE_OPTIMIZER=adam_offload SMART_REPLAY=1 OVERSAMPLE_RATIO=1 LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo bash train_grpo_tdc_qwen35_FA.sh
 #
 #   # With LoRA:
 #   USE_LORA=1 LEARNING_RATE=2e-5 LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo bash scripts/train_grpo_tdc_qwen35.sh
@@ -59,8 +59,7 @@ rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ ~/.cache/vllm/torch_
 
 ### ARGS ###
 LEARNING_RATE="${LEARNING_RATE:-1e-6}"
-NUM_GPUS=2
-#NUM_GPUS="${SLURM_GPUS_ON_NODE:-$(nvidia-smi -L 2>/dev/null | wc -l)}"
+NUM_GPUS="${SLURM_GPUS_ON_NODE:-$(nvidia-smi -L 2>/dev/null | wc -l)}"
 DEBUG_TRACES="${DEBUG_TRACES:-0}"
 
 ### FEATURE FLAGS ###
@@ -77,7 +76,7 @@ LIGER_GRPO_BACKEND="${LIGER_GRPO_BACKEND:-triton}"
 LOSS_TYPE="${LOSS_TYPE:-ppo}"
 LIGER_CHUNK_SIZE="${LIGER_CHUNK_SIZE:-1}"
 CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
-OVERSAMPLE_RATIO="${OVERSAMPLE_RATIO:-1.6}"
+OVERSAMPLE_RATIO="${OVERSAMPLE_RATIO:-1}"
 TIS="${TIS:-0}"
 TIS_TYPE="${TIS_TYPE:-tis}"
 TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
@@ -113,7 +112,7 @@ if [ "$MODE" = "colocated" ]; then
     VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
     ROLLOUT_BATCH_SIZE=$(( EFFECTIVE_ROLLOUT_BATCH_SIZE * ASYNC_ADVANTAGE ))
     MINI_GRADIENT_STEPS=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
-    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.5}"
+    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.55}"
     VLLM_SYNC_BACKEND=nccl
     EVAL_STEPS="${EVAL_STEPS:-$COLO_EVAL_STEPS}"
 elif [ "$MODE" = "distributed" ]; then

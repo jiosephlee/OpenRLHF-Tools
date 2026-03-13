@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL="Qwen/Qwen3.5-35B-A3B-FP8"
+MODEL="nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
 HOST="127.0.0.1"
 PORT="8000"
 
@@ -21,5 +21,4 @@ echo "Starting vLLM server for ${MODEL}..."
   --max-num-batched-tokens 8192 \
   --kv-cache-dtype fp8 \
   --stream-interval 20 \
-  --data-parallel-size 2 \
   --trust-remote-code

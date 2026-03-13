@@ -853,6 +853,11 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    if args.train_max_tokens_per_gpu is not None:
+        args.train_max_tokens_per_gpu = (args.train_max_tokens_per_gpu // 1024) * 1024
+    if args.rollout_max_tokens_per_gpu is not None:
+        args.rollout_max_tokens_per_gpu = (args.rollout_max_tokens_per_gpu // 1024) * 1024
+
     # Build and validate FP4 configuration
     args.fp4_config = FP4Config.from_args(args)
     args.fp4_config.validate()

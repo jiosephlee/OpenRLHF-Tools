@@ -698,7 +698,7 @@ def create_vllm_engines(
             # saving VRAM from CUDA graph storage while keeping max capture size.
             # vLLM pads to next captured size; the tighter spacing reduces
             # wasted padding for common batch sizes.
-            cudagraph_sizes = [s for s in [1, 2, 4, 8, 12, 16, 20, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128] if s <= max_capture]
+            cudagraph_sizes = [s for s in [1, 2, 4, 8, 12, 16, 20, 24, 32, 40, 48, 64, 80, 96, 128] if s <= max_capture]
             if max_capture not in cudagraph_sizes:
                 cudagraph_sizes.append(max_capture)
             actor_kwargs["compilation_config"] = CompilationConfig(

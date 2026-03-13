@@ -418,8 +418,8 @@ class NaiveReplayBuffer(ABC):
             default_max_len = 0 # No partition yet
 
             for idx, length in samples_with_idx:
-                # Bucket sequence lengths to reduction flex_attention recompilation triggers (nearest 512)
-                effective_length = ((length + 511) // 512) * 512
+                # Bucket sequence lengths to reduction flex_attention recompilation triggers (nearest 1024)
+                effective_length = ((length + 1023) // 1024) * 1024
                 
                 # If adding this sequence means we exceed budget (or it's the first seq in a new partition)
                 new_size = len(current_partition) + 1

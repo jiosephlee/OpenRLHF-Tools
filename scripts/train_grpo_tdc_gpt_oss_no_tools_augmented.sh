@@ -20,7 +20,7 @@
 #   DEQUANT=unsloth LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss_no_tools_hf_augmented.sh
 #
 #   # With features:
-#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis REDUCE_OPTIMIZER=adam_offload TRAIN_MAX_TOKENS_PER_GPU=32768 TRAIN LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo SMART_REPLAY=1 DEQUANT=unsloth bash train_grpo_tdc_gpt_oss_no_tools_hf_augmented.sh
+#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis REDUCE_OPTIMIZER=adam_offload TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo SMART_REPLAY=1 DEQUANT=unsloth bash train_grpo_tdc_gpt_oss_no_tools_augmented.sh
 #
 #   # LoRA:
 #   USE_LORA=1 LEARNING_RATE=2e-5 DEQUANT=unsloth bash scripts/train_grpo_tdc_gpt_oss_no_tools_hf_augmented.sh

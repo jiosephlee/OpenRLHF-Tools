@@ -4,11 +4,11 @@ Convert TDC augmented data from {text, Y, drug} format
 to the pipeline-expected {text, answer, task, smiles, label} format.
 
 Input:  ~/Downloads/content/tdc_augmented/{train,valid}/<Task>.jsonl
-Output: data/tdc/augmented_format/<Task>_{train,val}.jsonl
+Output: data/tdc/playbooks_format/<Task>_{train,val}.jsonl
 
 Usage:
     python scripts/convert_tdc_augmented.py
-    python scripts/convert_tdc_augmented.py --input_dir /path/to/tdc_augmented --output_dir data/tdc/augmented_format
+    python scripts/convert_tdc_augmented.py --input_dir /path/to/tdc_augmented --output_dir data/tdc/playbooks_format
 """
 
 import argparse
@@ -46,7 +46,7 @@ def main():
     parser.add_argument(
         "--output_dir",
         default=None,
-        help="Output directory (default: <project_root>/data/tdc/augmented_format)",
+        help="Output directory (default: <project_root>/data/tdc/playbooks_format)",
     )
     args = parser.parse_args()
 
@@ -56,7 +56,7 @@ def main():
     else:
         # Derive project root from this script's location
         project_root = Path(__file__).resolve().parent.parent
-        output_dir = project_root / "data" / "tdc" / "augmented_format"
+        output_dir = project_root / "data" / "tdc" / "playbooks_format"
 
     split_map = {"train": "train", "valid": "val"}
 

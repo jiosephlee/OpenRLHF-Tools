@@ -2,8 +2,8 @@
 #
 # Augmented no-tools GRPO training for GPT-OSS on TDC binary classification.
 #
-# Uses pre-augmented prompts (with precomputed tool results baked into the text)
-# instead of multi-turn tool calling. Input key is "text" (plain string), not "messages".
+# Uses jiosephlee/tdc-rl-dataset HuggingFace dataset (chat-format messages
+# with drug descriptors baked in). Input key is "messages" (chat format).
 #
 # Supports all quantization modes via env vars:
 #   QUANT_METHOD=mxfp4 (default) — MXFP4 QAT + FlashInfer MoE kernel
@@ -14,19 +14,19 @@
 #
 # Usage:
 #   # MXFP4 (default):
-#   bash scripts/train_grpo_tdc_gpt_oss_no_tools_augmented.sh
+#   bash scripts/train_grpo_tdc_gpt_oss_no_tools_hf_augmented.sh
 #
 #   # Unsloth BF16:
-#   DEQUANT=unsloth LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss_no_tools_augmented.sh
+#   DEQUANT=unsloth LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss_no_tools_hf_augmented.sh
 #
 #   # With features:
-#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis REDUCE_OPTIMIZER=adam_offload TRAIN_MAX_TOKENS_PER_GPU=32768 TRAIN LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo SMART_REPLAY=1 DEQUANT=unsloth bash train_grpo_tdc_gpt_oss_no_tools_augmented.sh
+#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis REDUCE_OPTIMIZER=adam_offload TRAIN_MAX_TOKENS_PER_GPU=32768 TRAIN LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo SMART_REPLAY=1 DEQUANT=unsloth bash train_grpo_tdc_gpt_oss_no_tools_hf_augmented.sh
 #
 #   # LoRA:
-#   USE_LORA=1 LEARNING_RATE=2e-5 DEQUANT=unsloth bash scripts/train_grpo_tdc_gpt_oss_no_tools_augmented.sh
+#   USE_LORA=1 LEARNING_RATE=2e-5 DEQUANT=unsloth bash scripts/train_grpo_tdc_gpt_oss_no_tools_hf_augmented.sh
 #
 #   # Distributed:
-#   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 DEQUANT=unsloth bash scripts/train_grpo_tdc_gpt_oss_no_tools_augmented.sh
+#   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 DEQUANT=unsloth bash scripts/train_grpo_tdc_gpt_oss_no_tools_hf_augmented.sh
 #
 # Feature flags (all env-configurable):
 #   MODE=colocated|distributed           # Default: colocated
@@ -128,7 +128,7 @@ LIGER_GRPO_BACKEND="${LIGER_GRPO_BACKEND:-triton}"
 LOSS_TYPE="${LOSS_TYPE:-ppo}"
 LIGER_CHUNK_SIZE="${LIGER_CHUNK_SIZE:-1}"
 CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
-OVERSAMPLE_RATIO="${OVERSAMPLE_RATIO:-1.6}"
+OVERSAMPLE_RATIO="${OVERSAMPLE_RATIO:-1}"
 TIS="${TIS:-0}"
 TIS_TYPE="${TIS_TYPE:-tis}"
 TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
@@ -201,7 +201,7 @@ fi
 
 if [ "$MODE" = "colocated" ]; then
     VLLM_SLEEP_LEVEL="${VLLM_SLEEP_LEVEL:-1}"
-    MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --vllm_sleep_level $VLLM_SLEEP_LEVEL --deepspeed_enable_sleep"
+    MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --vllm_sleep_level $VLLM_SLEEP_LEVEL --deepspeed_enable_sleep $OPTIMIZER_FLAG"
 else
     MODE_FLAGS="--async_train --async_queue_size 1 $OPTIMIZER_FLAG"
 fi
@@ -253,7 +253,7 @@ for t in "${TASK_NAMES[@]}"; do
     f="$DATA_DIR/${t}_train.jsonl"
     if [ ! -f "$f" ]; then
         echo "Error: Training data not found: $f"
-        echo "Have you run: python scripts/convert_tdc_augmented.py ?"
+        echo "Have you run: python scripts/convert_tdc_hf_dataset.py ?"
         echo "Available tasks:"
         ls "$DATA_DIR" 2>/dev/null | grep "_train.jsonl" | sed 's/_train.jsonl//' | sort
         exit 1
@@ -511,7 +511,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --eval_steps $EVAL_STEPS \
     --eval_temperature 0.1 \
     --eval_n_samples_per_prompt 1 \
-    --input_key text \
+    --input_key messages \
     --label_key answer \
     --apply_chat_template \
     --gradient_checkpointing \

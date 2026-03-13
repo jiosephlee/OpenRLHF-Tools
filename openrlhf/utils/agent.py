@@ -252,6 +252,7 @@ class SingleTurnAgentExecutor(AgentExecutorBase):
             is_truncated = generation_output.finish_reason == "length"
         except Exception as e:
             logger.error(f"[SingleTurnExecutor] vLLM generation failed or aborted: {e}")
+            generation_output = None
             action_token_ids = []
             is_truncated = True
 
@@ -261,7 +262,7 @@ class SingleTurnAgentExecutor(AgentExecutorBase):
 
         # Calculate rollout log probs.
         rollout_log_probs = None
-        if sampling_params.logprobs is not None and generation_output.logprobs is not None:
+        if sampling_params.logprobs is not None and generation_output is not None and generation_output.logprobs is not None:
             rollout_log_probs = [0.0] * len(prompt_token_ids)
             for token_id, logprob_dict in zip(action_token_ids, generation_output.logprobs):
                 token_logprob = logprob_dict.get(token_id)

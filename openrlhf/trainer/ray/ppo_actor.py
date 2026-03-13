@@ -805,7 +805,13 @@ class PolicyModelActor(BaseModelActor):
                         frozen_counts.setdefault(group, []).append(name)
                         break
             for group, names in frozen_counts.items():
-                strategy.print(f"[freeze_{group}] Froze {len(names)} parameters")
+                n_weight = sum(1 for n in names if "weight" in n)
+                n_bias = sum(1 for n in names if "bias" in n)
+                n_other = len(names) - n_weight - n_bias
+                detail = f"{n_weight} weights, {n_bias} biases"
+                if n_other:
+                    detail += f", {n_other} other"
+                strategy.print(f"[freeze_{group}] Froze {len(names)} parameters ({detail})")
                 for n in names:
                     strategy.print(f"  frozen: {n}")
 

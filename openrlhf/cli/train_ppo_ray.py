@@ -880,6 +880,21 @@ if __name__ == "__main__":
     if args.advantage_estimator in ["rloo", "reinforce_baseline", "group_norm"]:
         assert args.n_samples_per_prompt > 1, f"{args.advantage_estimator} requires n_samples_per_prompt > 1"
 
+    # Warn about MoE aux loss instability with GRPO-style advantage estimators.
+    # The aux loss is added to the total loss, so its gradient propagates to ALL trainable
+    # parameters (not just the router). The load-balancing objective conflicts with the RL
+    # objective, causing logprob error divergence during GRPO training.
+    # See https://github.com/NVIDIA/Megatron-LM/issues/1984
+    if args.aux_loss_coef > 0 and args.advantage_estimator in ["group_norm", "dr_grpo", "reinforce", "rloo", "reinforce_baseline"]:
+        import logging
+        logging.getLogger("openrlhf").warning(
+            f"[MoE] aux_loss_coef={args.aux_loss_coef} with advantage_estimator='{args.advantage_estimator}'. "
+            "MoE load-balancing aux loss is added to the total loss and its gradient propagates to all "
+            "trainable parameters, not just the router. This conflicts with the RL objective and can cause "
+            "logprob error divergence. Consider setting --aux_loss_coef 0. "
+            "See https://github.com/NVIDIA/Megatron-LM/issues/1984 for details."
+        )
+
     if args.remote_rm_url:
         args.remote_rm_url = args.remote_rm_url.split(",")
 

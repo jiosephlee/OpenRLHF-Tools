@@ -250,62 +250,6 @@ class Actor(nn.Module):
             position_ids = attention_mask.long().cumsum(-1) - 1
             position_ids.masked_fill_(attention_mask == 0, 1)
 
-        # ====== MEMORY-EFFICIENT PATH for OLD_LOG_PROBS ====== #
-        # Only trigger when we ONLY need action_log_probs (e.g. experience_maker pass)
-        if not return_output and not return_logprobs and not return_entropy and not allgather_logits and not self.packing_samples and action_mask is not None:
-            causal_lm = self.model
-            # Unwrap DeepSpeedEngine to get the underlying HuggingFace CausalLM
-            if hasattr(causal_lm, "module"):
-                causal_lm = causal_lm.module
-            try:
-                from peft import PeftModel
-                if isinstance(causal_lm, PeftModel):
-                    causal_lm = causal_lm.base_model.model
-            except ImportError:
-                pass
-            backbone = causal_lm.model
-            
-            backbone_output = backbone(sequences, attention_mask=foward_attention_mask, position_ids=position_ids)
-            hidden_states = backbone_output.last_hidden_state  # [B, S, D]
-            
-            action_mask_bool = action_mask.bool()
-            # We predict sequences[:, 1:] using hidden_states[:, :-1]
-            hidden_states_for_pred = hidden_states[:, :-1, :]  # [B, S-1, D]
-            
-            valid_hidden = hidden_states_for_pred[action_mask_bool]  # [N_active, D]
-            lm_head = self.get_lm_head()
-            valid_logits = lm_head(valid_hidden).to(torch.float32)   # [N_active, V]
-            
-            target_tokens = rolled_sequences[:, :-1]  # [B, S-1]
-            valid_targets = target_tokens[action_mask_bool]  # [N_active]
-            
-            # Sub-check for finite logits / debug
-            valid_logits_all_finite = bool(torch.isfinite(valid_logits).all().item())
-            debug_logits = os.environ.get("OPENRLHF_DEBUG_LOGITS", "0") == "1"
-            if debug_logits or not valid_logits_all_finite:
-                logger.warning(
-                    f"[DEBUG valid_logits] shape={tuple(valid_logits.shape)}, dtype={valid_logits.dtype}, finite={valid_logits_all_finite}, "
-                    f"min={valid_logits.min().item():.4f}, max={valid_logits.max().item():.4f}"
-                )
-                
-            valid_log_probs = log_probs_from_logits(valid_logits, valid_targets, temperature=self.temperature)
-            
-            # Sub-check for finite logprobs / debug
-            valid_log_probs_finite = torch.isfinite(valid_log_probs)
-            if debug_logits or not bool(valid_log_probs_finite.all().item()):
-                finite_log_probs = valid_log_probs[valid_log_probs_finite]
-                finite_lp_min = finite_log_probs.min().item() if finite_log_probs.numel() > 0 else float("nan")
-                finite_lp_max = finite_log_probs.max().item() if finite_log_probs.numel() > 0 else float("nan")
-                logger.warning(
-                    f"[DEBUG valid_log_probs] shape={tuple(valid_log_probs.shape)}, finite={bool(valid_log_probs_finite.all().item())}, "
-                    f"nonfinite_count={(~valid_log_probs_finite).sum().item()}, finite_min={finite_lp_min:.4f}, finite_max={finite_lp_max:.4f}"
-                )
-            
-            action_log_probs = torch.zeros_like(action_mask, dtype=torch.float32)
-            action_log_probs[action_mask_bool] = valid_log_probs
-            return action_log_probs
-        # ===================================================== #
-
         output = self.model(sequences, attention_mask=foward_attention_mask, position_ids=position_ids)
         # https://github.com/OpenRLHF/OpenRLHF/pull/634
         output["logits"] = output["logits"].to(torch.float32)

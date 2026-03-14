@@ -922,6 +922,11 @@ class SamplesGenerator:
                     self._process_response_into_experience(response, **generate_kwargs) for response in responses
                 ]
                 del responses  # free raw vLLM response dicts before processing next batch
+                # Filter out None entries from failed/empty generations.
+                experiences = [e for e in experiences if e is not None]
+                if not experiences:
+                    logger.warning(f"All responses from engine {engine_idx} had zero action tokens — skipping prompt group")
+                    continue
 
                 # Drop experiences if the average score falls outside the allowed range.
                 if dynamic_filtering and all(e.scores is not None for e in experiences):
@@ -1141,11 +1146,12 @@ class SamplesGenerator:
         action_mask = action_mask[1:truncate_length].to("cpu")
         action_tokens = int(action_mask.sum().item())
         if action_tokens == 0:
-            raise ValueError(
-                "Encountered rollout with zero action tokens after truncation; this will produce NaNs in PPO loss. "
+            logger.warning(
+                "Skipping rollout with zero action tokens after truncation (would produce NaNs). "
                 f"prompt={response['prompt'][:200]!r}, label={response['label']!r}, "
                 f"observation_tokens={len(tokenized_observation)}, action_ranges={tokenized_ranges}, truncate_length={truncate_length}"
             )
+            return None
 
         # Align rollout logprobs with the truncated action span.
         if response["rollout_log_probs"] is not None:

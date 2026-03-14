@@ -599,8 +599,8 @@ if __name__ == "__main__":
         help=(
             "Unified loss type controlling ratio computation, reduction strategy, and Liger variant. "
             "'ppo' (default): token-level PPO ratio, per-sequence mean with cross-rank seq-count sync. "
-            "'dapo': token-level PPO ratio, flat token mean with cross-rank all-reduce. "
-            "'bnpo': token-level PPO ratio, flat token mean within rank. "
+            "'dapo': token-level PPO ratio, flat token mean with cross-rank token-count sync. "
+            "'bnpo': token-level PPO ratio, flat token mean within rank (no cross-rank sync). "
             "'dr_grpo': token-level PPO ratio, per-sequence mean with cross-rank seq-count sync. "
             "'gspo': sequence-level IS ratio, per-sequence mean with cross-rank seq-count sync. "
             "'cispo'/'sapo': Liger-only variants (require --use_liger_grpo_loss)."
@@ -914,15 +914,14 @@ if __name__ == "__main__":
             args.packing_samples = True
 
     #### Derive internal flags from --loss_type ####
-    # token_level_loss: controls reduction in PolicyLoss
+    # token_level_loss: controls reduction in PolicyLoss (always LOCAL reduction).
+    # Cross-rank normalization is handled by the replay buffer's loss_scale, not here.
     if args.loss_type in ("ppo", "gspo", "dr_grpo", "sapo"):
-        args.token_level_loss = None  # per-sequence mean
-    elif args.loss_type in ("dapo", "cispo"):
-        args.token_level_loss = "global"  # flat token mean with cross-rank all-reduce
-    elif args.loss_type == "bnpo":
-        args.token_level_loss = "local_rank"  # flat token mean within rank
+        args.token_level_loss = False  # per-sequence mean, then batch mean
+    elif args.loss_type in ("dapo", "cispo", "bnpo"):
+        args.token_level_loss = True  # flat token mean within rank
     else:
-        args.token_level_loss = None
+        args.token_level_loss = False
 
     # policy_loss_type: controls ratio computation in PolicyLoss
     args.policy_loss_type = "gspo" if args.loss_type == "gspo" else "ppo"

@@ -61,22 +61,14 @@ class SFTLoss(nn.Module):
     SFT Loss
     """
 
-    def __init__(self, token_level_loss: Optional[str] = "local_rank"):
+    def __init__(self, token_level_loss: bool = True):
         super().__init__()
         self.token_level_loss = token_level_loss
 
     def forward(self, per_token_logps: torch.Tensor, loss_mask: torch.Tensor) -> torch.Tensor:
         #### token_level_loss reduction ####
-        if self.token_level_loss is None:
+        if not self.token_level_loss:
             loss = masked_mean(-per_token_logps, loss_mask, dim=-1).mean()
-        elif self.token_level_loss == "global":
-            token_sum = (-per_token_logps * loss_mask).sum()
-            normalizer = loss_mask.float().sum()
-            if dist.is_available() and dist.is_initialized():
-                normalizer = normalizer.clone()
-                dist.all_reduce(normalizer, op=dist.ReduceOp.SUM)
-                normalizer = normalizer / dist.get_world_size()
-            loss = token_sum / normalizer.clamp(min=1.0)
         else:
             loss = masked_mean(-per_token_logps, loss_mask, dim=None)
         #### end token_level_loss reduction ####
@@ -94,7 +86,7 @@ class PolicyLoss(nn.Module):
         clip_eps_low: float = 0.2,
         clip_eps_high: float = 0.2,
         dual_clip: float = None,
-        token_level_loss: Optional[str] = "local_rank",
+        token_level_loss: bool = True,
         policy_loss_type: str = "ppo",
         enable_vllm_is_correction: bool = False,
         vllm_is_truncated_threshold: list = None,
@@ -103,10 +95,12 @@ class PolicyLoss(nn.Module):
         super().__init__()
         self.clip_eps_low = clip_eps_low
         self.clip_eps_high = clip_eps_high
-        #### token_level_loss: None | "local_rank" | "global" ####
-        # None              = per-sequence mean then batch mean (grpo-style)
-        # "local_rank"      = flat token mean within rank (bnpo)
-        # "global"          = flat token mean with cross-rank normalizer (dapo)
+        #### token_level_loss: bool ####
+        # False = per-sequence mean then batch mean (grpo/ppo)
+        # True  = flat token mean within rank (dapo/bnpo)
+        # Cross-rank normalization is handled by the replay buffer's loss_scale,
+        # not here.  This avoids per-microbatch all-reduce which is incompatible
+        # with gradient accumulation across microbatches.
         self.token_level_loss = token_level_loss
         #### end token_level_loss ####
         self.dual_clip = dual_clip
@@ -117,7 +111,7 @@ class PolicyLoss(nn.Module):
 
         # GSPO requires sequence-level loss
         if policy_loss_type == "gspo":
-            self.token_level_loss = None
+            self.token_level_loss = False
 
         # Dual-clip PPO: https://arxiv.org/pdf/1912.09729
         if dual_clip is not None:
@@ -190,20 +184,11 @@ class PolicyLoss(nn.Module):
             vllm_kl = masked_mean(rollout_log_probs - old_log_probs, action_mask, dim=None)
 
         #### token_level_loss reduction ####
-        if self.token_level_loss is None:
-            # grpo: per-sequence mean, then batch mean
+        if not self.token_level_loss:
+            # grpo/ppo: per-sequence mean, then batch mean
             loss = masked_mean(loss, action_mask, dim=-1).mean()
-        elif self.token_level_loss == "global":
-            # dapo: flat token mean with cross-rank normalizer
-            token_sum = (loss * action_mask).sum()
-            normalizer = action_mask.float().sum()
-            if dist.is_available() and dist.is_initialized():
-                normalizer = normalizer.clone()
-                dist.all_reduce(normalizer, op=dist.ReduceOp.SUM)
-                normalizer = normalizer / dist.get_world_size()
-            loss = token_sum / normalizer.clamp(min=1.0)
         else:
-            # local_rank (bnpo): flat token mean within this rank
+            # dapo/bnpo: flat token mean within this rank
             loss = masked_mean(loss, action_mask, dim=None)
         #### end token_level_loss reduction ####
         clip_ratio = masked_mean(torch.lt(surr2, surr1).float(), action_mask, dim=None)
@@ -414,7 +399,7 @@ class ValueLoss(nn.Module):
     Value Loss for PPO
     """
 
-    def __init__(self, clip_eps: float = None, token_level_loss: Optional[str] = "local_rank") -> None:
+    def __init__(self, clip_eps: float = None, token_level_loss: bool = True) -> None:
         super().__init__()
         self.clip_eps = clip_eps
         self.token_level_loss = token_level_loss
@@ -435,16 +420,8 @@ class ValueLoss(nn.Module):
             loss = (values - returns) ** 2
 
         #### token_level_loss reduction ####
-        if self.token_level_loss is None:
+        if not self.token_level_loss:
             loss = masked_mean(loss, action_mask, dim=-1).mean()
-        elif self.token_level_loss == "global":
-            token_sum = (loss * action_mask).sum()
-            normalizer = action_mask.float().sum()
-            if dist.is_available() and dist.is_initialized():
-                normalizer = normalizer.clone()
-                dist.all_reduce(normalizer, op=dist.ReduceOp.SUM)
-                normalizer = normalizer / dist.get_world_size()
-            loss = token_sum / normalizer.clamp(min=1.0)
         else:
             loss = masked_mean(loss, action_mask, dim=None)
         #### end token_level_loss reduction ####

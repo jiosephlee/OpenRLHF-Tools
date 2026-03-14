@@ -337,6 +337,8 @@ class ActorPPOTrainer(ABC):
                     "act_lr": status["actor_lr"],
                 }
 
+                if "grad_norm" in status:
+                    short_status["grad_norm"] = status["grad_norm"]
                 if "entropy_loss" in status:
                     short_status["ent_loss"] = status["entropy_loss"]
 
@@ -549,11 +551,12 @@ class ActorPPOTrainer(ABC):
             self._log_vram_audit("post_backward")
         if nan_guard:
             self._assert_finite_actor_state(step, stage="post_backward", check_grad=True)
+        grad_norm = None
         if self.args.use_dynamic_batch:
             if self.replay_buffer.dynamic_optimizer_step[step]:
-                self.strategy.optimizer_step(self.actor_optim, self.actor, self.actor_scheduler, name="actor")
+                grad_norm = self.strategy.optimizer_step(self.actor_optim, self.actor, self.actor_scheduler, name="actor")
         else:
-            self.strategy.optimizer_step(self.actor_optim, self.actor, self.actor_scheduler, name="actor")
+            grad_norm = self.strategy.optimizer_step(self.actor_optim, self.actor, self.actor_scheduler, name="actor")
         if nan_guard:
             self._assert_finite_actor_state(step, stage="post_optimizer", check_grad=False)
 
@@ -566,6 +569,8 @@ class ActorPPOTrainer(ABC):
 
         # status
         status = {"policy_loss": actor_loss.detach().item(), "actor_lr": self.actor_scheduler.get_last_lr()[0]}
+        if grad_norm is not None:
+            status["grad_norm"] = grad_norm
         if self.args.entropy_loss_coef is not None:
             status["entropy_loss"] = entropy_loss.detach().item()
 

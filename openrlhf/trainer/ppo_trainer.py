@@ -605,7 +605,15 @@ class BasePPOTrainer(ABC):
             rewards[indices] = raw_rewards
 
             # Also collect sequences, prompts, labels in the same sorted order.
-            all_sequences = torch.cat([exp.sequences for exp in experiences], dim=0)
+            # Pad sequences to the same length before concatenating (shards may differ).
+            max_seq_len = max(exp.sequences.size(1) for exp in experiences)
+            padded = []
+            for exp in experiences:
+                seq = exp.sequences
+                if seq.size(1) < max_seq_len:
+                    seq = torch.nn.functional.pad(seq, (0, max_seq_len - seq.size(1)), value=self.tokenizer.pad_token_id or 0)
+                padded.append(seq)
+            all_sequences = torch.cat(padded, dim=0)
             sequences = torch.empty_like(all_sequences)
             sequences[indices] = all_sequences
 

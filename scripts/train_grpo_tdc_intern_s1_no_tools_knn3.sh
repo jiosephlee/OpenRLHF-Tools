@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# KNN-3 no-tools GRPO training for GPT-OSS on TDC binary classification.
+# KNN-3 no-tools GRPO training for Intern-S1 on TDC binary classification.
 #
 # Uses KNN-3 augmented prompts (with precomputed RDKit descriptors + 3 nearest
 # neighbors per class baked into the text) instead of multi-turn tool calling.
@@ -9,39 +9,27 @@
 # Data source: Intern-S1-recipe/DataPrepare/TDC_prepended/KNN_3/
 # Convert first: python scripts/convert_knn3_to_openrlhf.py
 #
-# Supports all quantization modes via env vars:
-#   QUANT_METHOD=mxfp4 (default) — MXFP4 QAT + FlashInfer MoE kernel
-#   QUANT_METHOD=nvfp4            — NVFP4 QAT + NVIDIA kernel backend
-#   DEQUANT=unsloth               — Load pre-converted BF16 model (no quant flags)
-#
 # Supports both colocated and distributed modes via MODE env var.
 #
 # Usage:
-#   # MXFP4 (default):
-#   bash scripts/train_grpo_tdc_gpt_oss_no_tools_knn3.sh
-#
-#   # Unsloth BF16:
-#   DEQUANT=unsloth LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo bash scripts/train_grpo_tdc_gpt_oss_no_tools_knn3.sh
-#
-#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=ppo SMART_REPLAY=1 bash train_grpo_tdc_intern_s1_no_tools_knn3.sh
+#   # Colocated (default):
+#   bash scripts/train_grpo_tdc_intern_s1_no_tools_knn3.sh
 #
 #   # With features:
-#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis REDUCE_OPTIMIZER=adam_offload TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo SMART_REPLAY=1 DEQUANT=unsloth bash scripts/train_grpo_tdc_gpt_oss_no_tools_knn3.sh
-#
-#   # LoRA:
-#   USE_LORA=1 LEARNING_RATE=2e-5 DEQUANT=unsloth bash scripts/train_grpo_tdc_gpt_oss_no_tools_knn3.sh
+#   TIS=1 TIS_TYPE=tis LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo SMART_REPLAY=1 bash scripts/train_grpo_tdc_intern_s1_no_tools_knn3.sh
 #
 #   # Distributed:
-#   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 DEQUANT=unsloth bash scripts/train_grpo_tdc_gpt_oss_no_tools_knn3.sh
+#   MODE=distributed ACTOR_GPUS=2 VLLM_NUM_ENGINES=2 bash scripts/train_grpo_tdc_intern_s1_no_tools_knn3.sh
+#
+#   # LoRA:
+#   USE_LORA=1 LEARNING_RATE=2e-5 bash scripts/train_grpo_tdc_intern_s1_no_tools_knn3.sh
 #
 # Feature flags (all env-configurable):
 #   MODE=colocated|distributed           # Default: colocated
-#   QUANT_METHOD=mxfp4|nvfp4             # FP4 format (default: mxfp4, ignored when DEQUANT set)
-#   DEQUANT=unsloth                       # Skip quantization, run in BF16
 #   EFFECTIVE_ROLLOUT_BATCH_SIZE=8       # Rollout batch size (distributed/async base)
 #   EFFECTIVE_MINI_GRADIENT_STEPS=2      # Mini gradient steps (distributed/async base)
 #   ASYNC_ADVANTAGE=4                    # Colocated multiplier for rollout/mini
-#   COLO_EVAL_STEPS=8                    # Eval frequency for colocated
+#   COLO_EVAL_STEPS=32                   # Eval frequency for colocated
 #   SMART_REPLAY=1                       # Enable smart replay
 #   CURRICULUM_BALANCED=1                # Enable curriculum-balanced sampling
 #   OVERSAMPLE_RATIO=1.6                 # Oversample ratio
@@ -52,60 +40,17 @@
 #   TIS=1                                # Truncated Importance Sampling
 #   TIS_TYPE=tis                         # TIS variant
 #   TIS_THRESHOLDS="0.5 5.0"            # Low and high clamp thresholds
-#   QAT=fp4_fake_quantize                # QAT method (default: off)
-#   KV_CACHE_DTYPE=fp8                   # KV cache dtype for vLLM (default: off)
 #   REDUCE_OPTIMIZER=adam_offload        # Optimizer: adam_offload, adam_8bit, none
 #   MAX_EPOCHS=1                         # Training epochs
 #   USE_LORA=1                           # Enable LoRA
-#   LORA_RANK=64                         # LoRA rank
-#   LORA_ALPHA=64                        # LoRA alpha
-#   UNSLOTH_MOE=1                        # Enable grouped GEMM MoE kernels
+#   LORA_RANK=16                         # LoRA rank
+#   LORA_ALPHA=32                        # LoRA alpha
 #   LENGTH_PENALTY_MAX_LENGTH=0          # Length penalty (0=off)
 #   EXTRA_ARGS="..."                     # Additional CLI flags
 
-### QUANTIZATION MODE RESOLUTION ###
-QUANT_METHOD="${QUANT_METHOD:-mxfp4}"
-DEQUANT="${DEQUANT:-}"
-
-if [ -n "$DEQUANT" ]; then
-    case "$DEQUANT" in
-        unsloth)
-            PRETRAIN_PATH="${PRETRAIN_PATH:-unsloth/gpt-oss-20b-BF16}"
-            QUANT_FLAGS=""
-            QUANT_LABEL="dequant-unsloth"
-            ;;
-        *)
-            echo "Error: DEQUANT must be 'unsloth', got '$DEQUANT'" >&2
-            exit 1
-            ;;
-    esac
-    CUDA_MODULE="${CUDA_MODULE:-cuda/13.1.0}"
-    CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/openrlhf}"
-else
-    case "$QUANT_METHOD" in
-        mxfp4)
-            PRETRAIN_PATH="${PRETRAIN_PATH:-openai/gpt-oss-20b}"
-            QUANT_FLAGS="--mxfp4_dequantize --vllm_sync_fp4 mxfp4"
-            QUANT_LABEL="mxfp4"
-            ;;
-        nvfp4)
-            PRETRAIN_PATH="${PRETRAIN_PATH:-jiosephlee/gpt-oss-20B-NVFP4-calibrated}"
-            NVFP4_BASE="${NVFP4_BASE:-unsloth/gpt-oss-20b-BF16}"
-            QUANT_FLAGS="--vllm_sync_fp4 nvfp4 --nvfp4_dequantize_base_model $NVFP4_BASE"
-            QUANT_LABEL="nvfp4"
-            export VLLM_USE_FLASHINFER_MOE_FP4=0
-            ;;
-        *)
-            echo "Error: QUANT_METHOD must be 'mxfp4' or 'nvfp4', got '$QUANT_METHOD'" >&2
-            exit 1
-            ;;
-    esac
-    CUDA_MODULE="${CUDA_MODULE:-cuda/12.8.1}"
-    CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/openrlhf}"
-fi
-
 ### ENVIRONMENT SETUP ###
 eval "$(conda shell.bash hook)"
+CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern}"
 conda activate "$CONDA_ENV"
 set -euo pipefail
 export DS_SKIP_CUDA_CHECK=1
@@ -113,10 +58,8 @@ export DS_SKIP_CUDA_CHECK=1
 # Prevent corrupted torch inductor cache from crashing vLLM compilation.
 rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ ~/.cache/vllm/torch_compile_cache/ 2>/dev/null || true
 
-export VLLM_USE_FLASHINFER_MOE_FP16=1
-export VLLM_FLASHINFER_MOE_BACKEND=latency
-
 ### ARGS ###
+PRETRAIN_PATH="${PRETRAIN_PATH:-jiosephlee/Intern-S1-mini-lm}"
 LEARNING_RATE="${LEARNING_RATE:-1e-6}"
 NUM_GPUS="${SLURM_GPUS_ON_NODE:-$(nvidia-smi -L 2>/dev/null | wc -l)}"
 DEBUG_TRACES="${DEBUG_TRACES:-0}"
@@ -138,17 +81,12 @@ OVERSAMPLE_RATIO="${OVERSAMPLE_RATIO:-1.6}"
 TIS="${TIS:-0}"
 TIS_TYPE="${TIS_TYPE:-tis}"
 TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
-QAT="${QAT:-}"
-KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-}"
 REDUCE_OPTIMIZER="${REDUCE_OPTIMIZER:-adam_offload}"
 MAX_EPOCHS="${MAX_EPOCHS:-1}"
 USE_LORA="${USE_LORA:-0}"
-LORA_RANK="${LORA_RANK:-64}"
-LORA_ALPHA="${LORA_ALPHA:-64}"
-VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-256}"
-VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
+LORA_RANK="${LORA_RANK:-16}"
+LORA_ALPHA="${LORA_ALPHA:-32}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
-VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE="${VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE:-}"
 LENGTH_PENALTY_MAX_LENGTH="${LENGTH_PENALTY_MAX_LENGTH:-0}"
 
 export TORCH_DYNAMO_CACHE_SIZE_LIMIT=1024
@@ -156,12 +94,12 @@ export TORCH_DYNAMO_RECOMPILE_LIMIT=1024
 
 ### UNIFIED CONSTANTS ###
 ZERO_STAGE=2
-PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-8192}"
-N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-12}"
+PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-18384}"
+N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-8}"
 TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-16384}"
-ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.5" | bc | awk '{print int($1)}')}"
+ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.6" | bc | awk '{print int($1)}')}"
 
-COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-8}"
+COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-32}"
 
 ### MODE-DEPENDENT DEFAULTS ###
 if [ "$MODE" = "colocated" ]; then
@@ -169,7 +107,7 @@ if [ "$MODE" = "colocated" ]; then
     VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
     ROLLOUT_BATCH_SIZE=$(( EFFECTIVE_ROLLOUT_BATCH_SIZE * ASYNC_ADVANTAGE ))
     MINI_GRADIENT_STEPS=$(( EFFECTIVE_MINI_GRADIENT_STEPS))
-    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.7}"
+    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.8515}"
     VLLM_SYNC_BACKEND=nccl
     EVAL_STEPS="${EVAL_STEPS:-$COLO_EVAL_STEPS}"
 elif [ "$MODE" = "distributed" ]; then
@@ -281,20 +219,19 @@ SUFFIX=""
 
 if [ "$MODE" = "colocated" ]; then
     MODE_TAG="colo"
-    RUN_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-notools-knn3-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
-    WANDB_GROUP="TDC-GPTOss-${QUANT_LABEL}-no-tools-KNN3-colo-$TASK_LABEL"
+    RUN_NAME="grpo-tdc-s1-${N_TASKS}t-notools-knn3-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
+    WANDB_GROUP="TDC-InternS1-no-tools-KNN3-colo-$TASK_LABEL"
 else
     MODE_TAG="dist-${LAYOUT_TAG}"
-    RUN_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-notools-knn3-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
-    WANDB_GROUP="TDC-GPTOss-${QUANT_LABEL}-no-tools-KNN3-dist-${LAYOUT_TAG}-$TASK_LABEL"
+    RUN_NAME="grpo-tdc-s1-${N_TASKS}t-notools-knn3-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
+    WANDB_GROUP="TDC-InternS1-no-tools-KNN3-dist-${LAYOUT_TAG}-$TASK_LABEL"
 fi
 RUN_ID="${RUN_NAME}"
-HUB_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-notools-knn3-ep${MAX_EPOCHS}-${DATE_TAG}"
 RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}"
 mkdir -p "$RUNS_DIR"
 LOCAL_SAVE_DIR="${LOCAL_SAVE_DIR:-/vast/projects/myatskar/design-documents/hf_home}"
 SAVE_PATH="$LOCAL_SAVE_DIR/$RUN_NAME"
-HUB_REPO_ID="jiosephlee/${HUB_NAME}"
+HUB_REPO_ID="jiosephlee/${RUN_NAME}"
 
 ### GRPO CONFIG ###
 ADVANTAGE_ESTIMATOR="group_norm"
@@ -316,17 +253,8 @@ mkdir -p "$TORCHINDUCTOR_CACHE_DIR" 2>/dev/null || true
 
 export VLLM_NO_USAGE_STATS=1
 export VLLM_DISABLE_TELEMETRY=1
-export VLLM_ALLOW_INSECURE_SERIALIZATION=1
 
-export TORCH_DYNAMO_RECOMPILE_LIMIT=1024
-export TORCH_DYNAMO_CACHE_SIZE_LIMIT=1024
-
-export OPENRLHF_MODEL_PATH="$PRETRAIN_PATH"
 export DEBUG_TRACES="$DEBUG_TRACES"
-export OPENRLHF_DEBUG_LOGITS=0
-export OPENRLHF_DEBUG_NAN_GUARD=0
-export OPENRLHF_VRAM_AUDIT="${OPENRLHF_VRAM_AUDIT:-1}"
-export OPENRLHF_SMILES_ERROR_LOG="$RUNS_DIR/smiles_errors.jsonl"
 
 ### RAY ###
 export RAY_NODE_IP_ADDRESS=$(hostname -I | awk '{print $1}')
@@ -371,12 +299,10 @@ echo "Ray is ready."
 
 ### PRINT CONFIG ###
 echo "========================================"
-echo "TDC GRPO Training — GPT-OSS (No-Tools, KNN-3 Data, MODE=$MODE, QUANT=$QUANT_LABEL)"
+echo "TDC GRPO Training — Intern-S1-mini (No-Tools, KNN-3 Data, MODE=$MODE)"
 echo "========================================"
 echo "Tasks: ${TASK_NAMES[*]}"
 echo "Model: $PRETRAIN_PATH"
-echo "Quantization: $QUANT_LABEL"
-echo "Quant Flags: $QUANT_FLAGS"
 echo "Learning Rate: $LEARNING_RATE"
 echo "Run ID: $RUN_ID"
 echo "----------------------------------------"
@@ -407,9 +333,6 @@ echo "Loss Type: $LOSS_TYPE"
 echo "Liger GRPO Loss: $LIGER_GRPO_LOSS (backend=$LIGER_GRPO_BACKEND, chunk_size=$LIGER_CHUNK_SIZE)"
 echo "LoRA: USE_LORA=$USE_LORA (rank=$LORA_RANK, alpha=$LORA_ALPHA)"
 echo "TIS: $TIS (type=$TIS_TYPE, thresholds=$TIS_THRESHOLDS)"
-echo "KV Cache Dtype: ${KV_CACHE_DTYPE:-auto}"
-echo "VLLM_MAX_NUM_SEQS: $VLLM_MAX_NUM_SEQS"
-echo "VLLM_MAX_NUM_BATCHED_TOKENS: $VLLM_MAX_NUM_BATCHED_TOKENS"
 echo "----------------------------------------"
 echo "Runs Dir: $RUNS_DIR"
 echo "W&B: project=$WANDB_PROJECT group=$WANDB_GROUP run=$RUN_ID"
@@ -452,27 +375,15 @@ fi
 if [ "$TIS" = "1" ]; then
     OPTIONAL_FLAGS+=" --enable_vllm_is_correction --vllm_is_correction_type $TIS_TYPE --vllm_is_truncated_threshold $TIS_THRESHOLDS"
 fi
-if [ -n "$QAT" ]; then
-    OPTIONAL_FLAGS+=" --qat $QAT"
-fi
-if [ -n "$KV_CACHE_DTYPE" ]; then
-    OPTIONAL_FLAGS+=" --kv_cache_dtype $KV_CACHE_DTYPE"
-fi
-if [ -n "$VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE" ]; then
-    OPTIONAL_FLAGS+=" --vllm_cudagraph_max_capture_size $VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE"
-fi
 if [ "$LENGTH_PENALTY_MAX_LENGTH" -gt 0 ]; then
     OPTIONAL_FLAGS+=" --length_penalty_max_length $LENGTH_PENALTY_MAX_LENGTH"
 fi
 if [ "$USE_LORA" = "1" ]; then
     OPTIONAL_FLAGS+=" --lora_rank $LORA_RANK --lora_alpha $LORA_ALPHA"
 fi
-if [ "${UNSLOTH_MOE:-0}" = "1" ]; then
-    OPTIONAL_FLAGS+=" --use_unsloth_moe_kernels"
-fi
 
 ### TRAINING ###
-RUN_LOG="$RUNS_DIR/run_${QUANT_LABEL}.log"
+RUN_LOG="$RUNS_DIR/run.log"
 echo "Logging to: $RUN_LOG"
 python -m openrlhf.cli.train_ppo_ray \
     --pretrain "$PRETRAIN_PATH" \
@@ -484,19 +395,17 @@ python -m openrlhf.cli.train_ppo_ray \
     --actor_num_gpus_per_node $ACTOR_GPUS \
     --vllm_num_engines $VLLM_NUM_ENGINES \
     --vllm_tensor_parallel_size 1 \
-    --optimal_flags_b200_gpt_oss \
-    --max_num_batched_tokens $VLLM_MAX_NUM_BATCHED_TOKENS \
     --vllm_gpu_memory_utilization $VLLM_GPU_MEM_UTIL \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \
-    --eps_clip_low_high 0.3 0.372 \
+    --eps_clip_low_high 0.2 0.272 \
     --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
     --save_hf_ckpt \
     --disable_ds_ckpt \
     --logging_steps 1 \
-    --micro_train_batch_size 2 \
-    --micro_rollout_batch_size 4 \
+    --micro_train_batch_size 4 \
+    --micro_rollout_batch_size 8 \
     --n_samples_per_prompt $N_SAMPLES_PER_PROMPT \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --rollout_batch_size $ROLLOUT_BATCH_SIZE \
@@ -521,8 +430,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --label_key answer \
     --apply_chat_template \
     --gradient_checkpointing \
+    --packing_samples \
     --vllm_sync_backend $VLLM_SYNC_BACKEND \
-    --vllm_max_num_seqs $VLLM_MAX_NUM_SEQS \
     --top_p $TOP_P \
     --temperature $TEMPERATURE \
     --use_wandb 1 \
@@ -535,9 +444,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --constant_lr_with_warm_up \
     --warmup_steps $WARMUP_STEPS \
     --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
-    --attn_implementation "flex_attention" \
-    --length_penalty_max_length 6144 \
-    $QUANT_FLAGS \
+    --use_dynamic_batch \
+    --optimal_flags_b200_gpt_oss \
     $MODE_FLAGS \
     $OPTIONAL_FLAGS \
     $EXTRA_ARGS \

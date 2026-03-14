@@ -4,7 +4,7 @@ import shutil
 from abc import ABC
 from collections import defaultdict
 from datetime import timedelta
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import deepspeed
 import torch
@@ -177,10 +177,16 @@ class DeepspeedStrategy(ABC):
         scheduler,
         name="model",
         **kwargs,
-    ) -> None:
+    ) -> Optional[float]:
         if isinstance(model, Actor):
             model = model.model
         model.step()
+        # DeepSpeed computes the global grad norm internally during step()
+        # for gradient clipping. Extract it for logging.
+        grad_norm = getattr(model, "_global_grad_norm", None)
+        if grad_norm is not None:
+            return float(grad_norm)
+        return None
 
     def setup_dataloader(
         self,

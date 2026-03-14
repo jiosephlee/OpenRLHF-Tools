@@ -18,7 +18,7 @@
 #
 #   # Unsloth BF16:
 #   DEQUANT=unsloth LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss_no_tools_augmented.sh
-#
+#   USE_LORA=1 EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=65536 LIGER_GRPO_LOSS=0 LOSS_TYPE=ppo SMART_REPLAY=1 DEQUANT=unsloth bash train_grpo_tdc_gpt_oss_no_tools_playbooks.sh
 #   # With features:
 #   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis REDUCE_OPTIMIZER=adam_offload TRAIN_MAX_TOKENS_PER_GPU=32768 TRAIN LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo SMART_REPLAY=1 DEQUANT=unsloth bash train_grpo_tdc_gpt_oss_no_tools_augmented.sh
 #
@@ -74,7 +74,7 @@ if [ -n "$DEQUANT" ]; then
             ;;
     esac
     CUDA_MODULE="${CUDA_MODULE:-cuda/13.1.0}"
-    CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/openrlhf}"
+    CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern}"
 else
     case "$QUANT_METHOD" in
         mxfp4)
@@ -94,8 +94,8 @@ else
             exit 1
             ;;
     esac
-    CUDA_MODULE="${CUDA_MODULE:-cuda/12.8.1}"
-    CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/openrlhf}"
+    CUDA_MODULE="${CUDA_MODULE:-cuda/13.1.0}"
+    CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern}"
 fi
 
 ### ENVIRONMENT SETUP ###
@@ -163,7 +163,7 @@ if [ "$MODE" = "colocated" ]; then
     VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
     ROLLOUT_BATCH_SIZE=$(( EFFECTIVE_ROLLOUT_BATCH_SIZE * ASYNC_ADVANTAGE ))
     MINI_GRADIENT_STEPS=$(( EFFECTIVE_MINI_GRADIENT_STEPS))
-    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.7}"
+    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.675}"
     VLLM_SYNC_BACKEND=nccl
     EVAL_STEPS="${EVAL_STEPS:-$COLO_EVAL_STEPS}"
 elif [ "$MODE" = "distributed" ]; then
@@ -484,7 +484,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \
-    --eps_clip_low_high 0.3 0.372 \
+    --eps_clip_low_high 0.2 0.272 \
     --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
     --save_hf_ckpt \
     --disable_ds_ckpt \
@@ -529,8 +529,10 @@ python -m openrlhf.cli.train_ppo_ray \
     --constant_lr_with_warm_up \
     --warmup_steps $WARMUP_STEPS \
     --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
-    --attn_implementation "flex_attention" \
+    --attn_implementation "eager" \
     --length_penalty_max_length 6144 \
+    --freeze_router \
+    --aux_loss_coef 0 \
     $QUANT_FLAGS \
     $MODE_FLAGS \
     $OPTIONAL_FLAGS \

@@ -1,0 +1,267 @@
+<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-13
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|># CYP2D6 Substrate Assessment
+
+## This guide helps guide a probability P (0-100) assessment for the task.
+Probability the molecule is metabolized by CYP2D6. Key recognition motif: protonatable/basic nitrogen (cationic at pH 7.4) + hydrophobic/aromatic features + characteristic topological separation between basic N and site of metabolism (~5-7 Å).
+
+## Gate rules (hard overrides, apply first)
+- No positive states at pH 7.4 AND net charge ≤0: ceiling ≤25
+- Predominantly anionic (negative states, no positive): ceiling ≤10
+- MW >600: ceiling ≤40
+
+## Scoring (Base score = 10)
+
+### A) Ionization / charge (max +45, min -40)
+- has_positive_states: +35
+- Representative net_charge ≥+1: +10 more
+- has_negative_states AND no positive: -40
+- Zwitterionic/ambiguous: +10
+
+### B) Aromatic & ring content (max +20, min -10)
+- aromatic_rings ≥1: +10; ≥2: +5 more; total_rings ≥3: +5 more
+- aromatic_rings==0 AND total_rings ≤1: -10
+
+### C) Aryl-alkyl-amine spacing proxy motifs (max +20)
+- Any aryl_2C_to_amine / aryl_3C_to_amine / aryl_ether_2C_to_amine / phenoxypropanolamine_like: +15
+- 2+ present: +5 more
+
+### D) Lipophilicity (max +15, min -15)
+- logP 1.5-5.0: +15; 0.5-1.5: +5; <0.5: -10; >6.5: -15
+
+### E) TPSA (max +10, min -25)
+- 15-60: +10; 60-90: +0; 90-120: -10; >120: -25
+
+### F) Size (max +10, min -20)
+- MW 180-450: +10; <120: -10; >600: -20
+
+### G) Amide penalty
+- ≥1 amide bond: -8; ≥3: -15
+
+### H) Strong acid penalty
+- Carboxylic acid or strong acids: -25
+
+### Calibration floor
+- If cationic + aromatic≥1 + logP 1.5-5 + TPSA ≤60: prob = max(prob, 70)
+- If no positive state + strong acid: prob = min(prob, 5)
+
+Clamp to [0, 100].
+
+=== Precomputed Tool Results for: O=C1NCCN1CCN1CCC(c2cn(-c3ccc(F)cc3)c3ccc(Cl)cc23)CC1 ===
+
+[standardize]
+O=C1NCCN1CCN1CCC(c2cn(-c3ccc(F)cc3)c3ccc(Cl)cc23)CC1
+
+[descriptors]
+{
+  "masses": {
+    "average_mw": 440.95,
+    "formula": "C24H26ClFN4O"
+  },
+  "atom_counts": {
+    "heavy_atoms": 31,
+    "heteroatoms": 7,
+    "nitrogen": 4,
+    "oxygen": 1,
+    "n_plus_o": 5
+  },
+  "surface_shape_props": {
+    "tpsa": 40.51,
+    "molar_refractivity": 121.6297,
+    "fraction_csp3": 0.375,
+    "stereocenters": 0
+  },
+  "ring_counts": {
+    "total_rings": 5,
+    "aromatic_rings": 3,
+    "saturated_rings": 2
+  },
+  "logp": 4.6276,
+  "num_rotatable_bonds": 5,
+  "num_amide_bonds": 2,
+  "formal_charge": 0,
+  "qed": 0.6281,
+  "hydrogen_bonding": {
+    "hbd": 1,
+    "hba": 2
+  },
+  "lipinski_violations": {
+    "mw_violation": false,
+    "logp_violation": false,
+    "hbd_violation": false,
+    "hba_violation": false,
+    "num_violations": 0
+  },
+  "esol": {
+    "log_s_esol": -5.517,
+    "solubility_mg_per_ml": 0.0013,
+    "solubility_class": "poorly soluble"
+  }
+}
+
+[ionization]
+{
+  "num_variants": 4,
+  "net_charges": [
+    0,
+    1,
+    2
+  ],
+  "charge_class_counts": {
+    "base": 3,
+    "neutral": 1
+  },
+  "has_positive_states": true,
+  "has_negative_states": false,
+  "is_ambiguous": true,
+  "representative": {
+    "smiles": "O=C1NCCN1CC[NH+]1CCC(c2cn(-c3ccc(F)cc3)c3ccc(Cl)cc23)CC1",
+    "net_charge": 1,
+    "charge_class": "base"
+  }
+}
+
+[functional_groups]
+├──urea
+│  ├──amide
+│  │  ├──amine
+│  │  └──carbonyl
+│  └──lactam
+│     ├──amine
+│     └──carbonyl
+├──Aryl chloride
+├──Aryl fluoride
+├──benzene
+├──imidazolidine
+│  └──amine
+├──piperidine
+│  ├──amine
+│  └──tertiary aliphatic amine
+└──1H-indole
+   ├──benzene
+   └──1H-pyrrole
+      └──hetero N basic no H
+
+
+[ring_systems]
+{
+  "ring_systems": [
+    {
+      "num_rings": 2,
+      "num_aromatic": 2,
+      "all_aromatic": true,
+      "atom_count": 9,
+      "ring_sizes": [
+        5,
+        6
+      ],
+      "heteroatoms": [
+        "N"
+      ]
+    },
+    {
+      "num_rings": 1,
+      "num_aromatic": 1,
+      "all_aromatic": true,
+      "atom_count": 6,
+      "ring_sizes": [
+        6
+      ],
+      "heteroatoms": []
+    },
+    {
+      "num_rings": 1,
+      "num_aromatic": 0,
+      "all_aromatic": false,
+      "atom_count": 5,
+      "ring_sizes": [
+        5
+      ],
+      "heteroatoms": [
+        "N"
+      ]
+    },
+    {
+      "num_rings": 1,
+      "num_aromatic": 0,
+      "all_aromatic": false,
+      "atom_count": 6,
+      "ring_sizes": [
+        6
+      ],
+      "heteroatoms": [
+        "N"
+      ]
+    }
+  ],
+  "num_ring_systems": 4,
+  "largest_system_size": 2,
+  "largest_aromatic_system": 2,
+  "has_pah_like": false,
+  "largest_ring_size": 6,
+  "has_macrocycle": false,
+  "num_macrocycles": 0,
+  "spiro_atoms": 0,
+  "bridgehead_atoms": 0
+}
+
+[substruct]
+{
+  "tertiary_amine_nonamide": {
+    "present": true,
+    "count": 3
+  },
+  "secondary_amine_nonamide": {
+    "present": false,
+    "count": 0
+  },
+  "ring_amine_nonamide": {
+    "present": true,
+    "count": 1
+  },
+  "quaternary_ammonium": {
+    "present": false,
+    "count": 0
+  },
+  "carboxylic_acid": {
+    "present": false,
+    "count": 0
+  },
+  "sulfonic_acid": {
+    "present": false,
+    "count": 0
+  },
+  "phosphate": {
+    "present": false,
+    "count": 0
+  },
+  "aryl_2C_to_amine": {
+    "present": false,
+    "count": 0
+  },
+  "aryl_3C_to_amine": {
+    "present": false,
+    "count": 0
+  },
+  "aryl_ether_2C_to_amine": {
+    "present": false,
+    "count": 0
+  },
+  "phenoxypropanolamine_like": {
+    "present": false,
+    "count": 0
+  }
+}
+
+
+Instructions: Answer the following question about drug properties.
+Context: CYP2D6 is primarily expressed in the liver. It is also highly expressed in areas of the central nervous system, including the substantia nigra. Substrates are drugs that are metabolized by the enzyme. 
+Question: Given a drug SMILES string, predict whether it
+(A) is not a substrate to the enzyme CYP2D6 (B) is a substrate to the enzyme CYP2D6
+Drug SMILES: O=C1NCCN1CCN1CCC(c2cn(-c3ccc(F)cc3)c3ccc(Cl)cc23)CC1
+Please think step by step and then put ONLY your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant

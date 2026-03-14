@@ -1,0 +1,197 @@
+<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-13
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|># P-glycoprotein Inhibition Assessment
+
+## This guide helps guide a probability P (0-100) assessment for the task.
+Probability the molecule inhibits P-gp (ABCB1). Inhibitors are often hydrophobic, aromatic, contain a basic/tertiary nitrogen, with H-bonding functionality. Many inhibitors are also substrates.
+
+## Scoring (Base P = 25)
+
+### A) Size/volume
+- MW <250: -25; 250-350: +0; 350-500: +10; ≥500: +15
+
+### B) Hydrophobicity (logP)
+- <1.5: -20; 1.5-3.0: +0; 3.0-4.5: +12; 4.5-6.5: +10; >6.5: -5
+
+### C) Aromaticity/rings
+- 0 aromatic: -15; 1: +5; ≥2: +12; PAH-like: +5
+
+### D) Ionization/basicity
+- has_positive_states: +12
+- Tertiary amine / heterocyclic amine motif: +8 (cap basicity total at +18)
+- has_negative_states AND no positive: -15
+- Strong acid (carboxylate/sulfonate at pH 7.4): -10 extra
+
+### E) H-bonding
+- HBA ≥2: +5; HBD ≥1: +3
+- TPSA >160: -10; TPSA 40-120: +5
+
+### F) Aryl ether/methoxy
+- Aryl ether or multiple methoxy groups: +5
+
+### G) Flexibility
+- RotB ≥8: +3; >14: -5
+
+### Interpretation bands
+- 0-20: very unlikely (small, polar, anionic)
+- 21-40: unlikely/unknown
+- 41-60: plausible (aromatic + moderate logP + HBA)
+- 61-80: likely (aromatic + hydrophobic + basic N)
+- 81-100: very likely
+
+Clamp to [0, 100].
+
+=== Precomputed Tool Results for: CCCCNC(=O)NS(=O)(=O)c1ccc(C)cc1 ===
+
+[standardize]
+CCCCNC(=O)NS(=O)(=O)c1ccc(C)cc1
+
+[descriptors]
+{
+  "masses": {
+    "average_mw": 270.354,
+    "formula": "C12H18N2O3S"
+  },
+  "atom_counts": {
+    "heavy_atoms": 18,
+    "heteroatoms": 6,
+    "nitrogen": 2,
+    "oxygen": 3,
+    "n_plus_o": 5
+  },
+  "surface_shape_props": {
+    "tpsa": 75.27,
+    "molar_refractivity": 69.8072,
+    "fraction_csp3": 0.4167,
+    "stereocenters": 0
+  },
+  "ring_counts": {
+    "total_rings": 1,
+    "aromatic_rings": 1,
+    "saturated_rings": 0
+  },
+  "logp": 1.783,
+  "num_rotatable_bonds": 5,
+  "num_amide_bonds": 2,
+  "formal_charge": 0,
+  "qed": 0.8008,
+  "hydrogen_bonding": {
+    "hbd": 2,
+    "hba": 3
+  },
+  "lipinski_violations": {
+    "mw_violation": false,
+    "logp_violation": false,
+    "hbd_violation": false,
+    "hba_violation": false,
+    "num_violations": 0
+  },
+  "esol": {
+    "log_s_esol": -2.556,
+    "solubility_mg_per_ml": 0.7512,
+    "solubility_class": "soluble"
+  }
+}
+
+[ionization]
+{
+  "num_variants": 2,
+  "net_charges": [
+    -1,
+    0
+  ],
+  "charge_class_counts": {
+    "zwitterion": 1,
+    "acid": 1
+  },
+  "has_positive_states": false,
+  "has_negative_states": true,
+  "is_ambiguous": true,
+  "representative": {
+    "smiles": "CCCC[NH2+]C(=O)[N-]S(=O)(=O)c1ccc(C)cc1",
+    "net_charge": 0,
+    "charge_class": "zwitterion"
+  }
+}
+
+[ring_systems]
+{
+  "ring_systems": [
+    {
+      "num_rings": 1,
+      "num_aromatic": 1,
+      "all_aromatic": true,
+      "atom_count": 6,
+      "ring_sizes": [
+        6
+      ],
+      "heteroatoms": []
+    }
+  ],
+  "num_ring_systems": 1,
+  "largest_system_size": 1,
+  "largest_aromatic_system": 1,
+  "has_pah_like": false,
+  "largest_ring_size": 6,
+  "has_macrocycle": false,
+  "num_macrocycles": 0,
+  "spiro_atoms": 0,
+  "bridgehead_atoms": 0
+}
+
+[functional_groups]
+├──urea
+│  └──amide
+│     ├──amine
+│     └──carbonyl
+├──sulfonamide
+│  ├──amine
+│  ├──sulfonyl
+│  └──sulfanylidene
+└──benzene
+
+
+[substruct]
+{
+  "tertiary_amine": {
+    "present": false,
+    "count": 0
+  },
+  "piperazine": {
+    "present": false,
+    "count": 0
+  },
+  "quaternary_ammonium": {
+    "present": false,
+    "count": 0
+  },
+  "aryl_ether": {
+    "present": false,
+    "count": 0
+  },
+  "methoxy_on_aromatic": {
+    "present": false,
+    "count": 0
+  },
+  "carboxylic_acid": {
+    "present": false,
+    "count": 0
+  },
+  "sulfonic_acid": {
+    "present": false,
+    "count": 0
+  }
+}
+
+
+Instructions: Answer the following question about drug properties.
+Context: P-glycoprotein (Pgp) is an ABC transporter protein involved in intestinal absorption, drug metabolism, and brain penetration, and its inhibition can seriously alter a drug's bioavailability and safety. In addition, inhibitors of Pgp can be used to overcome multidrug resistance.
+Question: Given a drug SMILES string, predict whether it
+(A) is not a PgP inhibitor (B) is a PgP inhibitor
+Drug SMILES: CCCCNC(=O)NS(=O)(=O)c1ccc(C)cc1
+Please think step by step and then put ONLY your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant

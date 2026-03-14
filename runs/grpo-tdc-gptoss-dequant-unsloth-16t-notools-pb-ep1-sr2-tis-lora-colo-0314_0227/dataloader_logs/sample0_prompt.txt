@@ -1,0 +1,250 @@
+<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-14
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|># PAMPA Permeability Assessment
+
+## This guide helps guide a probability P (0-100) assessment for the task.
+Probability of high passive membrane permeability (PAMPA). This is a purely passive diffusion assay — no transporters.
+
+## Scoring (Base score = 50)
+
+### Unionized fraction (pKa-derived, largest driver)
+- fraction_neutral ≥0.30: +20; 0.10-0.30: +10; 0.03-0.10: +0; 0.01-0.03: -10; <0.01: -20
+
+### Charge-state penalties
+- |net charge| ≥2: -30
+- Zwitterion: -25
+- Ambiguous: -10
+- LogD warnings (polyprotic/amphoteric): -5
+
+### Delocalized cation exception
+- Quaternary ammonium BUT aromatic_rings ≥2: add back +10
+
+### Lipophilicity (logD7.4)
+- 2.0-4.0: +15; 1.0-2.0: +5; 4.0-5.0: +0; <1.0: -10; >5.0: -10
+
+### Polarity (TPSA)
+- <60: +15; 60-90: +5; 90-120: -10; >120: -25
+
+### H-bonding
+HBD: 0-1 +10; 2 +5; 3 -5; ≥4 -15
+HBA: ≤6 +5; 7-10 +0; >10 -10
+
+### Size/flexibility
+MW: <350 +10; 350-500 +0; 500-700 -10; >700 -25
+RB: ≤5 +5; 6-10 +0; >10 -10
+
+### Macrocycle adjustments
+- If macrocycle: soften MW penalty +10
+- If macrocycle + high amide count > HBD (N-methylation proxy): +10
+
+### Hard stops
+- ≥2 carboxylic acids OR sulfonic/phosphonic acid: -20
+- Guanidinium: -25
+
+Clamp to [0, 100].
+
+=== Precomputed Tool Results for: CC1=C(C=C(C=C1)C(=O)NC)N2C(=CC(=C(C2=O)Br)OCC3=C(C=C(C=C3)F)F)C ===
+
+[standardize]
+CNC(=O)c1ccc(C)c(-n2c(C)cc(OCc3ccc(F)cc3F)c(Br)c2=O)c1
+
+[descriptors]
+{
+  "masses": {
+    "average_mw": 477.305,
+    "formula": "C22H19BrF2N2O3"
+  },
+  "atom_counts": {
+    "heavy_atoms": 30,
+    "heteroatoms": 8,
+    "nitrogen": 2,
+    "oxygen": 3,
+    "n_plus_o": 5
+  },
+  "surface_shape_props": {
+    "tpsa": 60.33,
+    "molar_refractivity": 113.2932,
+    "fraction_csp3": 0.1818,
+    "stereocenters": 0
+  },
+  "ring_counts": {
+    "total_rings": 3,
+    "aromatic_rings": 3,
+    "saturated_rings": 0
+  },
+  "logp": 4.4336,
+  "num_rotatable_bonds": 5,
+  "num_amide_bonds": 1,
+  "formal_charge": 0,
+  "qed": 0.5917,
+  "hydrogen_bonding": {
+    "hbd": 1,
+    "hba": 3
+  },
+  "lipinski_violations": {
+    "mw_violation": false,
+    "logp_violation": false,
+    "hbd_violation": false,
+    "hba_violation": false,
+    "num_violations": 0
+  },
+  "esol": {
+    "log_s_esol": -5.706,
+    "solubility_mg_per_ml": 0.0009,
+    "solubility_class": "poorly soluble"
+  }
+}
+
+[ionization]
+{
+  "num_variants": 1,
+  "net_charges": [
+    0
+  ],
+  "charge_class_counts": {
+    "neutral": 1
+  },
+  "has_positive_states": false,
+  "has_negative_states": false,
+  "is_ambiguous": false,
+  "representative": {
+    "smiles": "CNC(=O)c1ccc(C)c(-n2c(C)cc(OCc3ccc(F)cc3F)c(Br)c2=O)c1",
+    "net_charge": 0,
+    "charge_class": "neutral"
+  }
+}
+
+[logd]
+{
+  "logd": 4.4336,
+  "logp": 4.4336,
+  "ph": 7.4,
+  "fraction_neutral": 1.0,
+  "most_basic_pka": 1.9929087162017822,
+  "most_acidic_pka": 13.641255378723145,
+  "num_basic_sites": 1,
+  "num_acidic_sites": 1,
+  "mapped_smiles": "[C:1]([N:2]([C:3](=[O:4])[c:5]1[c:6]([H:35])[c:7]([H:36])[c:8]([C:9]([H:37])([H:38])[H:39])[c:10](-[n:11]2[c:12]([C:13]([H:40])([H:41])[H:42])[c:14]([H:43])[c:15]([O:16][C:17]([c:18]3[c:19]([H:46])[c:20]([H:47])[c:21]([F:22])[c:23]([H:48])[c:24]3[F:25])([H:44])[H:45])[c:26]([Br:27])[c:28]2=[O:29])[c:30]1[H:49])[H:34])([H:31])([H:32])[H:33]",
+  "warnings": [
+    "Amphoteric molecule; neutral-fraction estimate assumes independent sites."
+  ]
+}
+
+[functional_groups]
+├──alkyl aryl ether
+├──secondary amide
+│  ├──amine
+│  └──carbonyl
+├──lactam
+│  ├──oxoarene
+│  └──hetero N basic no H
+├──Aryl fluoride
+├──Aryl bromide
+├──benzene
+└──pyridine
+   └──hetero N basic no H
+
+
+[ring_systems]
+{
+  "ring_systems": [
+    {
+      "num_rings": 1,
+      "num_aromatic": 1,
+      "all_aromatic": true,
+      "atom_count": 6,
+      "ring_sizes": [
+        6
+      ],
+      "heteroatoms": []
+    },
+    {
+      "num_rings": 1,
+      "num_aromatic": 1,
+      "all_aromatic": true,
+      "atom_count": 6,
+      "ring_sizes": [
+        6
+      ],
+      "heteroatoms": [
+        "N"
+      ]
+    },
+    {
+      "num_rings": 1,
+      "num_aromatic": 1,
+      "all_aromatic": true,
+      "atom_count": 6,
+      "ring_sizes": [
+        6
+      ],
+      "heteroatoms": []
+    }
+  ],
+  "num_ring_systems": 3,
+  "largest_system_size": 1,
+  "largest_aromatic_system": 1,
+  "has_pah_like": false,
+  "largest_ring_size": 6,
+  "has_macrocycle": false,
+  "num_macrocycles": 0,
+  "spiro_atoms": 0,
+  "bridgehead_atoms": 0
+}
+
+[substruct]
+{
+  "quaternary_ammonium": {
+    "present": false,
+    "count": 0
+  },
+  "amidinium": {
+    "present": false,
+    "count": 0
+  },
+  "guanidinium": {
+    "present": false,
+    "count": 0
+  },
+  "carboxylic_acid": {
+    "present": false,
+    "count": 0
+  },
+  "sulfonic_acid": {
+    "present": false,
+    "count": 0
+  },
+  "phosphonic_acid": {
+    "present": false,
+    "count": 0
+  },
+  "polyol_motif": {
+    "present": false,
+    "count": 0
+  },
+  "urea": {
+    "present": false,
+    "count": 0
+  },
+  "sulfonamide": {
+    "present": false,
+    "count": 0
+  },
+  "amide": {
+    "present": true,
+    "count": 1
+  }
+}
+
+
+Instructions: Answer the following question about drug properties.
+Context: Membrane permeability is a measure of the ability of a drug to pass through a cellular membrane through passive diffusion, which is necessary for the drug to affect a cell. In general, small hydrophobic drugs can easily pass through membranes whereas large polar/charged drugs do not easily pass through. PAMPA (parallel artificial membrane permeability assay) is a commonly employed non-cell-based assay to evaluate drug permeability across the cellular membrane.
+Question: Given a drug SMILES string, predict whether it
+(A) is not permeable to cell membranes in a PAMPA assay (B) is permeable to cell membranes in a PAMPA assay
+Drug SMILES: CC1=C(C=C(C=C1)C(=O)NC)N2C(=CC(=C(C2=O)Br)OCC3=C(C=C(C=C3)F)F)C
+Please think step by step and then put ONLY your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant

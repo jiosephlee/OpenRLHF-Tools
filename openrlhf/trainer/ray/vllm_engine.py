@@ -38,13 +38,13 @@ def _load_agent_executor(agent_func_path: str, **kwargs) -> AgentExecutorBase:
 
 
 class _VLLMStatsPoller:
-    """Background thread that reads vLLM V1 SchedulerStats every ~5 seconds.
+    """Background thread that reads vLLM V1 SchedulerStats every ~3 seconds.
 
     Accumulates min/max/mean for per-step summaries and stores every raw
     sample for time-series export.  Thread-safe via a simple lock.
     """
 
-    def __init__(self, llm_engine, engine_id: int = 0, poll_interval: float = 30.0):
+    def __init__(self, llm_engine, engine_id: int = 0, poll_interval: float = 3.0):
         self._llm = llm_engine
         self._engine_id = engine_id
         self._poll_interval = poll_interval

@@ -1007,6 +1007,14 @@ class PPOTrainer(BasePPOTrainer):
             global_step = self._run_leftover_phase(episode, global_step, total_consumed_prompts)
             #### end oversampling ####
 
+            # Eval at end of replay round (skip if last step already ran eval).
+            if self.eval_dataloader and (global_step % self.args.eval_steps != 0):
+                eval_generate_kwargs = self.generate_kwargs.copy()
+                eval_generate_kwargs["temperature"] = self.args.eval_temperature
+                eval_generate_kwargs["n_samples_per_prompt"] = self.args.eval_n_samples_per_prompt
+                logger.info(f"Running end-of-replay-round evaluation at global_step {global_step}")
+                self.evaluate(global_step, **eval_generate_kwargs)
+
             # Collect new replay indices from this round (everything that wasn't too easy).
             hard_indices, kept_indices = self.samples_generator.get_replay_indices()
             #### Oversampling: include missed indices in next replay round ####
@@ -1487,6 +1495,14 @@ class PPOTrainer(BasePPOTrainer):
             if getattr(self.args, "oversample_ratio", 1.0) > 1.0:
                 global_step = self._run_leftover_phase(episode, global_step, total_consumed_prompts)
             #### end oversampling ####
+
+            # Eval at end of episode (skip if last step already ran eval).
+            if self.eval_dataloader and (global_step % self.args.eval_steps != 0):
+                eval_generate_kwargs = self.generate_kwargs.copy()
+                eval_generate_kwargs["temperature"] = self.args.eval_temperature
+                eval_generate_kwargs["n_samples_per_prompt"] = self.args.eval_n_samples_per_prompt
+                logger.info(f"Running end-of-episode evaluation at global_step {global_step}")
+                self.evaluate(global_step, **eval_generate_kwargs)
 
             # --- Smart replay: log initial-pass stats and run replay episodes ---
             if getattr(self.args, "smart_replay", False):

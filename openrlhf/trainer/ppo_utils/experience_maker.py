@@ -1012,14 +1012,25 @@ class SamplesGenerator:
                         break
                     #### end oversampling ####
 
-                # If rejected, request a new prompt to keep filling the batch.
+                # If rejected, request replacement prompts to keep filling the batch.
                 else:
-                    # Pull another prompt when the current one fails filtering.
-                    new_ds_indices, new_prompts, new_labels, exhausted = _collect_prompt_batch(dataloader_iter, 1)
+                    replace_ratio = getattr(self.args, "replace_discarded_prompts_ratio", 1.0)
+                    num_replacements = max(1, math.ceil(replace_ratio))
+                    new_ds_indices, new_prompts, new_labels, exhausted = _collect_prompt_batch(
+                        dataloader_iter, num_replacements
+                    )
                     prompts_consumed += len(new_prompts)
 
                     #### Oversampling: fall back to missed_indices when dataloader exhausted ####
-                    if exhausted and not new_prompts and self._missed_indices:
+                    if exhausted and len(new_prompts) < num_replacements and self._missed_indices:
+                        remaining = num_replacements - len(new_prompts)
+                        fill_indices = list(self._missed_indices)[:remaining]
+                        for idx in fill_indices:
+                            new_ds_indices.append(idx)
+                            new_prompts.append(self._original_dataset.prompts[idx])
+                            new_labels.append(self._original_dataset.labels[idx])
+                        self._missed_indices -= set(fill_indices)
+                    elif exhausted and not new_prompts and self._missed_indices:
                         fallback_idx = self._missed_indices.pop()
                         new_ds_indices = [fallback_idx]
                         new_prompts = [self._original_dataset.prompts[fallback_idx]]

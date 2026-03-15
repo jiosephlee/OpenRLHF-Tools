@@ -201,6 +201,7 @@ class NaiveReplayBuffer(ABC):
         dynamic_batch: bool = False,
         adaptive_batch: bool = False,
         loss_type: str = "ppo",
+        legacy_loss_scaling: bool = False,
     ) -> None:
         super().__init__()
         self.sample_batch_size = sample_batch_size
@@ -209,6 +210,7 @@ class NaiveReplayBuffer(ABC):
         self.cpu_offload = cpu_offload
         self.packing_samples = packing_samples
         self.loss_type = loss_type
+        self.legacy_loss_scaling = legacy_loss_scaling
         self.target_device = torch.device(f"cuda:{torch.cuda.current_device()}")
         self.items: List[BufferItem] = []
         self.dynamic_batch = dynamic_batch
@@ -346,19 +348,25 @@ class NaiveReplayBuffer(ABC):
         #### end micro batch stats tracking ####
 
         #### Loss scaling ####
-        # PolicyLoss/Liger always returns a locally-meaned scalar (per-sequence
-        # or per-token).  loss_scale adjusts that local mean to a global mean:
-        #   loss_scale = local_count × world_size / global_count
-        # This undoes the local mean (× local_count), compensates for DeepSpeed's
-        # ÷world_size gradient averaging (× world_size), and applies the global
-        # mean (÷ global_count).  global_count is computed with a single
-        # all-reduce covering ALL microbatches per optimizer step.
         loss_scales = []
         optimizer_steps = []
-        world_size = dist.get_world_size()
 
-        if self.loss_type in ("ppo", "gspo", "sapo", "dr_grpo"):
+        if self.legacy_loss_scaling:
+            # Legacy (upstream-compatible): sequence-proportional, rank-local,
+            # no cross-rank sync, same formula for all loss types.
+            # Pairs with token_level_loss=True (flat token mean) in PolicyLoss.
+            for partitions in data_partitions:
+                sample_num = sum(len(partition) for partition in partitions)
+                loss_scale = [len(partition) / max(sample_num, 1) for partition in partitions]
+                optimizer_step = [0] * (len(partitions) - 1) + [1]
+                loss_scales.extend(loss_scale)
+                optimizer_steps.extend(optimizer_step)
+        elif self.loss_type in ("ppo", "gspo", "sapo", "dr_grpo"):
             # Sequence-level: loss_scale = B_mb × R / N_global_sequences
+            # Undoes the local mean (× local_count), compensates for DeepSpeed's
+            # ÷world_size gradient averaging (× world_size), and applies the global
+            # mean (÷ global_count).
+            world_size = dist.get_world_size()
             for partitions in data_partitions:
                 local_N = sum(len(partition) for partition in partitions)
                 global_N = torch.tensor(local_N, dtype=torch.float, device=torch.cuda.current_device())
@@ -371,6 +379,7 @@ class NaiveReplayBuffer(ABC):
         elif self.loss_type in ("dapo", "cispo"):
             # Token-level with global normalization:
             # loss_scale = tc_mb × R / T_global_tokens
+            world_size = dist.get_world_size()
             for partitions in data_partitions:
                 token_counts = []
                 for partition in partitions:
@@ -503,13 +512,20 @@ class NaiveReplayBuffer(ABC):
         #### end micro batch stats tracking ####
 
         #### Adaptive batch: loss scaling ####
-        # Same unified formula as setup_dynamic_batch — see comments there.
+        # Same logic as setup_dynamic_batch — see comments there.
         loss_scales = []
         optimizer_steps = []
-        world_size = dist.get_world_size()
 
-        if self.loss_type in ("ppo", "gspo", "sapo", "dr_grpo"):
-            # Sequence-level: loss_scale = B_mb × R / N_global_sequences
+        if self.legacy_loss_scaling:
+            # Legacy (upstream-compatible): sequence-proportional, rank-local.
+            for partitions in data_partitions:
+                sample_num = sum(len(partition) for partition in partitions)
+                loss_scale = [len(partition) / max(sample_num, 1) for partition in partitions]
+                optimizer_step = [0] * (len(partitions) - 1) + [1]
+                loss_scales.extend(loss_scale)
+                optimizer_steps.extend(optimizer_step)
+        elif self.loss_type in ("ppo", "gspo", "sapo", "dr_grpo"):
+            world_size = dist.get_world_size()
             for partitions in data_partitions:
                 local_N = sum(len(partition) for partition in partitions)
                 global_N = torch.tensor(local_N, dtype=torch.float, device=torch.cuda.current_device())
@@ -520,8 +536,7 @@ class NaiveReplayBuffer(ABC):
                 loss_scales.extend(loss_scale)
                 optimizer_steps.extend(optimizer_step)
         elif self.loss_type in ("dapo", "cispo"):
-            # Token-level with global normalization:
-            # loss_scale = tc_mb × R / T_global_tokens
+            world_size = dist.get_world_size()
             for partitions in data_partitions:
                 token_counts = []
                 for partition in partitions:
@@ -536,7 +551,6 @@ class NaiveReplayBuffer(ABC):
                 loss_scales.extend(loss_scale)
                 optimizer_steps.extend(optimizer_step)
         else:
-            # BNPO: token-level, rank-local only (no cross-rank normalization).
             for partitions in data_partitions:
                 token_counts = []
                 for partition in partitions:

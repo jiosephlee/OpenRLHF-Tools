@@ -1,9 +1,13 @@
 import heapq
+import json
+import math
+import os
 import time
+from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass, fields
-from datetime import timedelta
-from typing import Any, List, Optional, Tuple, Union
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import ray
 import torch
@@ -132,15 +136,7 @@ class Experience:
 
     @staticmethod
     def select(experiences: List["Experience"], fields: List[str]) -> List["Experience"]:
-        """Select specific fields from a list of Experience instances to create new Experience instances.
-
-        Args:
-            experiences: List of Experience instances
-            fields: List of field names to select
-
-        Returns:
-            A list of new Experience instances containing only the selected fields
-        """
+        """Select specific fields from a list of Experience instances to create new Experience instances."""
         new_experiences = []
         for exp in experiences:
             new_exp = Experience()
@@ -155,24 +151,31 @@ class Experience:
         """Merge a list of items into a single item.
         Recursively merge tensors, lists and dicts.
         For tensors, use zero_pad_sequences to merge sequences of different lengths.
-
-        Args:
-            items: List of items to merge
-            pad_value: Value used for padding tensors
         """
         if isinstance(items[0], torch.Tensor):
             return zero_pad_sequences(items, side="right", value=pad_value)
         elif isinstance(items[0], list):
             return sum(items, [])
         elif isinstance(items[0], dict):
-            result = {}
-            # Collect all values for each key
+            #### Sparse key handling: fill missing keys with zero-valued placeholders ####
+            all_keys: set = set()
             for d in items:
-                for key, value in d.items():
-                    if key not in result:
-                        result[key] = []
-                    result[key].append(value)
-            # Merge all values for each key at once
+                all_keys.update(d.keys())
+            sorted_keys = sorted(all_keys)
+            result = {key: [] for key in sorted_keys}
+            for d in items:
+                for key in sorted_keys:
+                    if key in d:
+                        result[key].append(d[key])
+                    else:
+                        _exemplar = next(dd[key] for dd in items if key in dd)
+                        if isinstance(_exemplar, torch.Tensor):
+                            result[key].append(torch.zeros_like(_exemplar))
+                        elif isinstance(_exemplar, (int, float)):
+                            result[key].append(type(_exemplar)(0))
+                        else:
+                            result[key].append(_exemplar)
+            #### end sparse key handling ####
             return {key: Experience._merge_item(values, pad_value) for key, values in result.items()}
         elif items[0] is None:
             return None
@@ -181,15 +184,7 @@ class Experience:
 
     @staticmethod
     def concat_experiences(experiences_list: List["Experience"], pad_token_id) -> "Experience":
-        """Concatenate multiple experiences into one large experience.
-
-        Args:
-            experiences_list: List of Experience to concatenate
-            pad_token_id: Token id used for padding sequences
-
-        Returns:
-            A new Experience instance containing all the concatenated data
-        """
+        """Concatenate multiple experiences into one large experience."""
         if not experiences_list:
             return Experience()
 
@@ -209,22 +204,25 @@ class Experience:
         return Experience(**result)
 
 
+#### Updated _collect_prompt_batch: returns dataset indices for replay tracking ####
 def _collect_prompt_batch(dataloader_iter, num_prompts: int):
     """Draw up to `num_prompts` items from the prompt dataloader."""
-    prompts, labels = [], []
+    indices, prompts, labels = [], [], []
     exhausted = False
 
     while len(prompts) < num_prompts:
         try:
-            _, batch_prompts, batch_labels = next(dataloader_iter)
+            batch_indices, _, batch_prompts, batch_labels = next(dataloader_iter)
             remaining = num_prompts - len(prompts)
+            indices.extend(batch_indices[:remaining])
             prompts.extend(batch_prompts[:remaining])
             labels.extend(batch_labels[:remaining])
         except StopIteration:
             exhausted = True
             break
 
-    return prompts, labels, exhausted
+    return indices, prompts, labels, exhausted
+#### end updated _collect_prompt_batch ####
 
 
 class SamplesGenerator:
@@ -247,8 +245,254 @@ class SamplesGenerator:
         self.prompts_dataloader = prompts_dataloader
         self.eval_dataloader = eval_dataloader
 
+        #### Runs directory and trace setup (L6, L7, L8) ####
+        run_name = getattr(self.args, "wandb_run_name", "run")
+        run_name = run_name.replace("/", "_")
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        self.runs_dir = os.path.join(project_root, "runs", run_name)
+        self.rollout_trace_run_dir = os.path.join(self.runs_dir, "traces")
+        os.makedirs(self.rollout_trace_run_dir, exist_ok=True)
+        logger.info(f"Rollout traces enabled at: {self.rollout_trace_run_dir}")
+
+        self.vllm_stats_dir = os.path.join(self.runs_dir, "vllm_stats")
+        os.makedirs(self.vllm_stats_dir, exist_ok=True)
+        self.last_vllm_stats: dict = {}
+        #### end runs directory and trace setup ####
+
+        #### Smart replay index tracking (for Phase 8) ####
+        self._replay_hard_indices: set = set()
+        self._replay_kept_indices: set = set()
+        self._discarded_easy_indices: set = set()
+        self._discarded_hard_indices: set = set()
+        #### end smart replay index tracking ####
+
+        #### Per-step filtering stats (L9, L10) ####
+        self._step_too_easy_count = 0
+        self._step_too_hard_count = 0
+        self._step_prompts_consumed = 0
+        self._episode_easy_count = 0
+        self._episode_hard_count = 0
+        #### end per-step filtering stats ####
+
+        #### Oversampling: missed indices tracking (L10) ####
+        self._missed_indices: set = set()
+        self._step_missed_count = 0
+        self._episode_missed_count = 0
+        self._original_dataset = prompts_dataloader.dataset if prompts_dataloader is not None else None
+        #### end oversampling ####
+
+    #### Trace helper methods (L6) ####
+    def _to_jsonable(self, value):
+        if isinstance(value, torch.Tensor):
+            return value.tolist()
+        if isinstance(value, dict):
+            return {k: self._to_jsonable(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._to_jsonable(v) for v in value]
+        return value
+
+    def _decode_trace(self, response: dict) -> dict:
+        """Decode observation_tokens into human-readable text sections."""
+        tokens = response.get("observation_tokens", [])
+        ranges = response.get("action_ranges", [])
+        if not tokens:
+            return {"raw_prompt": response.get("prompt", ""), "sections": []}
+
+        try:
+            text = self.tokenizer.decode(tokens, skip_special_tokens=False)
+        except Exception:
+            text = "<decode error>"
+
+        sections = []
+        prev_end = 0
+        for start, end in ranges:
+            if start > prev_end:
+                obs_text = self.tokenizer.decode(tokens[prev_end:start], skip_special_tokens=False)
+                label = "prompt" if prev_end == 0 else "observation"
+                sections.append({"type": label, "start": prev_end, "end": start, "text": obs_text})
+            action_text = self.tokenizer.decode(tokens[start:end], skip_special_tokens=False)
+            sections.append({"type": "action", "start": start, "end": end, "text": action_text})
+            prev_end = end
+        if prev_end < len(tokens):
+            trailing_text = self.tokenizer.decode(tokens[prev_end:], skip_special_tokens=False)
+            sections.append({"type": "trailing", "start": prev_end, "end": len(tokens), "text": trailing_text})
+
+        return {
+            "full_text": text,
+            "sections": sections,
+            "reward": response.get("reward"),
+            "scores": response.get("scores"),
+            "prompt": response.get("prompt", ""),
+            "label": response.get("label", ""),
+        }
+
+    def _strip_token_ids(self, trace: dict) -> dict:
+        """Remove token ID arrays from trace to save disk space."""
+        for key in ("observation_tokens", "token_ids", "prompt_token_ids"):
+            trace.pop(key, None)
+        return trace
+
+    def _write_step_trace(self, step_idx: int, traces: list):
+        """Write one rollout trace per step to disk (L6)."""
+        if not traces:
+            return
+        path = os.path.join(self.rollout_trace_run_dir, f"step{step_idx}.jsonl")
+        try:
+            with open(path, "w") as f:
+                for trace in traces[:1]:  # Only first trace per step
+                    decoded = self._decode_trace(trace)
+                    stripped = self._strip_token_ids(trace)
+                    record = {**stripped, "decoded": decoded}
+                    f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        except Exception as e:
+            logger.warning(f"Failed to write step trace: {e}")
+
+    def _write_eval_trace(self, step_idx: int, traces: list):
+        """Write eval trace to disk (L6)."""
+        if not traces:
+            return
+        path = os.path.join(self.rollout_trace_run_dir, f"eval_{step_idx}.json")
+        try:
+            decoded_traces = []
+            for trace in traces[:5]:  # Keep up to 5 eval traces
+                decoded = self._decode_trace(trace)
+                stripped = self._strip_token_ids(trace)
+                decoded_traces.append({**stripped, "decoded": decoded})
+            with open(path, "w") as f:
+                json.dump(decoded_traces, f, ensure_ascii=False, indent=2, default=str)
+        except Exception as e:
+            logger.warning(f"Failed to write eval trace: {e}")
+    #### end trace helper methods ####
+
+    #### vLLM stats collection methods (L5, L7, L8) ####
+    def _collect_vllm_engine_stats(self) -> dict:
+        """Collect scheduler stats from all vLLM engines."""
+        if not self.vllm_engines:
+            return {}
+
+        try:
+            refs = [engine.get_vllm_stats.remote() for engine in self.vllm_engines]
+            all_stats = ray.get(refs)
+        except Exception as e:
+            logger.warning(f"Failed to collect vLLM stats: {e}")
+            return {}
+
+        # Aggregate across engines
+        total_samples = sum(s.get("num_samples", 0) for s in all_stats)
+        if total_samples == 0:
+            return {"num_samples": 0}
+
+        kv_means = [s["kv_cache_usage_pct"]["mean"] for s in all_stats if s.get("num_samples", 0) > 0]
+        kv_maxes = [s["kv_cache_usage_pct"]["max"] for s in all_stats if s.get("num_samples", 0) > 0]
+        running_means = [s["num_running_reqs"]["mean"] for s in all_stats if s.get("num_samples", 0) > 0]
+        running_maxes = [s["num_running_reqs"]["max"] for s in all_stats if s.get("num_samples", 0) > 0]
+        waiting_means = [s["num_waiting_reqs"]["mean"] for s in all_stats if s.get("num_samples", 0) > 0]
+        waiting_maxes = [s["num_waiting_reqs"]["max"] for s in all_stats if s.get("num_samples", 0) > 0]
+        pc_rates = [s.get("prefix_cache_hit_rate", 0.0) for s in all_stats if s.get("num_samples", 0) > 0]
+
+        raw_samples = []
+        for s in all_stats:
+            raw_samples.extend(s.get("raw_samples", []))
+
+        return {
+            "num_samples": total_samples,
+            "kv_cache_usage_pct": {
+                "mean": round(sum(kv_means) / len(kv_means), 4) if kv_means else 0,
+                "max": round(max(kv_maxes), 4) if kv_maxes else 0,
+            },
+            "num_running_reqs": {
+                "mean": round(sum(running_means) / len(running_means), 2) if running_means else 0,
+                "max": max(running_maxes) if running_maxes else 0,
+            },
+            "num_waiting_reqs": {
+                "mean": round(sum(waiting_means) / len(waiting_means), 2) if waiting_means else 0,
+                "max": max(waiting_maxes) if waiting_maxes else 0,
+            },
+            "prefix_cache_hit_rate": round(sum(pc_rates) / len(pc_rates), 4) if pc_rates else 0,
+            "raw_samples": raw_samples,
+        }
+
+    def _compute_token_throughput(self, experiences: list, wall_time: float) -> dict:
+        """Compute token throughput from experiences."""
+        if not experiences or wall_time <= 0:
+            return {}
+        total_tokens = sum(int(e.info.get("total_length", torch.tensor([0])).sum().item()) for e in experiences)
+        response_tokens = sum(int(e.info.get("response_length", torch.tensor([0])).sum().item()) for e in experiences)
+        return {
+            "total_tokens": total_tokens,
+            "response_tokens": response_tokens,
+            "tokens_per_sec": round(total_tokens / wall_time, 1) if wall_time > 0 else 0,
+            "decode_tokens_per_sec": round(response_tokens / wall_time, 1) if wall_time > 0 else 0,
+        }
+
+    def _collect_and_write_vllm_stats(self, step_idx: int, experiences: list, wall_time: float, mode: str = "rollout"):
+        """Collect vLLM stats, write to disk, and store flat metrics for W&B (L7, L8)."""
+        engine_stats = self._collect_vllm_engine_stats()
+        throughput = self._compute_token_throughput(experiences, wall_time)
+
+        record = {
+            "step": step_idx,
+            "mode": mode,
+            "wall_time_sec": round(wall_time, 2),
+            "timestamp": datetime.now().isoformat(),
+            **engine_stats,
+            **throughput,
+        }
+        # Remove raw_samples from the summary record
+        raw_samples = record.pop("raw_samples", [])
+
+        # Write per-step summary
+        fname = "rollout_stats.jsonl" if mode == "rollout" else "eval_stats.jsonl"
+        try:
+            with open(os.path.join(self.vllm_stats_dir, fname), "a") as f:
+                f.write(json.dumps(record, default=str) + "\n")
+        except Exception as e:
+            logger.warning(f"Failed to write vLLM stats: {e}")
+
+        # Append raw scheduler timeseries
+        if raw_samples:
+            try:
+                with open(os.path.join(self.vllm_stats_dir, "scheduler_timeseries.jsonl"), "a") as f:
+                    for sample in raw_samples:
+                        f.write(json.dumps(sample, default=str) + "\n")
+            except Exception as e:
+                logger.warning(f"Failed to write scheduler timeseries: {e}")
+
+        # Store flat metrics for W&B logging
+        flat = {}
+        if engine_stats.get("num_samples", 0) > 0:
+            flat["vllm/kv_cache_usage_mean"] = engine_stats["kv_cache_usage_pct"]["mean"]
+            flat["vllm/kv_cache_usage_max"] = engine_stats["kv_cache_usage_pct"]["max"]
+            flat["vllm/num_running_reqs_mean"] = engine_stats["num_running_reqs"]["mean"]
+            flat["vllm/num_running_reqs_max"] = engine_stats["num_running_reqs"]["max"]
+            flat["vllm/num_waiting_reqs_mean"] = engine_stats["num_waiting_reqs"]["mean"]
+            flat["vllm/num_waiting_reqs_max"] = engine_stats["num_waiting_reqs"]["max"]
+            flat["vllm/prefix_cache_hit_rate"] = engine_stats["prefix_cache_hit_rate"]
+        if throughput:
+            flat["vllm/tokens_per_sec"] = throughput["tokens_per_sec"]
+            flat["vllm/decode_tokens_per_sec"] = throughput["decode_tokens_per_sec"]
+        self.last_vllm_stats = flat
+
+    def flush_timeseries_to_disk(self):
+        """Drain raw scheduler samples from engine actors to disk (L8)."""
+        if not self.vllm_engines:
+            return
+        try:
+            refs = [engine.get_and_flush_raw_samples.remote() for engine in self.vllm_engines]
+            all_samples = ray.get(refs)
+            samples = []
+            for engine_samples in all_samples:
+                samples.extend(engine_samples)
+            if samples:
+                with open(os.path.join(self.vllm_stats_dir, "scheduler_timeseries.jsonl"), "a") as f:
+                    for sample in samples:
+                        f.write(json.dumps(sample, default=str) + "\n")
+        except Exception as e:
+            logger.warning(f"Failed to flush timeseries: {e}")
+    #### end vLLM stats collection methods ####
+
     @torch.no_grad()
-    def generate_eval_samples(self, **generate_kwargs) -> Tuple[List[Experience], Optional[float], int, bool]:
+    def generate_eval_samples(self, **generate_kwargs) -> List[Experience]:
         if getattr(self, "_eval_dataloader_iter", None) is None:
             self._eval_dataloader_iter = iter(self.eval_dataloader)
 
@@ -256,12 +500,19 @@ class SamplesGenerator:
         if self.args.vllm_enable_sleep:
             batch_vllm_engine_call(self.vllm_engines, "wake_up")
 
-        experiences, prompts_consumed, exhausted = self._generate_vllm(
+        experiences, traces, prompts_consumed, exhausted = self._generate_vllm(
             dataloader_iter=self._eval_dataloader_iter,
             num_prompts=len(self.eval_dataloader),
             dynamic_filtering=False,
             **generate_kwargs,
         )
+
+        #### Write eval trace and collect stats (L6, L7) ####
+        trace_step = getattr(self, "_trace_step_idx", 0)
+        self._write_eval_trace(trace_step, traces)
+        gen_time = getattr(self, "_last_generation_wall_time", 0)
+        self._collect_and_write_vllm_stats(trace_step, experiences, gen_time, mode="eval")
+        #### end eval trace and stats ####
 
         # Put engines back to sleep when enabled.
         if self.args.vllm_enable_sleep:
@@ -271,26 +522,122 @@ class SamplesGenerator:
 
         return experiences
 
+    #### Smart replay index management ####
+    def get_replay_indices(self):
+        return self._replay_hard_indices, self._replay_kept_indices
+
+    def get_missed_indices(self):
+        return self._missed_indices
+
+    def clear_replay_indices(self):
+        self._replay_hard_indices.clear()
+        self._replay_kept_indices.clear()
+        self._discarded_easy_indices.clear()
+        self._discarded_hard_indices.clear()
+        self._missed_indices.clear()
+        self._episode_easy_count = 0
+        self._episode_hard_count = 0
+        self._episode_missed_count = 0
+
+    def save_discarded_indices(self, episode: int):
+        """Write filtering decisions per episode to disk (L12)."""
+        record = {
+            "episode": episode,
+            "too_easy": sorted(self._discarded_easy_indices),
+            "too_hard": sorted(self._discarded_hard_indices),
+            "missed": sorted(self._missed_indices),
+            "kept": sorted(self._replay_kept_indices),
+        }
+        path = os.path.join(self.runs_dir, f"discarded_indices_ep{episode}.json")
+        try:
+            with open(path, "w") as f:
+                json.dump(record, f)
+        except Exception as e:
+            logger.warning(f"Failed to write discarded indices: {e}")
+
+    @property
+    def step_too_easy_pct(self):
+        if self._step_prompts_consumed == 0:
+            return 0.0
+        return self._step_too_easy_count / self._step_prompts_consumed * 100
+
+    @property
+    def step_too_hard_pct(self):
+        if self._step_prompts_consumed == 0:
+            return 0.0
+        return self._step_too_hard_count / self._step_prompts_consumed * 100
+
+    @property
+    def step_missed_pct(self):
+        if self._step_prompts_consumed == 0:
+            return 0.0
+        return self._step_missed_count / self._step_prompts_consumed * 100
+
+    @property
+    def episode_filter_stats(self):
+        return {
+            "episode_too_easy": self._episode_easy_count,
+            "episode_too_hard": self._episode_hard_count,
+            "episode_missed": self._episode_missed_count,
+        }
+    #### end smart replay index management ####
+
     @torch.no_grad()
     def generate_samples(self, **generate_kwargs) -> Tuple[List[Experience], Optional[float], int, bool]:
         """Produce one batch and indicate if the dataloader is exhausted."""
         if getattr(self, "_dataloader_iter", None) is None:
             self._dataloader_iter = iter(self.prompts_dataloader)
+            #### Clear replay indices at start of new episode ####
+            if not generate_kwargs.pop("_skip_clear_replay", False):
+                self.clear_replay_indices()
+            #### end clear replay indices ####
+            self._trace_step_idx = 0
+
+        #### Reset per-step counters (L9, L10) ####
+        self._step_too_easy_count = 0
+        self._step_too_hard_count = 0
+        self._step_prompts_consumed = 0
+        self._step_missed_count = 0
+        #### end reset per-step counters ####
 
         # Wake sleeping vLLM engines before dispatching.
+        _wake_start = time.time()
         if self.args.vllm_enable_sleep:
             batch_vllm_engine_call(self.vllm_engines, "wake_up")
+        self._last_vllm_wake_sec = time.time() - _wake_start
 
-        experiences, prompts_consumed, exhausted = self._generate_vllm(
+        #### Oversampling ratio (L10) ####
+        oversample_ratio = generate_kwargs.pop("oversample_ratio", getattr(self.args, "oversample_ratio", 1.0))
+        #### end oversampling ratio ####
+
+        experiences, traces, prompts_consumed, exhausted = self._generate_vllm(
             dataloader_iter=self._dataloader_iter,
             num_prompts=self.args.rollout_batch_size,
             dynamic_filtering=self.args.dynamic_filtering,
+            trace_step_idx=self._trace_step_idx,
+            oversample_ratio=oversample_ratio,
             **generate_kwargs,
         )
+        self._step_prompts_consumed = prompts_consumed
+
+        #### Collect vLLM stats (L7) ####
+        gen_time = getattr(self, "_last_generation_wall_time", 0)
+        self._collect_and_write_vllm_stats(self._trace_step_idx, experiences, gen_time, mode="rollout")
+        #### end collect stats ####
+
+        #### GC collect on engines ####
+        _gc_start = time.time()
+        if self.vllm_engines:
+            batch_vllm_engine_call(self.vllm_engines, "gc_collect")
+        self._last_vllm_gc_collect_sec = time.time() - _gc_start
+        #### end GC collect ####
 
         # Put engines back to sleep when enabled.
+        _sleep_start = time.time()
         if self.args.vllm_enable_sleep:
-            batch_vllm_engine_call(self.vllm_engines, "sleep")
+            sleep_level = getattr(self.args, "vllm_sleep_level", 1)
+            batch_vllm_engine_call(self.vllm_engines, "sleep", level=sleep_level)
+        self._last_vllm_sleep_sec = time.time() - _sleep_start
 
         filter_pass_rate = None
         if self.args.dynamic_filtering and prompts_consumed:
@@ -300,68 +647,172 @@ class SamplesGenerator:
             self._dataloader_iter = None
             logger.info("Prompt dataloader is exhausted.")
 
+        self._trace_step_idx += 1
+
         return experiences, filter_pass_rate, prompts_consumed, exhausted
 
     def _generate_vllm(
         self, dataloader_iter, num_prompts: int, dynamic_filtering, **generate_kwargs
-    ) -> Tuple[List[Experience], int, bool]:
-        """Generate a batch of Experiences with optional reward filtering."""
+    ) -> Tuple[List[Experience], list, int, bool]:
+        """Generate a batch of Experiences with optional reward filtering and oversampling."""
         prompts_consumed = 0
-        prompts, labels, exhausted = _collect_prompt_batch(dataloader_iter, num_prompts)
-        # Stop early if the prompt source is fully consumed.
-        if exhausted:
-            return [], prompts_consumed, exhausted
 
-        pending_refs = self._dispatch_prompts_to_vllm(prompts, labels, **generate_kwargs)
+        #### Oversampling dispatch (L10) ####
+        oversample_ratio = generate_kwargs.pop("oversample_ratio", 1.0)
+        oversampled_count = math.ceil(num_prompts * oversample_ratio) if dynamic_filtering else num_prompts
+        #### end oversampling dispatch ####
+
+        trace_step_idx = generate_kwargs.pop("trace_step_idx", 0)
+
+        #### Set global step on engines for time-series labeling ####
+        if self.vllm_engines:
+            for engine in self.vllm_engines:
+                engine.set_current_global_step.remote(trace_step_idx)
+        #### end set global step ####
+
+        generation_start_time = time.time()
+
+        ds_indices, prompts, labels, exhausted = _collect_prompt_batch(dataloader_iter, oversampled_count)
+        # Stop early if the prompt source is fully consumed.
+        if exhausted and len(prompts) < num_prompts:
+            return [], [], prompts_consumed, exhausted
+
+        pending_result = self._dispatch_prompts_to_vllm(prompts, labels, **generate_kwargs)
         prompts_consumed += len(prompts)
 
+        # Build ref→engine and ref→dataset_index mappings
+        ref_to_engine = {}
+        ref_to_dataset_idx = {}
+        pending_refs = []
+        for ref, engine_idx in pending_result:
+            pending_refs.append(ref)
+            ref_to_engine[ref] = engine_idx
+            if ds_indices:
+                ref_to_dataset_idx[ref] = ds_indices[len(pending_refs) - 1] if len(pending_refs) - 1 < len(ds_indices) else None
+
+        engine_pending = defaultdict(int)
+        for ref in pending_refs:
+            engine_pending[ref_to_engine[ref]] += 1
+
+        smart_replay = getattr(self.args, "smart_replay", False)
+
         accepted_experiences: List[Experience] = []
+        accepted_prompt_groups = 0
+        episode_traces: list = []
         pbar = tqdm(range(num_prompts), desc="Generate samples")
 
         while pending_refs:
             ready_refs, pending_refs = ray.wait(pending_refs, num_returns=1, timeout=10.0)
             for ref in ready_refs:
-                # Build Experience objects for each vLLM response returned from this worker.
-                experiences = [
-                    self._process_response_into_experience(response, **generate_kwargs) for response in ray.get(ref)
-                ]
+                engine_idx = ref_to_engine.get(ref, 0)
+                engine_pending[engine_idx] = max(0, engine_pending[engine_idx] - 1)
+                ds_idx = ref_to_dataset_idx.get(ref)
+
+                try:
+                    responses = ray.get(ref)
+                except Exception as e:
+                    logger.warning(f"Failed to get response: {e}")
+                    continue
+
+                # Save first trace for this step
+                if responses and not episode_traces:
+                    episode_traces.append(responses[0])
+
+                # Build Experience objects for each vLLM response
+                experiences = []
+                for response in responses:
+                    exp = self._process_response_into_experience(response, **generate_kwargs)
+                    if exp is not None:
+                        experiences.append(exp)
 
                 # Drop experiences if the average score falls outside the allowed range.
-                if dynamic_filtering and all(e.scores is not None for e in experiences):
+                if dynamic_filtering and all(e.scores is not None for e in experiences) and experiences:
                     scores = [e.scores[0].item() for e in experiences]
                     avg_reward = sum(scores) / len(scores)
                     min_r, max_r = self.args.dynamic_filtering_reward_range
-                    if not (min_r < avg_reward < max_r):
-                        logger.info(
-                            f"Filtered out: avg_reward={avg_reward:.2f}, threshold=({min_r:.2f}, {max_r:.2f}), scores={[f'{s:.2f}' for s in scores]}"
-                        )
+
+                    #### Split too_easy vs too_hard with telemetry (L9) ####
+                    if avg_reward >= max_r:
+                        self._step_too_easy_count += 1
+                        self._episode_easy_count += 1
+                        if smart_replay and ds_idx is not None:
+                            self._discarded_easy_indices.add(ds_idx)
                         experiences = []
+                    elif avg_reward <= min_r:
+                        self._step_too_hard_count += 1
+                        self._episode_hard_count += 1
+                        if smart_replay and ds_idx is not None:
+                            self._replay_hard_indices.add(ds_idx)
+                            self._discarded_hard_indices.add(ds_idx)
+                        experiences = []
+                    else:
+                        if smart_replay and ds_idx is not None:
+                            self._replay_kept_indices.add(ds_idx)
+                    #### end split too_easy vs too_hard ####
 
                 # Accept experiences and stop once enough have been gathered.
                 if experiences:
                     accepted_experiences.extend(experiences)
+                    accepted_prompt_groups += 1
                     pbar.set_postfix({"prompts_consumed": prompts_consumed})
                     pbar.update()
 
-                # If rejected, request a new prompt to keep filling the batch.
-                else:
-                    # Pull another prompt when the current one fails filtering.
-                    new_prompts, new_labels, exhausted = _collect_prompt_batch(dataloader_iter, 1)
-                    prompts_consumed += len(new_prompts)
-                    # Cancel outstanding work if the dataloader is drained.
-                    if exhausted:
+                    #### Early termination when oversampled (L10) ####
+                    if accepted_prompt_groups >= num_prompts and oversample_ratio > 1.0:
                         for remaining_ref in pending_refs:
-                            ray.cancel(remaining_ref)
-                        return [], prompts_consumed, True
-                    # Otherwise dispatch the new prompt to keep filling the queue.
-                    else:
-                        new_refs = self._dispatch_prompts_to_vllm(new_prompts, new_labels, **generate_kwargs)
-                        pending_refs.extend(new_refs)
+                            try:
+                                ray.cancel(remaining_ref, force=False)
+                            except Exception:
+                                pass
+                            rem_ds_idx = ref_to_dataset_idx.get(remaining_ref)
+                            if rem_ds_idx is not None:
+                                self._missed_indices.add(rem_ds_idx)
+                                self._step_missed_count += 1
+                                self._episode_missed_count += 1
+                        pending_refs = []
+                        break
+                    #### end early termination ####
 
-        return accepted_experiences, prompts_consumed, exhausted
+                # If rejected, request a new prompt to keep filling the batch.
+                elif not exhausted:
+                    replace_ratio = getattr(self.args, "replace_discarded_prompts_ratio", 1.0)
+                    if replace_ratio > 0:
+                        new_ds_indices, new_prompts, new_labels, exhausted = _collect_prompt_batch(dataloader_iter, 1)
+                        prompts_consumed += len(new_prompts)
+                        if exhausted and not new_prompts:
+                            continue
+                        if new_prompts:
+                            new_result = self._dispatch_prompts_to_vllm(new_prompts, new_labels, **generate_kwargs)
+                            for new_ref, new_engine_idx in new_result:
+                                pending_refs.append(new_ref)
+                                ref_to_engine[new_ref] = new_engine_idx
+                                if new_ds_indices:
+                                    ref_to_dataset_idx[new_ref] = new_ds_indices[0]
+                                engine_pending[new_engine_idx] += 1
 
-    def _dispatch_prompts_to_vllm(self, prompts: List[str], labels: List[str], **generate_kwargs) -> List:
-        """Send prompts to rollout executors and return Ray object refs."""
+        pbar.close()
+
+        #### Write step trace (L6) ####
+        self._write_step_trace(trace_step_idx, episode_traces)
+        #### end write step trace ####
+
+        self._last_generation_wall_time = time.time() - generation_start_time
+
+        #### Smart replay logging ####
+        if smart_replay and self.strategy.is_rank_0():
+            logger.info(
+                f"[Step {trace_step_idx}] Smart replay: "
+                f"accepted={accepted_prompt_groups}, "
+                f"too_easy={self._step_too_easy_count}, "
+                f"too_hard={self._step_too_hard_count}, "
+                f"missed={self._step_missed_count}"
+            )
+        #### end smart replay logging ####
+
+        return accepted_experiences, episode_traces, prompts_consumed, exhausted
+
+    def _dispatch_prompts_to_vllm(self, prompts: List[str], labels: List[str], **generate_kwargs) -> List[Tuple]:
+        """Send prompts to rollout executors and return (ref, engine_idx) tuples."""
         sampling_params = SamplingParams(
             temperature=generate_kwargs.get("temperature", 1.0),
             top_p=generate_kwargs.get("top_p", 1.0),
@@ -372,6 +823,7 @@ class SamplesGenerator:
             logprobs=1 if self.args.enable_vllm_is_correction else None,
         )
         truncate_length = generate_kwargs.get("prompt_max_len", 1024) + generate_kwargs.get("max_new_tokens", 1024)
+        n_samples_per_prompt = generate_kwargs.get("n_samples_per_prompt", self.args.n_samples_per_prompt)
 
         # Snapshot current pending rollout counts to balance upcoming work.
         pending_counts = ray.get([engine.get_num_unfinished_requests.remote() for engine in self.vllm_engines])
@@ -383,11 +835,10 @@ class SamplesGenerator:
         for _ in prompts:
             current_load, engine_idx = heapq.heappop(engine_heap)
             engine_indices.append(engine_idx)
-            heapq.heappush(engine_heap, (current_load + self.args.n_samples_per_prompt, engine_idx))
+            heapq.heappush(engine_heap, (current_load + n_samples_per_prompt, engine_idx))
 
         refs = []
         for idx, (prompt, label) in enumerate(zip(prompts, labels)):
-            # Spread work across engines/workers in load-aware order.
             llm_engine = self.vllm_engines[engine_indices[idx]]
             ref = llm_engine.generate_responses.remote(
                 prompt=prompt,
@@ -395,13 +846,13 @@ class SamplesGenerator:
                 sampling_params=sampling_params,
                 max_length=truncate_length,
                 hf_tokenizer=self.tokenizer,
-                num_samples=self.args.n_samples_per_prompt,
+                num_samples=n_samples_per_prompt,
             )
-            refs.append(ref)
+            refs.append((ref, engine_indices[idx]))
 
         return refs
 
-    def _process_response_into_experience(self, response, **generate_kwargs) -> Experience:
+    def _process_response_into_experience(self, response, **generate_kwargs) -> Optional[Experience]:
         """Turn a single vLLM response into an Experience."""
         truncate_length = generate_kwargs.get("prompt_max_len", 1024) + generate_kwargs.get("max_new_tokens", 1024)
 
@@ -422,6 +873,18 @@ class SamplesGenerator:
         sequences = sequences[:truncate_length].to("cpu")
         attention_mask = attention_mask[:truncate_length].to("cpu")
         action_mask = action_mask[1:truncate_length].to("cpu")
+
+        #### Zero action token guard ####
+        action_tokens = action_mask.sum().item()
+        if action_tokens == 0:
+            prompt_preview = response.get("prompt", "")[:100]
+            logger.warning(
+                f"Skipping experience with 0 action tokens (would cause NaN). "
+                f"seq_len={len(tokenized_observation)}, ranges={tokenized_ranges}, "
+                f"prompt={prompt_preview!r}"
+            )
+            return None
+        #### end zero action token guard ####
 
         # Align rollout logprobs with the truncated action span.
         if response["rollout_log_probs"] is not None:
@@ -507,15 +970,55 @@ class RemoteExperienceMaker:
                 // self.args.ring_attn_size
                 // self.args.ds_tensor_parallel_size
             )
-            minimum_batch_num = get_minimum_num_micro_batch_size(
-                total_lengths,
-                self.args.rollout_max_tokens_per_gpu,
-                self.args.ring_attn_size,
-                self.args.ds_tensor_parallel_size,
-            )
-            minimum_batch_num = minimum_batch_num // effective_actor_num * effective_actor_num
-            num_batch = max(minimum_batch_num, effective_actor_num)
-            batch_indexes = get_seqlen_balanced_partitions(total_lengths, num_batch, False)
+
+            #### Adaptive batch: greedy bin-packing by descending length ####
+            if getattr(self.args, "use_adaptive_batch", False):
+                max_tokens = self.args.train_max_tokens_per_gpu
+                sorted_indices = sorted(range(len(total_lengths)), key=lambda i: total_lengths[i], reverse=True)
+                partitions = []
+                partition_sums = []
+
+                for idx in sorted_indices:
+                    length = total_lengths[idx]
+                    placed = False
+                    for p_idx in range(len(partitions)):
+                        if partition_sums[p_idx] + length <= max_tokens:
+                            partitions[p_idx].append(idx)
+                            partition_sums[p_idx] += length
+                            placed = True
+                            break
+                    if not placed:
+                        partitions.append([idx])
+                        partition_sums.append(length)
+
+                # Ensure partition count is a multiple of effective_actor_num
+                while len(partitions) % effective_actor_num != 0:
+                    biggest = max(range(len(partitions)), key=lambda i: len(partitions[i]))
+                    if len(partitions[biggest]) < 2:
+                        break
+                    mid = len(partitions[biggest]) // 2
+                    left = partitions[biggest][:mid]
+                    right = partitions[biggest][mid:]
+                    partitions[biggest] = left
+                    partition_sums[biggest] = sum(total_lengths[i] for i in left)
+                    partitions.append(right)
+                    partition_sums.append(sum(total_lengths[i] for i in right))
+
+                batch_indexes = partitions
+            #### end adaptive batch ####
+            else:
+                minimum_batch_num = get_minimum_num_micro_batch_size(
+                    total_lengths,
+                    self.args.rollout_max_tokens_per_gpu,
+                    self.args.ring_attn_size,
+                    self.args.ds_tensor_parallel_size,
+                )
+                #### Ceiling fix: use math.ceil to prevent 0-batch partitions ####
+                minimum_batch_num = math.ceil(minimum_batch_num / effective_actor_num) * effective_actor_num
+                #### end ceiling fix ####
+                num_batch = max(minimum_batch_num, effective_actor_num)
+                batch_indexes = get_seqlen_balanced_partitions(total_lengths, num_batch, False)
+
             for micro_index in batch_indexes:
                 micro_batch = [rollout_samples[idx] for idx in micro_index]
                 concat_samples = Experience.concat_experiences(micro_batch, self.tokenizer.pad_token_id)
@@ -554,13 +1057,12 @@ class RemoteExperienceMaker:
         Turn samples into experience by calculating logprobs, values, rewards, and kl divergence.
         """
         start_time = time.time()
-        logger.info(f"🚀 Starting experience making with {sum([len(s.sequences) for s in samples_list])} samples")
+        logger.info(f"Starting experience making with {sum([len(s.sequences) for s in samples_list])} samples")
 
         args = self.strategy.args
         device = "cpu"
 
         # Extract all information from samples in one pass
-        # Convert samples into lists of tensors and metadata for batch processing
         sequences_list = [s.sequences for s in samples_list]
         attention_mask_list = [s.attention_mask for s in samples_list]
         action_mask_list = [s.action_mask for s in samples_list]
@@ -570,7 +1072,6 @@ class RemoteExperienceMaker:
         if use_reward_model:
             if self.reward_model_group is None:
                 raise ValueError("reward_model_group is required when rewards are not precomputed")
-            # Batch call reward model
             r_refs = self.reward_model_group.async_run_method_batch(
                 method_name="forward",
                 sequences=sequences_list,
@@ -634,17 +1135,18 @@ class RemoteExperienceMaker:
             )
 
         # Wait for all remote calls to complete and flatten the results
-        # Note: the results duplicated ring_attn_size * ds_tensor_parallel_size times
-        # This is because the actors in ring group and tp group will return the same output
         duplicate_factor = args.ring_attn_size * args.ds_tensor_parallel_size
         action_log_probs_list = sum(ray.get(action_log_probs_ref)[::duplicate_factor], [])
+        del action_log_probs_ref
         base_action_log_probs_list = sum(ray.get(base_action_log_probs_ref)[::duplicate_factor], [])
+        del base_action_log_probs_ref
         value_list = sum(ray.get(value_ref)[::duplicate_factor], [])
+        del value_ref
 
         # Process rewards based on source
         if use_reward_model:
-            # Reward Model
             rewards_list = sum(ray.get(r_refs)[::duplicate_factor], [])
+            del r_refs
             for i, samples in enumerate(samples_list):
                 samples.rewards = rewards_list[i]
                 samples.info["reward"] = rewards_list[i]
@@ -684,7 +1186,7 @@ class RemoteExperienceMaker:
         end_time = time.time()
         duration = end_time - start_time
         time_str = str(timedelta(seconds=duration)).split(".")[0]
-        logger.info(f"✨ Experience making completed in {time_str}")
+        logger.info(f"Experience making completed in {time_str}")
         return samples_list
 
     @torch.no_grad()
@@ -693,13 +1195,6 @@ class RemoteExperienceMaker:
     ) -> Tuple[List[Experience], List[torch.Tensor]]:
         """
         Process experiences, this can be used to filter out some experiences or do some processing on the rewards.
-        Example, use_dynamic_batch
-            >>> rewards: [0, 1, 0.5, 1], indices: [1, 2, 0, 3], n_samples_per_prompt: 2
-            >>> sorted rewards: [0,5, 0, 1, 1], reward shaping: [0.25, 0.25, 1, 1]
-            >>> map back: [0.25, 1, 0.25, 1]
-        Output:
-        - experiences: List of Experience
-        - rewards: List of rewards
         """
         args = self.strategy.args
 
@@ -708,7 +1203,6 @@ class RemoteExperienceMaker:
 
         # get rewards from experiences
         exp_len = [len(experience.index) for experience in experiences]
-        # indices is an identity mapping when not using dynamic batch; otherwise, it maps back to the original indices after rearrange samples
         indices = torch.tensor(sum([experience.index for experience in experiences], []))
         raw_rewards = torch.cat([experience.rewards for experience in experiences], dim=0)
         rewards = torch.empty_like(raw_rewards)
@@ -729,8 +1223,6 @@ class RemoteExperienceMaker:
             baseline = (rewards.sum(-1, keepdim=True) - rewards) / (args.n_samples_per_prompt - 1)
             rewards = rewards - baseline
         elif args.advantage_estimator in ["reinforce_baseline", "dr_grpo"]:
-            # REINFORCE++-baseline and Dr. GRPO removed the `/std` in GRPO as `/ std` is not needed in RL variance reduction theory.
-            # And `k3 KL` has a larger variance than `k1 KL` under a categorical distribution.
             rewards = rewards - rewards.mean(-1, keepdim=True)
         elif args.advantage_estimator == "group_norm":
             rewards = (rewards - rewards.mean(-1, keepdim=True)) / (rewards.std(-1, keepdim=True) + 1e-9)
@@ -863,15 +1355,6 @@ class RemoteExperienceMaker:
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Function that computes advantages and returns from rewards using REINFORCE.
-        REINFORCE uses cumulative returns without the GAE (Generalized Advantage Estimation).
-
-        Input:
-        - rewards: Tensor of shape (batch_size, response_size)
-        - action_mask: Tensor of shape (batch_size, response_size), binary mask
-        - gamma: discount factor
-
-        Output:
-        - returns: Tensor of shape (batch_size, response_size)
         """
         response_length = rewards.size(1)
         returns = torch.zeros_like(rewards)

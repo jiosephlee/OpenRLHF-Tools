@@ -586,6 +586,15 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dynamic_filtering_reward_range", nargs=2, default=(0, 1), type=float, help="Dynamic filtering rewards range"
     )
+    #### Oversampling with early termination (L10) ####
+    parser.add_argument(
+        "--oversample_ratio",
+        type=float,
+        default=1.0,
+        help="Dispatch oversample_ratio * rollout_batch_size prompts; cancel stragglers via ray.cancel() "
+        "once rollout_batch_size accepted. Requires --dynamic_filtering.",
+    )
+    #### end oversampling ####
 
     # TensorBoard parameters
     parser.add_argument("--use_tensorboard", type=str, default=None, help="TensorBoard logging path")

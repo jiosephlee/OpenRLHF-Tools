@@ -461,6 +461,7 @@ class LLMRayActor:
             pass  # non-Linux or musl libc
     #### end GC collect ####
 
+    #### Generate responses with log_trajectory support ####
     async def generate_responses(
         self,
         prompt: str,
@@ -469,6 +470,7 @@ class LLMRayActor:
         max_length: int,
         hf_tokenizer,
         num_samples: int = 1,
+        log_trajectory: bool = False,
     ):
         """Generate N samples for a single prompt."""
         tasks = [
@@ -479,8 +481,9 @@ class LLMRayActor:
                 max_length=max_length,
                 hf_tokenizer=hf_tokenizer,
                 llm_engine=self,
+                log_trajectory=log_trajectory and (i == 0),
             )
-            for _ in range(num_samples)
+            for i in range(num_samples)
         ]
         return await asyncio.gather(*tasks)
 

@@ -110,6 +110,9 @@ from tools.RDKit_tools import (
 from tools.AccFG import AccFG_OPENAI_TOOLS, cached_describe_high_level_fg_fragments
 from tools.standardize_tools import STANDARDIZE_OPENAI_TOOLS, remove_salts
 
+# PubMed search (no external deps — stdlib only)
+from openrlhf.utils.pubmed_tool import PUBMED_OPENAI_TOOLS, PUBMED_CALLABLES
+
 # Optional: ePSA (may fail if freesasa not installed)
 try:
     from tools.ePSA_3D import get_3d_exposed_polar_surface, SASA_OPENAI_TOOLS
@@ -237,7 +240,7 @@ def _filter_callables(callables: Dict[str, Callable], *, haydn_passthrough: bool
 # ---------------------------------------------------------------------------
 # Version schemas (incremental)
 # ---------------------------------------------------------------------------
-_V1_SCHEMAS: List[Dict[str, Any]] = _filter_schemas(RDKIT_BASIC_OPENAI_TOOLS + AccFG_OPENAI_TOOLS)
+_V1_SCHEMAS: List[Dict[str, Any]] = _filter_schemas(RDKIT_BASIC_OPENAI_TOOLS + AccFG_OPENAI_TOOLS + PUBMED_OPENAI_TOOLS)
 _V2_SCHEMAS: List[Dict[str, Any]] = _V1_SCHEMAS + _filter_schemas(STANDARDIZE_OPENAI_TOOLS)
 
 _V3_EXTRA_SCHEMAS: List[Dict[str, Any]] = []
@@ -272,7 +275,7 @@ _V4_SCHEMAS: List[Dict[str, Any]] = _V2_SCHEMAS + _filter_schemas(
 # ---------------------------------------------------------------------------
 # Version callables (incremental)
 # ---------------------------------------------------------------------------
-_V1_CALLABLES: Dict[str, Callable] = _filter_callables(_RDKIT_ACCFG_CALLABLES)
+_V1_CALLABLES: Dict[str, Callable] = _filter_callables({**_RDKIT_ACCFG_CALLABLES, **PUBMED_CALLABLES})
 
 _V2_CALLABLES: Dict[str, Callable] = _filter_callables({**_V1_CALLABLES, "remove_salts": remove_salts})
 

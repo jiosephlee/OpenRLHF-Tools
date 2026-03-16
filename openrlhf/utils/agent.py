@@ -1,4 +1,5 @@
 import asyncio
+import os
 from abc import ABC, abstractmethod
 from copy import deepcopy
 
@@ -8,10 +9,12 @@ from openrlhf.utils.logging_utils import init_logger
 
 logger = init_logger(__name__)
 
+_DEBUG_TRACES = os.environ.get("DEBUG_TRACES", "0") == "1"
+
 
 class AgentExecutorBase(ABC):
     @abstractmethod
-    async def execute(self, prompt, label, sampling_params, max_length: int, hf_tokenizer, llm_engine):
+    async def execute(self, prompt, label, sampling_params, max_length: int, hf_tokenizer, llm_engine, **kwargs):
         raise NotImplementedError("AgentExecutorBase.execute is not implemented")
 
 
@@ -28,19 +31,24 @@ class AgentInstanceBase(ABC):
         raise NotImplementedError("AgentInstance.step is not implemented")
 
 
+#### Multi-turn agent executor with length penalty, format reward cap, and debug traces ####
 class MultiTurnAgentExecutor(AgentExecutorBase):
-    def __init__(self, agent_instance_cls):
+    def __init__(self, agent_instance_cls, length_penalty_max_length: int = 0, **agent_kwargs):
         assert issubclass(agent_instance_cls, AgentInstanceBase), "AgentInstance must inherit from AgentInstanceBase"
         self.agent_instance_cls = agent_instance_cls
+        self.length_penalty_max_length = length_penalty_max_length
+        self._agent_kwargs = agent_kwargs
 
-    async def execute(self, prompt, label, sampling_params, max_length: int, hf_tokenizer, llm_engine):
+    async def execute(self, prompt, label, sampling_params, max_length: int, hf_tokenizer, llm_engine, log_trajectory: bool = False):
         # Treat each AgentInstance as an isolated environment; bind every prompt to its own independent instance
-        agent_instance = self.agent_instance_cls()
-
+        agent_instance = self.agent_instance_cls(hf_tokenizer=hf_tokenizer, **self._agent_kwargs)
         # Initialize with reset function
         initial_states = {"observation": prompt, "label": label}
         reset_result = await agent_instance.reset(initial_states)
         observation_text = reset_result["observation"]
+        if _DEBUG_TRACES and log_trajectory:
+            obs_preview = observation_text.replace("\n", "\\n")[:200] + " ... " + observation_text.replace("\n", "\\n")[-200:]
+            print(f"[mt] initial state observation={obs_preview!r} label={label!r}", flush=True)
 
         # Tokenize the initial observation
         current_obs_tokens = hf_tokenizer(observation_text, add_special_tokens=False, return_tensors="pt")[
@@ -64,14 +72,16 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
         total_reward = 0
         final_scores = 0
         extra_logs = {}
-
         if sampling_params.logprobs is not None:
             rollout_log_probs = [0.0] * len(current_obs_tokens)
         else:
             rollout_log_probs = None
 
         # Execute multiple steps of interaction
+        turn = 0
+        episode_log_emitted = False
         while True:
+            turn += 1
             # Next sampling budget
             sampling_params.max_tokens = max_length - len(current_obs_tokens)
             # No budget to generate, break
@@ -79,9 +89,13 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
                 break
 
             # Generate response asynchronously (input and output are token ids)
-            request_output = await llm_engine.generate(current_obs_tokens, deepcopy(sampling_params))
-            action_tokens = request_output.outputs[0].token_ids
-            action_text = request_output.outputs[0].text
+            try:
+                request_output = await llm_engine.generate(current_obs_tokens, deepcopy(sampling_params))
+                action_tokens = request_output.outputs[0].token_ids
+                action_text = request_output.outputs[0].text
+            except Exception as e:
+                logger.error(f"[MultiTurnAgent] vLLM generation failed or aborted: {e}")
+                break
 
             # Record action range in token space
             action_start = len(current_obs_tokens)
@@ -92,6 +106,7 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
             states = {
                 "observation_text": observation_text,
                 "action_text": action_text,
+                "action_token_ids": action_tokens,
                 "label": label,
                 "sampling_params": sampling_params,
             }
@@ -101,17 +116,46 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
             final_scores = step_result.get("scores", total_reward)
             environment_feedback_text = step_result["environment_feedback"]
             done = step_result["done"]
-            extra_logs = step_result.get("extra_logs", {})
+            # Accumulate extra_logs across turns (sum numeric values,
+            # except keys ending in _max_call which use max).
+            step_extra = step_result.get("extra_logs", {})
+            for k, v in step_extra.items():
+                if isinstance(v, (int, float)):
+                    if k.endswith("_max_call"):
+                        extra_logs[k] = max(extra_logs.get(k, 0), v)
+                    else:
+                        extra_logs[k] = extra_logs.get(k, 0) + v
+                else:
+                    extra_logs[k] = v
+            if _DEBUG_TRACES and log_trajectory:
+                tool_count = extra_logs.get("tool_call_count", 0)
+                if done:
+                    print(f"[mt] t={turn} done", flush=True)
+                else:
+                    print(f"[mt] t={turn} +{tool_count} tool(s) →", flush=True)
+                if not episode_log_emitted:
+                    action_flat = action_text.replace("\n", "\\n")
+                    action_head = action_flat[:200]
+                    action_tail = action_flat[-200:]
+                    feedback_preview = environment_feedback_text.replace("\n", "\\n")[:120]
+                    print(f"[mt] t={turn} len={len(action_text)} head={action_head!r}", flush=True)
+                    print(f"[mt] t={turn} tail={action_tail!r} env={feedback_preview!r}", flush=True)
+                    episode_log_emitted = True
 
             # Concatenate observation, action, and environment_feedback, then tokenize
             observation_text = observation_text + action_text + environment_feedback_text
-            current_obs_tokens = (
-                current_obs_tokens
-                + action_tokens
-                + hf_tokenizer(environment_feedback_text, add_special_tokens=False, return_tensors="pt")["input_ids"][
-                    0
-                ].tolist()
-            )
+
+            # Use canonical token IDs when available (avoids lossy text→tokenize
+            # round-trip for special tokens like harmony <|start|>, <|end|>).
+            feedback_token_ids = step_result.get("environment_feedback_token_ids")
+            if feedback_token_ids is not None:
+                feedback_tokens = feedback_token_ids
+            else:
+                feedback_tokens = hf_tokenizer(
+                    environment_feedback_text, add_special_tokens=False, return_tensors="pt"
+                )["input_ids"][0].tolist()
+
+            current_obs_tokens = current_obs_tokens + action_tokens + feedback_tokens
 
             # Calculate rollout log probs
             if sampling_params.logprobs is not None:
@@ -128,6 +172,31 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
             if done:
                 break
 
+        # Compute per-call average from totals (sum-based accumulation
+        # of per-turn averages would be meaningless).
+        total_calls = extra_logs.get("tool_call_count", 0)
+        if total_calls > 0 and "tool_time_total" in extra_logs:
+            extra_logs["tool_time_avg"] = extra_logs["tool_time_total"] / total_calls
+
+        # Cap the total format reward to 0.01 to prevent linear buildup.
+        if "format_reward" in extra_logs:
+            format_reward = extra_logs["format_reward"]
+            if format_reward > 0.01:
+                excess = format_reward - 0.01
+                total_reward -= excess
+                extra_logs["format_reward"] = 0.01
+
+        # Soft length penalty: linearly scale penalty from 0 at sequence length 8192 to 1 at length_penalty_max_length
+        if self.length_penalty_max_length > 0:
+            total_gen_len = sum(end - start for start, end in action_ranges)
+            if total_gen_len > 8192:
+                penalty = 0.1 * (total_gen_len - 8192) / max(1, self.length_penalty_max_length - 8192)
+                extra_logs["length_penalty"] = penalty
+                if total_reward > 0:
+                    total_reward = max(0.0, total_reward - penalty)
+                    if isinstance(final_scores, (int, float)):
+                        final_scores = max(0.0, final_scores - penalty)
+
         # Store the final response when agent execution is complete
         final_response = {
             "prompt": prompt,
@@ -140,14 +209,17 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
             "extra_logs": extra_logs,
         }
         return final_response
+#### end multi-turn agent executor ####
 
 
+#### Single-turn agent executor with length penalty ####
 class SingleTurnAgentExecutor(AgentExecutorBase):
     """Single-turn agent executor with optional reward post-processing."""
 
-    def __init__(self, remote_rm_url=None):
+    def __init__(self, remote_rm_url=None, length_penalty_max_length: int = 0):
         reward_endpoints = [remote_rm_url] if isinstance(remote_rm_url, str) else remote_rm_url
         self.reward_endpoints = reward_endpoints or []
+        self.length_penalty_max_length = length_penalty_max_length
 
         # Optional user-provided reward_func from a Python file.
         self.reward_func = None
@@ -160,7 +232,7 @@ class SingleTurnAgentExecutor(AgentExecutorBase):
             spec.loader.exec_module(reward_module)
             self.reward_func = reward_module.reward_func
 
-    async def execute(self, prompt, label, sampling_params, max_length: int, hf_tokenizer, llm_engine):
+    async def execute(self, prompt, label, sampling_params, max_length: int, hf_tokenizer, llm_engine, **kwargs):
         # Tokenize the initial observation.
         prompt_token_ids = hf_tokenizer(prompt, add_special_tokens=False, return_tensors="pt")["input_ids"][0].tolist()
 
@@ -174,12 +246,18 @@ class SingleTurnAgentExecutor(AgentExecutorBase):
             prompt_token_ids = prompt_token_ids[-max_prompt_length:]
 
         # Generate one continuation from the engine.
-        request_output = await llm_engine.generate(prompt_token_ids, deepcopy(sampling_params))
-        generation_output = request_output.outputs[0]
-        action_token_ids = generation_output.token_ids
+        try:
+            request_output = await llm_engine.generate(prompt_token_ids, deepcopy(sampling_params))
+            generation_output = request_output.outputs[0]
+            action_token_ids = generation_output.token_ids
 
-        # Check if response was truncated (hit max_tokens length limit)
-        is_truncated = generation_output.finish_reason == "length"
+            # Check if response was truncated (hit max_tokens length limit)
+            is_truncated = generation_output.finish_reason == "length"
+        except Exception as e:
+            logger.error(f"[SingleTurnExecutor] vLLM generation failed or aborted: {e}")
+            generation_output = None
+            action_token_ids = []
+            is_truncated = True
 
         # Stitch prompt + action together for downstream consumers.
         observation_token_ids = prompt_token_ids + action_token_ids
@@ -187,7 +265,7 @@ class SingleTurnAgentExecutor(AgentExecutorBase):
 
         # Calculate rollout log probs.
         rollout_log_probs = None
-        if sampling_params.logprobs is not None and generation_output.logprobs is not None:
+        if sampling_params.logprobs is not None and generation_output is not None and generation_output.logprobs is not None:
             rollout_log_probs = [0.0] * len(prompt_token_ids)
             for token_id, logprob_dict in zip(action_token_ids, generation_output.logprobs):
                 token_logprob = logprob_dict.get(token_id)
@@ -220,10 +298,29 @@ class SingleTurnAgentExecutor(AgentExecutorBase):
                     rewards_info_list = await self._fetch_rewards_via_http([query], [prompt], [label])
                 rewards_info = rewards_info_list[0] if rewards_info_list else None
                 if rewards_info:
+                    r = rewards_info.get("rewards")
+                    s = rewards_info.get("scores") or rewards_info.get("rewards")
+                    el = rewards_info.get("extra_logs") or {}
+
+                    if isinstance(r, list):
+                        r = r[0]
+                    if isinstance(s, list):
+                        s = s[0]
+
+                    if self.length_penalty_max_length > 0:
+                        total_gen_len = sum(end - start for start, end in action_ranges)
+                        if total_gen_len > 8192:
+                            penalty = 0.1 * (total_gen_len - 8192) / max(1, self.length_penalty_max_length - 8192)
+                            el["length_penalty"] = penalty
+                            if r is not None and r > 0:
+                                r = max(0.0, r - penalty)
+                            if s is not None and s > 0:
+                                s = max(0.0, s - penalty)
+
                     output.update(
-                        reward=rewards_info.get("rewards"),
-                        scores=rewards_info.get("scores") or rewards_info.get("rewards"),
-                        extra_logs=rewards_info.get("extra_logs") or {},
+                        reward=r,
+                        scores=s,
+                        extra_logs={k: v[0] if isinstance(v, list) else v for k, v in el.items()}
                     )
             except Exception as e:
                 logger.info(f"[SingleTurnExecutor] Failed to fetch reward from remote RM: {e}")
@@ -284,3 +381,5 @@ class SingleTurnAgentExecutor(AgentExecutorBase):
 
             tasks.append(asyncio.create_task(_post_request(rm, payload)))
         return await asyncio.gather(*tasks)
+
+#### end single-turn agent executor ####

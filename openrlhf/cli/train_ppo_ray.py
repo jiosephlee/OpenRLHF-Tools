@@ -69,6 +69,11 @@ def train(args):
             logprobs_mode="processed_logprobs" if args.enable_vllm_is_correction else None,
             agent_func_path=args.agent_func_path,
             remote_rm_url=args.remote_rm_url,
+            #### Phase 6: agent params ####
+            length_penalty_max_length=args.length_penalty_max_length,
+            enable_tool_calling_rewards=getattr(args, "enable_tool_calling_rewards", False),
+            vllm_stop_strings=getattr(args, "vllm_stop_strings", None),
+            #### end Phase 6 agent params ####
         )
 
     actor_model = RayActorGroup(
@@ -547,6 +552,15 @@ if __name__ == "__main__":
     parser.add_argument("--ref_reward_offload", action="store_true", default=False)
     parser.add_argument("--agent_func_path", type=str, default=None, help="Agent script path")
 
+    #### Phase 6: Agent infrastructure CLI args ####
+    parser.add_argument("--agent_max_steps", type=int, default=5, help="Max multi-turn agent steps")
+    parser.add_argument("--length_penalty_max_length", type=int, default=0, help="Max length for soft length penalty (0=disabled)")
+    parser.add_argument("--enable_tool_calling_rewards", action="store_true", default=False, help="Enable format shaping rewards for tool calls")
+    parser.add_argument("--chat_protocol", type=str, default=None, choices=["glm_flash", "intern_s1", "gpt_oss", "qwen3", "qwen3_5"], help="Chat protocol for tool-calling parsing")
+    parser.add_argument("--tool_version", type=str, default=None, choices=["v1", "v2", "v3", "v4"], help="Tool version registry")
+    parser.add_argument("--vllm_stop_strings", type=str, nargs="+", default=None, help="Additional stop strings for vLLM sampling")
+    #### end Phase 6 CLI args ####
+
     # Custom dataset
     parser.add_argument("--prompt_data", type=str, default=None, help="HF dataset name or path")
     parser.add_argument(
@@ -613,6 +627,15 @@ if __name__ == "__main__":
 
     if args.agent_func_path:
         args.remote_rm_url = "agent"
+
+    #### Phase 6: propagate agent env vars for ToolCallingTurn ####
+    if getattr(args, "chat_protocol", None):
+        os.environ["OPENRLHF_CHAT_PROTOCOL"] = args.chat_protocol
+    if getattr(args, "tool_version", None):
+        os.environ["OPENRLHF_TOOL_VERSION"] = args.tool_version
+    if getattr(args, "pretrain", None):
+        os.environ["OPENRLHF_MODEL_PATH"] = args.pretrain
+    #### end Phase 6 env vars ####
 
     if args.advantage_estimator not in ["gae"]:
         args.critic_pretrain = None

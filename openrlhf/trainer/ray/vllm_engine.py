@@ -258,6 +258,10 @@ class LLMRayActor:
         bundle_indices: list = None,
         agent_func_path: Optional[str] = None,
         remote_rm_url: Optional[str] = None,
+        #### Agent params for Phase 6 ####
+        length_penalty_max_length: int = 0,
+        enable_tool_calling_rewards: bool = True,
+        #### end agent params ####
         **kwargs,
     ):
         self._configure_device_env(
@@ -271,9 +275,16 @@ class LLMRayActor:
         # - custom agent executor: user-provided AgentExecutorBase subclass
         # - single-turn with optional reward: default executor
         if agent_func_path:
-            self.executor = _load_agent_executor(agent_func_path)
+            self.executor = _load_agent_executor(
+                agent_func_path,
+                length_penalty_max_length=length_penalty_max_length,
+                enable_tool_calling_rewards=enable_tool_calling_rewards,
+            )
         else:
-            self.executor = SingleTurnAgentExecutor(remote_rm_url)
+            self.executor = SingleTurnAgentExecutor(
+                remote_rm_url,
+                length_penalty_max_length=length_penalty_max_length,
+            )
 
         self.kwargs = kwargs
 
@@ -492,6 +503,11 @@ def create_vllm_engines(
     logprobs_mode=None,
     agent_func_path: Optional[str] = None,
     remote_rm_url: Optional[str] = None,
+    #### Agent params for Phase 6 ####
+    length_penalty_max_length: int = 0,
+    enable_tool_calling_rewards: bool = True,
+    vllm_stop_strings: Optional[List[str]] = None,
+    #### end agent params ####
 ):
     """Spin up a set of vLLM Ray actors with consistent placement."""
     vllm_engines = []
@@ -541,8 +557,13 @@ def create_vllm_engines(
             {
                 "agent_func_path": agent_func_path,
                 "remote_rm_url": remote_rm_url,
+                #### Agent params for Phase 6 ####
+                "length_penalty_max_length": length_penalty_max_length,
+                "enable_tool_calling_rewards": enable_tool_calling_rewards,
+                #### end agent params ####
             }
         )
+
 
         if logprobs_mode:
             actor_kwargs["logprobs_mode"] = logprobs_mode

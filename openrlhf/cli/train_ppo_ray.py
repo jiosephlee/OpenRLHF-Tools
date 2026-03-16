@@ -600,6 +600,24 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dynamic_filtering_reward_range", nargs=2, default=(0, 1), type=float, help="Dynamic filtering rewards range"
     )
+    #### Smart replay (L11, L12, L13) ####
+    parser.add_argument(
+        "--smart_replay",
+        action="store_true",
+        default=False,
+        help="After each episode, replay filtered prompts the model can still learn from",
+    )
+    parser.add_argument("--max_replay_rounds", type=int, default=2, help="Max replay rounds per episode")
+    parser.add_argument(
+        "--constant_lr_with_warm_up",
+        action="store_true",
+        default=False,
+        help="Force a constant LR with linear warmup (see --warmup_steps)",
+    )
+    parser.add_argument("--warmup_steps", type=int, default=20, help="Number of global warmup steps for constant_lr_with_warm_up")
+    parser.add_argument("--replace_discarded_prompts_ratio", type=float, default=1.0, help="Ratio of discarded prompts to replace")
+    #### end smart replay ####
+
     #### Oversampling with early termination (L10) ####
     parser.add_argument(
         "--oversample_ratio",
@@ -742,6 +760,20 @@ if __name__ == "__main__":
     # Set vLLM generate_batch_size to rollout_batch_size if not specified
     if not args.vllm_generate_batch_size:
         args.vllm_generate_batch_size = args.rollout_batch_size
+
+    #### Smart replay validation ####
+    if getattr(args, "smart_replay", False):
+        assert args.dynamic_filtering, "--smart_replay requires --dynamic_filtering"
+        assert args.constant_lr_with_warm_up, (
+            "--smart_replay requires --constant_lr_with_warm_up because smart replay has variable step counts "
+            "and needs a constant LR schedule (with warmup) to remain stable"
+        )
+
+    if getattr(args, "constant_lr_with_warm_up", False):
+        print(f"[SmartReplay/ConstantLR] Overriding LR scheduler to constant_with_warmup (warmup={args.warmup_steps} steps)")
+        args.lr_scheduler = "constant_with_warmup"
+        args.lr_warmup_ratio = 0.0
+    #### end smart replay validation ####
 
     if args.dynamic_filtering:
         assert (

@@ -1,3 +1,5 @@
+import ctypes
+import gc
 import json
 import os
 import time
@@ -8,6 +10,7 @@ from typing import Dict, Tuple
 import ray
 import torch
 import transformers
+from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
 _TRANSFORMERS_V5 = int(transformers.__version__.split(".")[0]) >= 5
@@ -312,8 +315,219 @@ class PPOTrainer(BasePPOTrainer):
             tokenizer,
         )
 
+        #### Smart replay tracking (L11) ####
+        self._round_counter = 0
+        #### end smart replay tracking ####
+
     def get_max_steps(self):
         return self.max_steps
+
+    #### Helper: empty model caches ####
+    def _empty_all_model_caches(self):
+        """Force garbage collection and clear GPU caches across all model groups."""
+        gc.collect()
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception:
+            pass
+    #### end helper ####
+
+    #### Oversampling: LeftOverPrompts phase (L13) ####
+    def _run_leftover_phase(self, episode: int, global_step: int, total_consumed_prompts: int) -> int:
+        """Dispatch remaining missed_indices without oversampling."""
+        missed_indices = self.samples_generator.get_missed_indices()
+        if len(missed_indices) < self.args.rollout_batch_size:
+            if missed_indices:
+                logger.info(
+                    f"[LeftOverPrompts] {len(missed_indices)} missed indices "
+                    f"(< batch_size={self.args.rollout_batch_size}), deferring to smart replay"
+                )
+            return global_step
+
+        logger.info(f"[LeftOverPrompts] Processing {len(missed_indices)} missed indices")
+
+        # Create Subset dataloader from missed_indices.
+        original_dataset = self.samples_generator._original_dataset
+        subset = Subset(original_dataset, list(missed_indices))
+        leftover_dataloader = DataLoader(
+            subset, batch_size=1, shuffle=False, collate_fn=original_dataset.collate_fn
+        )
+
+        # Temporarily swap dataloader; clear consumed missed indices.
+        saved_dataloader = self.samples_generator.prompts_dataloader
+        self.samples_generator.prompts_dataloader = leftover_dataloader
+        self.samples_generator._missed_indices = set()
+
+        while True:
+            log_step_trace = global_step % 2 == 0
+            rollout_samples, filter_pass_rate, prompts_consumed, is_exhausted = (
+                self.samples_generator.generate_samples(
+                    global_step=global_step, log_step_trace=log_step_trace,
+                    oversample_ratio=1.0,  # NO oversampling in leftover phase
+                    _skip_clear_replay=True,  # preserve replay indices
+                    **self.generate_kwargs,
+                )
+            )
+            total_consumed_prompts += prompts_consumed
+
+            if is_exhausted:
+                if rollout_samples:
+                    status, global_step = self.train_step(rollout_samples, global_step)
+                    log_status = {k: v for k, v in status.items() if k not in ["generated_samples"]}
+                    logger.info(f"Global step {global_step} [leftover-partial]: {log_status}")
+                    client_states = {
+                        "episode": episode,
+                        "global_step": global_step,
+                        "total_consumed_prompts": total_consumed_prompts,
+                        "data_loader_state_dict": {},
+                    }
+                    self.save_logs_and_checkpoints(global_step, status, client_states)
+                    del rollout_samples, status
+                    gc.collect()
+                break
+
+            status, global_step = self.train_step(rollout_samples, global_step)
+            if self.args.dynamic_filtering:
+                status["dynamic_filtering_pass_rate"] = filter_pass_rate
+            status["leftover/phase"] = 1
+
+            log_status = {k: v for k, v in status.items() if k not in ["generated_samples"]}
+            logger.info(f"Global step {global_step} [leftover]: {log_status}")
+
+            client_states = {
+                "episode": episode,
+                "global_step": global_step,
+                "total_consumed_prompts": total_consumed_prompts,
+                "data_loader_state_dict": {},
+            }
+            self.save_logs_and_checkpoints(global_step, status, client_states)
+
+            if global_step % self.args.eval_steps == 0 and self.eval_dataloader:
+                eval_generate_kwargs = self.generate_kwargs.copy()
+                eval_generate_kwargs["temperature"] = self.args.eval_temperature
+                eval_generate_kwargs["n_samples_per_prompt"] = self.args.eval_n_samples_per_prompt
+                self.evaluate(global_step, **eval_generate_kwargs)
+
+            del rollout_samples, status
+            gc.collect()
+            self._empty_all_model_caches()
+            self.samples_generator.flush_timeseries_to_disk(global_step=global_step)
+
+        # Restore original dataloader.
+        self.samples_generator.prompts_dataloader = saved_dataloader
+        # Any new missed_indices from this phase stay for smart replay.
+        return global_step
+    #### end oversampling ####
+
+    #### Smart replay: replay filtered prompts (L11) ####
+    def _run_replay_episodes(self, episode: int, global_step: int, total_consumed_prompts: int) -> int:
+        """After the primary episode, replay filtered prompts for up to max_replay_rounds."""
+        hard_indices, kept_indices = self.samples_generator.get_replay_indices()
+        missed_indices = self.samples_generator.get_missed_indices()
+        replay_indices = list(hard_indices | kept_indices | missed_indices)
+        max_replay_rounds = getattr(self.args, "max_replay_rounds", 2)
+        original_dataloader = self.samples_generator.prompts_dataloader
+
+        for replay_round in range(max_replay_rounds):
+            if len(replay_indices) < self.args.rollout_batch_size:
+                logger.info(
+                    f"[SmartReplay] Round {replay_round + 1}: only {len(replay_indices)} prompts "
+                    f"(< rollout_batch_size={self.args.rollout_batch_size}), skipping."
+                )
+                break
+
+            logger.info(
+                f"[SmartReplay] Episode {episode + 1}, round {replay_round + 1}/{max_replay_rounds}: "
+                f"replaying {len(replay_indices)} prompts (hard={len(hard_indices)}, kept={len(kept_indices)})"
+            )
+
+            subset = Subset(original_dataloader.dataset, replay_indices)
+            replay_dataloader = DataLoader(
+                subset,
+                batch_size=1,
+                shuffle=True,
+                collate_fn=original_dataloader.dataset.collate_fn,
+            )
+            self.samples_generator.prompts_dataloader = replay_dataloader
+
+            pbar = tqdm(
+                range(len(replay_dataloader)),
+                desc=f"Episode [{episode + 1}] Replay round {replay_round + 1}",
+            )
+            while True:
+                log_step_trace = global_step % 2 == 0
+                rollout_samples, filter_pass_rate, prompts_consumed, is_exhausted = (
+                    self.samples_generator.generate_samples(
+                        global_step=global_step, log_step_trace=log_step_trace, **self.generate_kwargs
+                    )
+                )
+                total_consumed_prompts += prompts_consumed
+                if is_exhausted:
+                    break
+
+                status, global_step = self.train_step(rollout_samples, global_step)
+                if self.args.dynamic_filtering:
+                    status["dynamic_filtering_pass_rate"] = filter_pass_rate
+                status["replay/round"] = replay_round + 1
+
+                log_status = {k: v for k, v in status.items() if k not in ["generated_samples"]}
+                logger.info(f"Global step {global_step} [replay]: {log_status}")
+
+                client_states = {
+                    "episode": episode,
+                    "global_step": global_step,
+                    "total_consumed_prompts": total_consumed_prompts,
+                    "data_loader_state_dict": {},
+                }
+                self.save_logs_and_checkpoints(global_step, status, client_states)
+
+                if global_step % self.args.eval_steps == 0 and self.eval_dataloader:
+                    eval_generate_kwargs = self.generate_kwargs.copy()
+                    eval_generate_kwargs["temperature"] = self.args.eval_temperature
+                    eval_generate_kwargs["n_samples_per_prompt"] = self.args.eval_n_samples_per_prompt
+                    self.evaluate(global_step, **eval_generate_kwargs)
+
+                pbar.update(prompts_consumed)
+                del rollout_samples, status
+                gc.collect()
+                self._empty_all_model_caches()
+                self.samples_generator.flush_timeseries_to_disk(global_step=global_step)
+
+            # Log episode stats for this replay round.
+            if self.wandb_logger:
+                self.wandb_logger.log_episode(
+                    self._round_counter,
+                    episode,
+                    replay_round + 1,
+                    self.samples_generator.episode_filter_stats,
+                )
+                self._round_counter += 1
+
+            # Run leftover phase after each replay round.
+            global_step = self._run_leftover_phase(episode, global_step, total_consumed_prompts)
+
+            # Eval at end of replay round (skip if last step already ran eval).
+            if self.eval_dataloader and (global_step % self.args.eval_steps != 0):
+                eval_generate_kwargs = self.generate_kwargs.copy()
+                eval_generate_kwargs["temperature"] = self.args.eval_temperature
+                eval_generate_kwargs["n_samples_per_prompt"] = self.args.eval_n_samples_per_prompt
+                logger.info(f"Running end-of-replay-round evaluation at global_step {global_step}")
+                self.evaluate(global_step, **eval_generate_kwargs)
+
+            # Collect new replay indices from this round.
+            hard_indices, kept_indices = self.samples_generator.get_replay_indices()
+            missed_indices = self.samples_generator.get_missed_indices()
+            replay_indices = list(hard_indices | kept_indices | missed_indices)
+            logger.info(
+                f"[SmartReplay] Round {replay_round + 1} done. "
+                f"{len(replay_indices)} non-easy prompts remain "
+                f"(hard={len(hard_indices)}, kept={len(kept_indices)}, missed={len(missed_indices)})."
+            )
+
+        # Restore original dataloader.
+        self.samples_generator.prompts_dataloader = original_dataloader
+        return global_step
+    #### end smart replay ####
 
     def fit(self, global_step: int = 0) -> None:
         checkpoint_states = self.init_checkpoint_states()
@@ -373,6 +587,35 @@ class PPOTrainer(BasePPOTrainer):
                     self.evaluate(global_step, **eval_generate_kwargs)
 
                 pbar.update(prompts_consumed)
+
+            #### Smart replay & leftover integration (L11, L12, L13) ####
+            # Save discarded prompts for offline analysis.
+            self.samples_generator.save_discarded_indices(episode)
+
+            # LeftOverPrompts phase after main episode, before smart replay.
+            if getattr(self.args, "oversample_ratio", 1.0) > 1.0:
+                global_step = self._run_leftover_phase(episode, global_step, total_consumed_prompts)
+
+            # Eval at end of episode (skip if last step already ran eval).
+            if self.eval_dataloader and (global_step % self.args.eval_steps != 0):
+                eval_generate_kwargs = self.generate_kwargs.copy()
+                eval_generate_kwargs["temperature"] = self.args.eval_temperature
+                eval_generate_kwargs["n_samples_per_prompt"] = self.args.eval_n_samples_per_prompt
+                logger.info(f"Running end-of-episode evaluation at global_step {global_step}")
+                self.evaluate(global_step, **eval_generate_kwargs)
+
+            # Smart replay: log initial-pass stats and run replay episodes.
+            if getattr(self.args, "smart_replay", False):
+                if self.wandb_logger:
+                    self.wandb_logger.log_episode(
+                        self._round_counter,
+                        episode,
+                        0,
+                        self.samples_generator.episode_filter_stats,
+                    )
+                    self._round_counter += 1
+                global_step = self._run_replay_episodes(episode, global_step, total_consumed_prompts)
+            #### end smart replay & leftover integration ####
 
         # Close trackers
         if self.wandb_logger:

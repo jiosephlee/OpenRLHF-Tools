@@ -1,4 +1,5 @@
 import argparse
+import os
 from datetime import datetime
 
 import ray
@@ -179,6 +180,30 @@ def train(args):
 
     if args.critic_pretrain and args.save_value_network and critic_model is not None:
         ray.get(critic_model.async_save_model())
+
+    #### Push final model to HuggingFace Hub ####
+    if getattr(args, "push_to_hub", None):
+        import json
+
+        config_path = os.path.join(args.save_path, "training_config.json")
+        os.makedirs(args.save_path, exist_ok=True)
+        with open(config_path, "w") as f:
+            json.dump(vars(args), f, indent=2, default=str)
+
+        from huggingface_hub import HfApi
+
+        api = HfApi()
+        api.create_repo(args.push_to_hub, private=args.push_to_hub_private, exist_ok=True)
+        api.upload_folder(
+            folder_path=args.save_path,
+            repo_id=args.push_to_hub,
+            commit_message="Upload model from OpenRLHF training",
+        )
+        if args.delete_local_after_push:
+            import shutil
+
+            shutil.rmtree(args.save_path, ignore_errors=True)
+    #### end push final model ####
 
 
 if __name__ == "__main__":
@@ -366,6 +391,23 @@ if __name__ == "__main__":
         "--n_samples_per_prompt", type=int, default=1, help="number of responses for each prompt in generation"
     )
     parser.add_argument("--save_value_network", action="store_true", default=False, help="Save critic model")
+    #### HF Hub upload ####
+    parser.add_argument(
+        "--push_to_hub",
+        type=str,
+        default=None,
+        help="HF Hub repo ID to push model after training (e.g. 'username/my-model')",
+    )
+    parser.add_argument(
+        "--push_to_hub_private", action="store_true", default=False, help="Make the HF Hub repo private"
+    )
+    parser.add_argument(
+        "--delete_local_after_push",
+        action="store_true",
+        default=False,
+        help="Delete local save_path after successful push to Hub",
+    )
+    #### end HF Hub upload ####
     parser.add_argument("--actor_learning_rate", type=float, default=1e-6)
     parser.add_argument("--critic_learning_rate", type=float, default=9e-6)
     parser.add_argument("--lr_warmup_ratio", type=float, default=0.03)
@@ -384,6 +426,20 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument("--aux_loss_coef", type=float, default=0, help="MoE balancing loss")
+    #### MoE router / visual freeze ####
+    parser.add_argument(
+        "--freeze_router",
+        action="store_true",
+        default=False,
+        help="Freeze MoE router/gate weights during training (matches mlp.gate, mlp.router, shared_expert_gate)",
+    )
+    parser.add_argument(
+        "--freeze_visual",
+        action="store_true",
+        default=False,
+        help="Freeze the entire visual encoder (matches model.visual.*)",
+    )
+    #### end MoE router / visual freeze ####
     parser.add_argument(
         "--entropy_loss_coef",
         type=float,

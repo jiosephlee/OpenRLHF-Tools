@@ -428,6 +428,32 @@ class PolicyModelActor(BaseModelActor):
             temperature=strategy.args.temperature,
             use_liger_kernel=strategy.args.use_liger_kernel,
         )
+
+        #### Freeze selected parameter groups if requested ####
+        _freeze_patterns = []
+        if getattr(args, "freeze_router", False):
+            _freeze_patterns.extend([("mlp.gate.", "router"), ("mlp.router.", "router"), ("shared_expert_gate.", "router")])
+        if getattr(args, "freeze_visual", False):
+            _freeze_patterns.append(("visual.", "visual"))
+
+        if _freeze_patterns:
+            frozen_counts = {}
+            for name, param in actor.model.named_parameters():
+                for pat, group in _freeze_patterns:
+                    if pat in name:
+                        param.requires_grad = False
+                        frozen_counts.setdefault(group, []).append(name)
+                        break
+            for group, names in frozen_counts.items():
+                n_weight = sum(1 for n in names if "weight" in n)
+                n_bias = sum(1 for n in names if "bias" in n)
+                n_other = len(names) - n_weight - n_bias
+                detail = f"{n_weight} weights, {n_bias} biases"
+                if n_other:
+                    detail += f", {n_other} other"
+                strategy.print(f"[freeze_{group}] Froze {len(names)} parameters ({detail})")
+        #### end freeze selected parameter groups ####
+
         strategy.print(actor)
 
         # configure tokenizer

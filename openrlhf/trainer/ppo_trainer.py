@@ -545,6 +545,33 @@ class PPOTrainer(BasePPOTrainer):
             if state_dict:
                 self.prompts_dataloader.load_state_dict(state_dict)
 
+        #### Run config saving (L26) ####
+        runs_dir = getattr(self.samples_generator, "runs_dir", None)
+        if runs_dir and self.strategy.is_rank_0():
+            config_path = os.path.join(runs_dir, "openrlhf_config.json")
+            try:
+                with open(config_path, "w") as f:
+                    json.dump(vars(self.args), f, indent=2, default=str)
+                logger.info(f"Saved run config to {config_path}")
+            except Exception as e:
+                logger.warning(f"Failed to save run config: {e}")
+        #### end run config saving ####
+
+        #### Run timing tracking (L18) ####
+        run_timing_records = []
+        run_start_time = time.time()
+        #### end run timing init ####
+
+        #### Skip eval at step zero (L21) ####
+        skip_eval_step_zero = getattr(self.args, "skip_eval_step_zero", True)
+        if not skip_eval_step_zero and self.eval_dataloader and global_step == 0:
+            eval_generate_kwargs = self.generate_kwargs.copy()
+            eval_generate_kwargs["temperature"] = self.args.eval_temperature
+            eval_generate_kwargs["n_samples_per_prompt"] = self.args.eval_n_samples_per_prompt
+            logger.info("Running step-zero evaluation")
+            self.evaluate(global_step, **eval_generate_kwargs)
+        #### end skip eval step zero ####
+
         for episode in range(start_episode, self.args.num_episodes):
             dataset_length = len(self.prompts_dataloader)
             pbar = tqdm(
@@ -553,6 +580,10 @@ class PPOTrainer(BasePPOTrainer):
                 initial=total_consumed_prompts % max(dataset_length, 1),
             )
             while True:
+                #### Phase timings (L23) ####
+                t_rollout_start = time.time()
+                #### end phase timing start ####
+
                 # Draw one mini-batch of prompts; stop when loader is exhausted.
                 rollout_samples, filter_pass_rate, prompts_consumed, is_exhausted = (
                     self.samples_generator.generate_samples(**self.generate_kwargs)
@@ -561,8 +592,29 @@ class PPOTrainer(BasePPOTrainer):
                 if is_exhausted:
                     break
 
+                #### Phase timings (L23) ####
+                t_rollout_end = time.time()
+                #### end phase timing rollout ####
+
                 # Run PPO update on this batch and bump the global step counter.
                 status, global_step = self.train_step(rollout_samples, global_step)
+
+                #### Phase timings (L23) ####
+                t_train_end = time.time()
+                status["time/rollout"] = t_rollout_end - t_rollout_start
+                status["time/train_step"] = t_train_end - t_rollout_end
+
+                # Record run timing (L18)
+                run_timing_records.append({
+                    "global_step": global_step,
+                    "episode": episode,
+                    "t": t_train_end,
+                    "rollout_time": t_rollout_end - t_rollout_start,
+                    "train_time": t_train_end - t_rollout_end,
+                    "total_time": t_train_end - t_rollout_start,
+                    "prompts_consumed": prompts_consumed,
+                })
+                #### end phase timings ####
 
                 # Add generated samples to status dictionary
                 if self.args.dynamic_filtering:
@@ -616,6 +668,35 @@ class PPOTrainer(BasePPOTrainer):
                     self._round_counter += 1
                 global_step = self._run_replay_episodes(episode, global_step, total_consumed_prompts)
             #### end smart replay & leftover integration ####
+
+        #### Write run timing (L18) ####
+        if runs_dir and self.strategy.is_rank_0() and run_timing_records:
+            timing_path = os.path.join(runs_dir, "vllm_stats", "run_timing.jsonl")
+            try:
+                os.makedirs(os.path.dirname(timing_path), exist_ok=True)
+                with open(timing_path, "w") as f:
+                    for record in run_timing_records:
+                        f.write(json.dumps(record) + "\n")
+                logger.info(f"Wrote {len(run_timing_records)} timing records to {timing_path}")
+            except Exception as e:
+                logger.warning(f"Failed to write run timing: {e}")
+
+            # Write run summary
+            summary_path = os.path.join(runs_dir, "vllm_stats", "run_summary.json")
+            try:
+                total_elapsed = time.time() - run_start_time
+                summary = {
+                    "total_steps": global_step,
+                    "total_elapsed_seconds": total_elapsed,
+                    "total_consumed_prompts": total_consumed_prompts,
+                    "avg_step_time": total_elapsed / max(global_step, 1),
+                }
+                with open(summary_path, "w") as f:
+                    json.dump(summary, f, indent=2)
+                logger.info(f"Wrote run summary to {summary_path}")
+            except Exception as e:
+                logger.warning(f"Failed to write run summary: {e}")
+        #### end write run timing ####
 
         # Close trackers
         if self.wandb_logger:

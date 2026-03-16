@@ -302,6 +302,10 @@ if __name__ == "__main__":
 
     # Checkpoints
     parser.add_argument("--eval_steps", type=int, default=-1)
+    #### Phase 9: skip eval at step zero ####
+    parser.add_argument("--skip_eval_step_zero", action="store_true", default=True, help="Skip evaluation at step 0 (default: True)")
+    parser.add_argument("--no_skip_eval_step_zero", dest="skip_eval_step_zero", action="store_false", help="Run evaluation at step 0")
+    #### end Phase 9 ####
     parser.add_argument("--save_steps", type=int, default=-1)
     parser.add_argument("--logging_steps", type=int, default=1)
     parser.add_argument("--ckpt_path", type=str, default="./ckpt/checkpoints_ppo_ray")

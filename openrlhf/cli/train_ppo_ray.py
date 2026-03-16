@@ -565,6 +565,10 @@ if __name__ == "__main__":
     parser.add_argument("--vllm_stop_strings", type=str, nargs="+", default=None, help="Additional stop strings for vLLM sampling")
     #### end Phase 6 CLI args ####
 
+    #### Phase 10: TDC integration ####
+    parser.add_argument("--tdc_tools", type=str, default=None, help="Path to TDC per-task tools JSON (auto-selects tools per datasource)")
+    #### end Phase 10 ####
+
     # Custom dataset
     parser.add_argument("--prompt_data", type=str, default=None, help="HF dataset name or path")
     parser.add_argument(

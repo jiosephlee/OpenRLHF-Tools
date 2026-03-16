@@ -1,3 +1,4 @@
+import logging
 from typing import Optional, Tuple
 
 import torch
@@ -6,6 +7,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .utils import masked_mean
+
+logger = logging.getLogger(__name__)
 
 
 class GPTLMLoss(nn.Module):
@@ -172,14 +175,154 @@ class PolicyLoss(nn.Module):
                 loss = vllm_is * loss
             vllm_kl = masked_mean(rollout_log_probs - old_log_probs, action_mask, dim=None)
 
-        loss = (
-            masked_mean(loss, action_mask, dim=None)
-            if self.token_level_loss
-            else masked_mean(loss, action_mask, dim=-1).mean()
-        )
+        #### token_level_loss reduction ####
+        if not self.token_level_loss:
+            # grpo/ppo/gspo: per-sequence mean, then batch mean
+            loss = masked_mean(loss, action_mask, dim=-1).mean()
+        else:
+            # dapo/bnpo: flat token mean within this rank
+            loss = masked_mean(loss, action_mask, dim=None)
+        #### end token_level_loss reduction ####
         clip_ratio = masked_mean(torch.lt(surr2, surr1).float(), action_mask, dim=None)
         ppo_kl = masked_mean(-log_ratio.detach(), action_mask, dim=None)
         return loss, clip_ratio, ppo_kl, vllm_kl
+
+
+#### Liger fused GRPO loss wrapper (triton backend) ####
+class LigerPolicyLoss(nn.Module):
+    """
+    Fused lm_head + GRPO loss via liger-kernel (>= 0.7.0).
+
+    Uses the Triton backend: fused Triton kernels for log-softmax + loss + backward.
+    Avoids storing the log-softmax tensor by recomputing from saved LSE.
+
+    Supports the same vLLM off-policy correction methods as PolicyLoss
+    (TIS, ICEPOP, seq-mask-tis).
+
+    Returns the same (loss, clip_ratio, ppo_kl, vllm_kl) tuple as PolicyLoss.
+    """
+
+    def __init__(
+        self,
+        clip_eps_low: float = 0.2,
+        clip_eps_high: float = 0.2,
+        beta: float = 0.0,
+        temperature: float = 1.0,
+        loss_type: str = "grpo",
+        enable_vllm_is_correction: bool = False,
+        vllm_is_truncated_threshold: list = None,
+        vllm_is_correction_type: str = "tis",
+    ) -> None:
+        super().__init__()
+        self.beta = beta
+        self.temperature = temperature
+        self.loss_type = loss_type
+        self.use_ref_model = beta > 0
+        self.enable_vllm_is_correction = enable_vllm_is_correction
+        self.vllm_is_truncated_threshold = vllm_is_truncated_threshold
+        self.vllm_is_correction_type = vllm_is_correction_type
+
+        if enable_vllm_is_correction and vllm_is_correction_type not in {"tis", "icepop", "seq-mask-tis"}:
+            raise ValueError(
+                f"Invalid vllm_is_correction_type: {vllm_is_correction_type}, must be one of tis/icepop/seq-mask-tis"
+            )
+
+        from liger_kernel.transformers.grpo_loss import triton_grpo_loss
+
+        self._triton_grpo_loss = triton_grpo_loss
+        logger.info(
+            f"[Liger GRPO] Initialized Triton backend "
+            f"(beta={beta}, eps=[{clip_eps_low}, {clip_eps_high}], loss_type={loss_type})"
+        )
+
+        self._eps_low = clip_eps_low
+        self._eps_high = clip_eps_high
+
+    def _compute_vllm_is_ratio(
+        self,
+        old_log_probs: torch.Tensor,
+        rollout_log_probs: torch.Tensor,
+        action_mask: torch.Tensor,
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """Compute vLLM importance sampling ratio (TIS/ICEPOP/seq-mask-tis)."""
+        if not self.enable_vllm_is_correction or rollout_log_probs is None:
+            return None, None
+
+        low_threshold, high_threshold = self.vllm_is_truncated_threshold
+        log_ratio = old_log_probs - rollout_log_probs
+
+        if self.vllm_is_correction_type == "icepop":
+            vllm_is = torch.exp(log_ratio).detach()
+            mask = (vllm_is >= low_threshold) & (vllm_is <= high_threshold)
+            vllm_is_ratio = vllm_is * mask
+        elif self.vllm_is_correction_type == "seq-mask-tis":
+            seq_log_ratio = masked_mean(log_ratio, action_mask, dim=-1)
+            seq_is = torch.exp(seq_log_ratio)
+            seq_mask = (seq_is >= low_threshold) & (seq_is <= high_threshold)
+            vllm_is = torch.exp(log_ratio).detach()
+            vllm_is_ratio = seq_mask.unsqueeze(-1) * vllm_is
+        else:
+            vllm_is_ratio = torch.exp(log_ratio).clamp(min=low_threshold, max=high_threshold).detach()
+
+        vllm_kl = masked_mean(rollout_log_probs - old_log_probs, action_mask, dim=None)
+        return vllm_is_ratio, vllm_kl
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        lm_head: nn.Linear,
+        completion_ids: torch.Tensor,
+        action_mask: torch.Tensor,
+        advantages: torch.Tensor,
+        old_log_probs: Optional[torch.Tensor] = None,
+        ref_log_probs: Optional[torch.Tensor] = None,
+        rollout_log_probs: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Args:
+            hidden_states: Backbone output, shape [B, L+1, D] (triton needs next-token positions).
+            lm_head: The model's lm_head linear layer.
+            completion_ids: Token IDs for the completion/action region, shape [B, L].
+            action_mask: Mask for valid action tokens, shape [B, L].
+            advantages: Per-token or per-sequence advantages.
+            old_log_probs: Log probs from the rollout policy, shape [B, L].
+            ref_log_probs: Log probs from the reference model, shape [B, L] (None if beta=0).
+            rollout_log_probs: Log probs from vLLM rollout (for IS correction), shape [B, L].
+
+        Returns:
+            (loss, clip_ratio, ppo_kl, vllm_kl) — same format as PolicyLoss.forward().
+        """
+        ref_lp = ref_log_probs if self.use_ref_model else None
+
+        vllm_is_ratio, vllm_kl = self._compute_vllm_is_ratio(
+            old_log_probs, rollout_log_probs, action_mask
+        )
+
+        logits = F.linear(
+            hidden_states, lm_head.weight, getattr(lm_head, "bias", None)
+        ).contiguous()
+
+        loss, metrics = self._triton_grpo_loss(
+            logits=logits,
+            old_logp=old_log_probs,
+            ref_logp=ref_lp,
+            completion_ids=completion_ids.contiguous(),
+            advantages=advantages.contiguous(),
+            completion_mask=action_mask.contiguous(),
+            temperature=self.temperature,
+            beta=self.beta,
+            eps_low=self._eps_low,
+            eps_high=self._eps_high,
+            loss_type=self.loss_type,
+            reduce=True,
+            vllm_is_ratio=vllm_is_ratio,
+        )
+
+        clip_ratio = metrics[-1]
+        ppo_kl = metrics[0] if self.use_ref_model else torch.tensor(0.0)
+
+        return loss, clip_ratio, ppo_kl, vllm_kl
+#### end Liger fused GRPO loss wrapper ####
 
 
 class ValueLoss(nn.Module):

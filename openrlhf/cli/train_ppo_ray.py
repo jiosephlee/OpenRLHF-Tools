@@ -325,6 +325,14 @@ if __name__ == "__main__":
         help="Attention implementation (e.g., eager, flash_attention_2, flash_attention_3, kernels-community/vllm-flash-attn3)",
     )
     parser.add_argument("--use_liger_kernel", action="store_true", default=False, help="Enable Liger Kernel")
+    #### Liger fused GRPO loss ####
+    parser.add_argument(
+        "--use_liger_grpo_loss",
+        action="store_true",
+        default=False,
+        help="Use Liger fused lm_head+GRPO loss to reduce peak memory (requires liger-kernel-nightly>=0.7.0)",
+    )
+    #### end Liger fused GRPO loss ####
     parser.add_argument("--grad_accum_dtype", type=str, default=None, help="Adam grad accum data type")
     parser.add_argument("--overlap_comm", action="store_true", default=False)
     parser.add_argument("--gradient_checkpointing_use_reentrant", action="store_true", default=False)
@@ -342,6 +350,14 @@ if __name__ == "__main__":
 
     # dynamic batch size
     parser.add_argument("--use_dynamic_batch", action="store_true", default=False)
+    #### Adaptive batch: padded alternative to packed dynamic batch ####
+    parser.add_argument(
+        "--use_adaptive_batch",
+        action="store_true",
+        default=False,
+        help="Use padded adaptive batching instead of packed dynamic batching",
+    )
+    #### end adaptive batch ####
     parser.add_argument("--rollout_max_tokens_per_gpu", type=int, default=None)
     parser.add_argument("--train_max_tokens_per_gpu", type=int, default=16192)
 
@@ -415,7 +431,33 @@ if __name__ == "__main__":
     parser.add_argument("--kl_target", type=float, default=None)
     parser.add_argument("--kl_horizon", type=int, default=10000)
     parser.add_argument("--init_kl_coef", type=float, default=0.01, help="KL penalty in PPO")
-    parser.add_argument("--policy_loss_type", type=str, default="ppo", choices=["ppo", "gspo"])
+    #### Unified loss_type: controls ratio, reduction, and Liger variant ####
+    parser.add_argument(
+        "--loss_type",
+        type=str,
+        default="ppo",
+        choices=["ppo", "dapo", "bnpo", "dr_grpo", "gspo", "cispo", "sapo"],
+        help=(
+            "Unified loss type controlling ratio computation, reduction strategy, and Liger variant. "
+            "'ppo' (default): token-level PPO ratio, per-sequence mean with cross-rank seq-count sync. "
+            "'dapo': token-level PPO ratio, flat token mean with cross-rank token-count sync. "
+            "'bnpo': token-level PPO ratio, flat token mean within rank (no cross-rank sync). "
+            "'dr_grpo': token-level PPO ratio, per-sequence mean with cross-rank seq-count sync. "
+            "'gspo': sequence-level IS ratio, per-sequence mean with cross-rank seq-count sync. "
+            "'cispo'/'sapo': Liger-only variants (require --use_liger_grpo_loss)."
+        ),
+    )
+    parser.add_argument(
+        "--legacy_loss_scaling",
+        action="store_true",
+        default=False,
+        help=(
+            "Use upstream-compatible loss scaling: flat token mean (token_level_loss=True) "
+            "and simple sequence-proportional rank-local loss_scale (len(partition)/sample_num) "
+            "for all loss types. No cross-rank sync of loss denominators."
+        ),
+    )
+    #### end unified loss_type ####
     parser.add_argument(
         "--kl_estimator",
         type=str,
@@ -583,8 +625,45 @@ if __name__ == "__main__":
             print("[Warning] --ring_attn_size > 1 requires --packing_samples.")
             args.packing_samples = True
 
+    #### Round train_max_tokens_per_gpu to 1024 boundary ####
+    if args.train_max_tokens_per_gpu is not None:
+        args.train_max_tokens_per_gpu = (args.train_max_tokens_per_gpu // 1024) * 1024
+    #### end round train_max_tokens_per_gpu ####
+
+    #### Derive internal flags from --loss_type ####
+    # token_level_loss: controls reduction in PolicyLoss (always LOCAL reduction).
+    # Cross-rank normalization is handled by the replay buffer's loss_scale, not here.
+    if args.legacy_loss_scaling:
+        args.token_level_loss = True  # legacy: always flat token mean (upstream default)
+    elif args.loss_type in ("ppo", "gspo", "dr_grpo", "sapo"):
+        args.token_level_loss = False  # per-sequence mean, then batch mean
+    elif args.loss_type in ("dapo", "cispo", "bnpo"):
+        args.token_level_loss = True  # flat token mean within rank
+    else:
+        args.token_level_loss = False
+
+    # policy_loss_type: controls ratio computation in PolicyLoss
+    args.policy_loss_type = "gspo" if args.loss_type == "gspo" else "ppo"
+
+    # liger_loss_type: maps to Liger's internal loss_type enum
+    LIGER_LOSS_TYPE_MAP = {"ppo": "grpo", "gspo": "grpo"}
+    args.liger_loss_type = LIGER_LOSS_TYPE_MAP.get(args.loss_type, args.loss_type)
+
+    # Validate Liger-only variants
+    if args.loss_type in ("cispo", "sapo") and not getattr(args, "use_liger_grpo_loss", False):
+        raise ValueError(f"--loss_type {args.loss_type} requires --use_liger_grpo_loss")
+    #### end derive from loss_type ####
+
+    #### Adaptive batch implies dynamic batch ####
+    if args.use_adaptive_batch:
+        args.use_dynamic_batch = True
+        if args.rollout_max_tokens_per_gpu is None:
+            print("[Warning] Set --rollout_max_tokens_per_gpu to --train_max_tokens_per_gpu.")
+            args.rollout_max_tokens_per_gpu = args.train_max_tokens_per_gpu
+    #### end adaptive batch ####
+
     if args.use_dynamic_batch:
-        if not args.packing_samples:
+        if not args.packing_samples and not args.use_adaptive_batch:
             print("[Warning] Please --packing_samples to accelerate when --use_dynamic_batch is enabled.")
             args.packing_samples = True
         if args.rollout_max_tokens_per_gpu is None:

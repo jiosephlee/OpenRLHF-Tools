@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers.trainer import get_scheduler
 
-from openrlhf.models import Actor, PolicyLoss
+from openrlhf.models import Actor, LigerPolicyLoss, PolicyLoss
 from openrlhf.models.utils import compute_approx_kl, masked_mean
 from openrlhf.trainer.ppo_utils.experience_maker import Experience
 from openrlhf.utils import get_tokenizer
@@ -68,27 +68,56 @@ class ActorPPOTrainer(ABC):
         self.vllm_engines = vllm_engines
         self.max_epochs = self.args.max_epochs
 
-        self.actor_loss_fn = PolicyLoss(
-            clip_eps_low=self.args.eps_clip_low_high[0],
-            clip_eps_high=self.args.eps_clip_low_high[1],
-            dual_clip=self.args.dual_clip,
-            policy_loss_type=self.args.policy_loss_type,
-            enable_vllm_is_correction=self.args.enable_vllm_is_correction,
-            vllm_is_truncated_threshold=(
-                self.args.vllm_is_truncated_threshold if self.args.enable_vllm_is_correction else None
-            ),
-            vllm_is_correction_type=self.args.vllm_is_correction_type,
-        )
-
         # Mixtral 8x7b
         self.aux_loss = self.args.aux_loss_coef > 1e-8
+
+        #### Policy loss: route to PolicyLoss or LigerPolicyLoss ####
+        self.use_liger_grpo_loss = getattr(self.args, "use_liger_grpo_loss", False)
+        if self.use_liger_grpo_loss:
+            assert self.args.zero_stage != 3, (
+                "--use_liger_grpo_loss requires direct access to lm_head.weight, "
+                "which is incompatible with ZeRO-3 parameter sharding. Use ZeRO-2."
+            )
+            assert self.args.entropy_loss_coef is None, (
+                "--use_liger_grpo_loss cannot compute entropy (requires full logits). "
+                "Remove --entropy_loss_coef when using Liger fused GRPO loss."
+            )
+            self.actor_loss_fn = LigerPolicyLoss(
+                clip_eps_low=self.args.eps_clip_low_high[0],
+                clip_eps_high=self.args.eps_clip_low_high[1],
+                beta=0.0,
+                temperature=getattr(self.args, "temperature", 1.0),
+                loss_type=getattr(self.args, "liger_loss_type", "grpo"),
+                enable_vllm_is_correction=self.args.enable_vllm_is_correction,
+                vllm_is_truncated_threshold=(
+                    self.args.vllm_is_truncated_threshold if self.args.enable_vllm_is_correction else None
+                ),
+                vllm_is_correction_type=self.args.vllm_is_correction_type,
+            )
+        else:
+            self.actor_loss_fn = PolicyLoss(
+                clip_eps_low=self.args.eps_clip_low_high[0],
+                clip_eps_high=self.args.eps_clip_low_high[1],
+                dual_clip=self.args.dual_clip,
+                token_level_loss=getattr(self.args, "token_level_loss", True),
+                policy_loss_type=getattr(self.args, "policy_loss_type", "ppo"),
+                enable_vllm_is_correction=self.args.enable_vllm_is_correction,
+                vllm_is_truncated_threshold=(
+                    self.args.vllm_is_truncated_threshold if self.args.enable_vllm_is_correction else None
+                ),
+                vllm_is_correction_type=self.args.vllm_is_correction_type,
+            )
+        #### end policy loss init ####
 
         self.replay_buffer = NaiveReplayBuffer(
             micro_train_batch_size,
             buffer_limit,
             buffer_cpu_offload,
             getattr(self.args, "packing_samples", False),
-            self.args.use_dynamic_batch,
+            getattr(self.args, "use_dynamic_batch", False),
+            adaptive_batch=getattr(self.args, "use_adaptive_batch", False),
+            loss_type=getattr(self.args, "loss_type", "ppo"),
+            legacy_loss_scaling=getattr(self.args, "legacy_loss_scaling", False),
         )
 
         # Init torch group for weights sync
@@ -152,8 +181,14 @@ class ActorPPOTrainer(ABC):
 
     def ppo_train(self, kl_ctl: float):
         # replay buffer may be empty at first, we should rebuild at each training
-        if self.args.use_dynamic_batch:
+        #### adaptive_batch / dynamic_batch dispatch ####
+        if getattr(self.args, "use_adaptive_batch", False):
+            self.replay_buffer.setup_adaptive_batch(self.strategy)
+        elif getattr(self.args, "use_dynamic_batch", False):
             self.replay_buffer.setup_dynamic_batch(self.strategy)
+        #### end adaptive_batch / dynamic_batch dispatch ####
+
+        torch.cuda.empty_cache()
 
         not_shuffle = (
             self.strategy.ring_attn_group is not None
@@ -179,12 +214,23 @@ class ActorPPOTrainer(ABC):
                 disable=not self.strategy.is_rank_0(),
             )
             for step, experience in enumerate(pbar):
-
                 experience.to_device(device)
                 status = self.training_step(experience, kl_ctl, step)
                 status["kl"] *= status["response_length"]
                 if "logprobs_diff" in status:
                     status["logprobs_diff"] *= status["response_length"]
+
+                #### Normalize sparse keys across ranks for all_reduce ####
+                if torch.distributed.is_initialized():
+                    sparse_keys = [k for k in status if k.startswith("parse_method__")]
+                    all_sparse = [None] * self.strategy.world_size
+                    torch.distributed.all_gather_object(all_sparse, sparse_keys)
+                    union_keys = sorted(set(k for rank_keys in all_sparse for k in rank_keys))
+                    for k in union_keys:
+                        if k not in status:
+                            status[k] = 0.0
+                #### end normalize sparse keys ####
+
                 status = self.strategy.all_reduce(status)
                 status["kl"] /= status["response_length"]
                 if "logprobs_diff" in status:
@@ -200,6 +246,8 @@ class ActorPPOTrainer(ABC):
                     "act_lr": status["actor_lr"],
                 }
 
+                if "grad_norm" in status:
+                    short_status["grad_norm"] = status["grad_norm"]
                 if "entropy_loss" in status:
                     short_status["ent_loss"] = status["entropy_loss"]
 
@@ -207,16 +255,75 @@ class ActorPPOTrainer(ABC):
                 pbar.set_postfix(short_status)
 
         if status_list:
-            status_mean = status_list[0]
+            status_mean = status_list[0].copy()
             for m in status_list[1:]:
                 for k, v in m.items():
-                    status_mean[k] += v
+                    status_mean[k] = status_mean.get(k, 0.0) + v
             for k in status_mean.keys():
                 status_mean[k] /= len(status_list)
+
+        #### Inject micro-batch partition stats (L4) ####
+        if self.replay_buffer.micro_batch_stats:
+            status_mean.update(self.replay_buffer.micro_batch_stats)
+        #### end micro-batch partition stats ####
+
         return status_mean
+
+    #### VRAM audit helper (L14) ####
+    def _log_vram_audit(self, tag: str):
+        """Log a detailed VRAM breakdown. Enable with OPENRLHF_VRAM_AUDIT=1."""
+        if not getattr(self, "_vram_audit", False):
+            return
+        dev = torch.cuda.current_device()
+        alloc = torch.cuda.memory_allocated(dev) / 1024**3
+        reserved = torch.cuda.memory_reserved(dev) / 1024**3
+        max_alloc = torch.cuda.max_memory_allocated(dev) / 1024**3
+        total = torch.cuda.get_device_properties(dev).total_memory / 1024**3
+        model = self.actor.model.module if hasattr(self.actor.model, "module") else self.actor.model
+        param_mem = sum(p.numel() * p.element_size() for p in model.parameters()) / 1024**3
+        grad_mem = sum(p.grad.numel() * p.grad.element_size() for p in model.parameters() if p.grad is not None) / 1024**3
+        trainable_mem = sum(p.numel() * p.element_size() for p in model.parameters() if p.requires_grad) / 1024**3
+        frozen_mem = param_mem - trainable_mem
+        logger.info(
+            f"[VRAM Audit: {tag}] "
+            f"alloc={alloc:.2f}GB reserved={reserved:.2f}GB max_alloc={max_alloc:.2f}GB total={total:.2f}GB | "
+            f"params={param_mem:.2f}GB (trainable={trainable_mem:.2f}GB frozen={frozen_mem:.2f}GB) "
+            f"grads={grad_mem:.2f}GB | "
+            f"other={alloc - param_mem - grad_mem:.2f}GB (activations+buffers+DS)"
+        )
+    #### end VRAM audit helper ####
+
+    #### NaN guard helper (L24) ####
+    def _assert_finite_actor_state(self, step: int, stage: str, check_grad: bool) -> None:
+        model = self.actor.model.module if hasattr(self.actor.model, "module") else self.actor.model
+        for name, param in model.named_parameters():
+            if not torch.isfinite(param.data).all():
+                nonfinite = int((~torch.isfinite(param.data)).sum().item())
+                raise RuntimeError(
+                    f"Non-finite actor parameter detected at step={step}, stage={stage}, "
+                    f"name={name}, shape={tuple(param.shape)}, nonfinite_count={nonfinite}, dtype={param.dtype}"
+                )
+            if check_grad and param.grad is not None and not torch.isfinite(param.grad).all():
+                nonfinite = int((~torch.isfinite(param.grad)).sum().item())
+                raise RuntimeError(
+                    f"Non-finite actor gradient detected at step={step}, stage={stage}, "
+                    f"name={name}, shape={tuple(param.grad.shape)}, nonfinite_count={nonfinite}, dtype={param.grad.dtype}"
+                )
+    #### end NaN guard helper ####
 
     def training_step(self, experience: Experience, kl_ctl: float, step: int) -> Dict[str, float]:
         self.actor.train()
+
+        #### VRAM audit + NaN guard init (L14, L24) ####
+        if step == 0 and not hasattr(self, "_vram_audit"):
+            self._vram_audit = os.environ.get("OPENRLHF_VRAM_AUDIT", "0") == "1"
+            if self._vram_audit:
+                torch.cuda.reset_peak_memory_stats()
+                self._log_vram_audit("pre_forward")
+        nan_guard = os.environ.get("OPENRLHF_DEBUG_NAN_GUARD", "0") == "1"
+        if nan_guard:
+            self._assert_finite_actor_state(step, stage="pre_forward", check_grad=False)
+        #### end VRAM audit + NaN guard init ####
 
         sequences = experience.sequences
         action_mask = experience.action_mask
@@ -226,67 +333,132 @@ class ActorPPOTrainer(ABC):
         advantages = experience.advantages
         base_action_log_probs = experience.base_action_log_probs
 
-        # actor loss
-        action_log_probs, output = self.actor(
-            sequences,
-            action_mask,
-            attention_mask=attention_mask,
-            return_output=True,
-            ring_attn_group=self.strategy.ring_attn_group,
-            packed_seq_lens=packed_seq_lens,
-            return_entropy=self.args.entropy_loss_coef is not None,
-        )
+        #### Forward pass + policy loss (Liger vs standard) ####
+        action_log_probs = None
+        model_output = None
+        aux_loss = None
 
-        # loss function
-        actor_loss, clip_ratio, ppo_kl, vllm_kl = self.actor_loss_fn(
-            action_log_probs,
-            old_action_log_probs,
-            advantages,
-            action_mask=experience.action_mask,
-            rollout_log_probs=experience.rollout_log_probs,
-        )
+        if self.use_liger_grpo_loss:
+            # Liger: backbone-only forward → fused lm_head + loss
+            hidden_states, aux_loss = self.actor.forward_hidden_states(
+                sequences,
+                attention_mask=attention_mask,
+                ring_attn_group=self.strategy.ring_attn_group,
+                packed_seq_lens=packed_seq_lens,
+            )
+            L = action_mask.shape[1]
+            # Triton needs L+1 positions: h[t] → logits[t] → predicts token[t+1].
+            hs_slice = hidden_states[:, -(L + 1) :, :]  # (B, L+1, D)
+
+            actor_loss, clip_ratio, ppo_kl, vllm_kl = self.actor_loss_fn(
+                hidden_states=hs_slice,
+                lm_head=self.actor.get_lm_head(),
+                completion_ids=sequences[:, -L:],
+                action_mask=action_mask,
+                advantages=advantages,
+                old_log_probs=old_action_log_probs,
+                rollout_log_probs=experience.rollout_log_probs,
+            )
+        else:
+            # Standard: full forward → PolicyLoss on log_probs
+            action_log_probs, model_output = self.actor(
+                sequences,
+                action_mask,
+                attention_mask=attention_mask,
+                return_output=True,
+                ring_attn_group=self.strategy.ring_attn_group,
+                packed_seq_lens=packed_seq_lens,
+                return_entropy=self.args.entropy_loss_coef is not None,
+            )
+            actor_loss, clip_ratio, ppo_kl, vllm_kl = self.actor_loss_fn(
+                action_log_probs,
+                old_action_log_probs,
+                advantages,
+                action_mask=experience.action_mask,
+                rollout_log_probs=experience.rollout_log_probs,
+            )
+            aux_loss = getattr(model_output, "aux_loss", None)
+        #### end forward pass + policy loss ####
+
+        #### Non-finite loss check ####
+        if not torch.isfinite(actor_loss):
+            action_tokens = int(experience.action_mask.sum().item())
+            diag = (
+                f"step={step}, action_tokens={action_tokens}, "
+                f"advantages_finite={bool(torch.isfinite(advantages).all())}, "
+                f"old_log_probs_finite={bool(torch.isfinite(old_action_log_probs).all())}"
+            )
+            if action_log_probs is not None:
+                diag += (
+                    f", new_log_probs_finite={bool(torch.isfinite(action_log_probs).all())}, "
+                    f"old_log_probs_excerpt={str(old_action_log_probs)[:100]} ... {str(old_action_log_probs)[-100:]}, "
+                    f"new_log_probs_excerpt={str(action_log_probs)[:100]} ... {str(action_log_probs)[-100:]}"
+                )
+            raise RuntimeError(f"Non-finite actor_loss detected. {diag}")
+        #### end non-finite loss check ####
+
+        #### Shared post-loss: metrics, KL, aux_loss, entropy (L15, L17) ####
         experience.info["ppo_clip_ratio"] = clip_ratio.detach()
         experience.info["ppo_kl"] = ppo_kl.detach()
         if vllm_kl is not None:
             experience.info["vllm_kl"] = vllm_kl.detach()
 
-        if self.args.use_kl_loss:
+        loss = actor_loss
+
+        # KL loss (requires action_log_probs — not available in Liger path)
+        if self.args.use_kl_loss and action_log_probs is not None:
             if self.args.init_kl_coef > 0:
                 kl = compute_approx_kl(
                     action_log_probs,
                     base_action_log_probs,
                     kl_estimator=self.args.kl_estimator,
                 )
-                logprobs_diff = action_log_probs.float() - base_action_log_probs.float()
             else:
                 kl = torch.zeros_like(action_log_probs)
-                logprobs_diff = torch.zeros_like(action_log_probs)
+            logprobs_diff = action_log_probs.float() - base_action_log_probs.float()
             kl_loss = masked_mean(kl, experience.action_mask)
             logprobs_diff = masked_mean(logprobs_diff, experience.action_mask)
             experience.info["kl"] = kl_loss.detach()
             experience.info["logprobs_diff"] = logprobs_diff.detach()
-        else:
-            kl_loss = 0
+            loss = loss + kl_loss * kl_ctl
 
-        loss = actor_loss + kl_loss * kl_ctl
-        # mixtral
-        if self.aux_loss:
-            loss += output.aux_loss * self.args.aux_loss_coef
-        # entropy loss
-        if self.args.entropy_loss_coef is not None:
-            entropy_loss = masked_mean(output.entropy[:, -experience.action_mask.shape[1] :], experience.action_mask)
+        # Aux loss (MoE load balancing — available from both paths)
+        if aux_loss is not None and self.aux_loss:
+            loss = loss + aux_loss * self.args.aux_loss_coef
+
+        # Entropy loss (requires full logits — not available in Liger path)
+        if model_output is not None and self.args.entropy_loss_coef is not None:
+            entropy_loss = masked_mean(
+                model_output.entropy[:, -experience.action_mask.shape[1] :], experience.action_mask
+            )
             if self.args.entropy_loss_coef != 0:
                 loss -= entropy_loss * self.args.entropy_loss_coef
+        #### end shared post-loss ####
 
+        #### Dynamic loss scaling ####
         if self.args.use_dynamic_batch:
             loss = loss * self.replay_buffer.dynamic_loss_scale[step]
+        #### end dynamic loss scaling ####
 
+        if step == 0:
+            self._log_vram_audit("post_forward")
         self.strategy.backward(loss, self.actor, self.actor_optim)
+        if step == 0:
+            self._log_vram_audit("post_backward")
+        if nan_guard:
+            self._assert_finite_actor_state(step, stage="post_backward", check_grad=True)
+
+        #### Conditional optimizer_step with grad_norm (L15) ####
+        grad_norm = None
         if self.args.use_dynamic_batch:
             if self.replay_buffer.dynamic_optimizer_step[step]:
-                self.strategy.optimizer_step(self.actor_optim, self.actor, self.actor_scheduler, name="actor")
+                grad_norm = self.strategy.optimizer_step(self.actor_optim, self.actor, self.actor_scheduler, name="actor")
         else:
-            self.strategy.optimizer_step(self.actor_optim, self.actor, self.actor_scheduler, name="actor")
+            grad_norm = self.strategy.optimizer_step(self.actor_optim, self.actor, self.actor_scheduler, name="actor")
+        #### end conditional optimizer_step ####
+
+        if nan_guard:
+            self._assert_finite_actor_state(step, stage="post_optimizer", check_grad=False)
 
         if self.ema_model:
             if self.args.use_dynamic_batch:
@@ -297,15 +469,34 @@ class ActorPPOTrainer(ABC):
 
         # status
         status = {"policy_loss": actor_loss.detach().item(), "actor_lr": self.actor_scheduler.get_last_lr()[0]}
-        if self.args.entropy_loss_coef is not None:
+        if grad_norm is not None:
+            status["grad_norm"] = grad_norm
+        if self.args.entropy_loss_coef is not None and model_output is not None:
             status["entropy_loss"] = entropy_loss.detach().item()
 
-        # merge logs from info field
-        for k, v in experience.info.items():
+        #### Merge logs from info field (L16) — skip internal/sparse keys ####
+        _SKIP_INFO_KEYS = {"distill_mask"}
+        for k in sorted(experience.info.keys()):
+            v = experience.info[k]
+            if k in _SKIP_INFO_KEYS or k.startswith("tool_count__"):
+                continue
             if isinstance(v, list):
                 status[k] = torch.tensor(v, dtype=torch.float).mean().item()
             elif isinstance(v, torch.Tensor):
                 status[k] = v.float().mean().item()
+        #### end merge logs ####
+
+        #### Sanity bounds check (L25) ####
+        _BOUNDED_KEYS = {"reward": 10, "score": 10, "return": 100, "response_clip_ratio": 1.01}
+        for k, bound in _BOUNDED_KEYS.items():
+            if k in status and abs(status[k]) > bound:
+                logger.warning(
+                    f"[METRIC SANITY] {k}={status[k]:.4f} exceeds bound {bound}. "
+                    f"info type={type(experience.info.get(k))}, "
+                    f"info value={experience.info.get(k)}"
+                )
+        #### end sanity bounds check ####
+
         return status
 
     def broadcast_to_vllm(self):

@@ -16,14 +16,18 @@ def get_train_ds_config(
     use_ds_universal_ckpt=False,
     deepcompile=False,
     tensor_parallel_size=1,
+    adam_8bit=False,
 ):
     device = "cpu" if offload else "none"
+    #### 8-bit Adam keeps optimizer on GPU — don't offload ####
+    optim_offload_device = "none" if adam_8bit else ("cpu" if adam_offload else "none")
+    #### end 8-bit Adam ####
     zero_opt_dict = {
         "stage": stage,
         "offload_param": {"device": device},
         "offload_optimizer": {
-            "device": "cpu" if adam_offload else "none",
-            "pin_memory": True,
+            "device": optim_offload_device,
+            "pin_memory": False,
         },
         "sub_group_size": "auto",
         "stage3_max_live_parameters": "auto",
@@ -42,7 +46,7 @@ def get_train_ds_config(
     if stage == 3:
         zero_opt_dict["reduce_scatter"] = True
 
-    return {
+    ds_config = {
         "steps_per_print": 100,
         "zero_optimization": zero_opt_dict,
         "bf16": {
@@ -66,6 +70,13 @@ def get_train_ds_config(
         },
     }
 
+    #### 8-bit Adam — allow untested optimizer in DeepSpeed ####
+    if adam_8bit:
+        ds_config["zero_allow_untested_optimizer"] = True
+    #### end 8-bit Adam ####
+
+    return ds_config
+
 
 def get_eval_ds_config(
     offload,
@@ -86,7 +97,7 @@ def get_eval_ds_config(
         "stage3_prefetch_bucket_size": "auto",
         "offload_param": {
             "device": "cpu" if offload else "none",
-            "pin_memory": True,
+            "pin_memory": False,
         },
     }
     return {

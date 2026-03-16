@@ -4,7 +4,7 @@ import shutil
 from abc import ABC
 from collections import defaultdict
 from datetime import timedelta
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import deepspeed
 import torch
@@ -61,6 +61,14 @@ class DeepspeedStrategy(ABC):
         self.max_norm = max_norm
 
         self.adam_offload = getattr(args, "adam_offload", False)
+        #### 8-bit Adam support ####
+        self.adam_8bit = getattr(args, "adam_8bit", False)
+        if self.adam_8bit and self.adam_offload:
+            raise ValueError(
+                "--adam_8bit and --adam_offload are mutually exclusive. "
+                "8-bit Adam keeps optimizer states on GPU; offload moves them to CPU."
+            )
+        #### end 8-bit Adam support ####
         self.zpg = getattr(args, "zpg", 1)
         self.use_ds_universal_ckpt = getattr(args, "use_ds_universal_ckpt", False)
         self.grad_accum_dtype = getattr(args, "grad_accum_dtype", None)
@@ -132,14 +140,36 @@ class DeepspeedStrategy(ABC):
     def ring_attn_group(self):
         return get_ring_attn_group()
 
+    #### 8-bit Adam optimizer factory ####
+    def _create_adam(self, optim_params, **kwargs):
+        """Create the appropriate Adam optimizer based on strategy flags."""
+        if self.adam_8bit:
+            from bitsandbytes.optim import AdamW
+
+            return AdamW(optim_params, optim_bits=8, is_paged=True, **kwargs)
+        elif self.adam_offload:
+            return DeepSpeedCPUAdam(optim_params, **kwargs)
+        else:
+            return FusedAdam(optim_params, **kwargs)
+    #### end 8-bit Adam optimizer factory ####
+
     def create_optimizer(self, model, **kwargs) -> Optimizer:
         if isinstance(model, Actor):
             model = model.model
-        # Optimizer
-        AdamOptimizer = DeepSpeedCPUAdam if self.adam_offload else FusedAdam
         optim_params = get_optimizer_grouped_parameters(model, kwargs["weight_decay"])
-        optim = AdamOptimizer(optim_params, **kwargs)
-        return optim
+        optimizer = self._create_adam(optim_params, **kwargs)
+
+        #### 8-bit Adam — keep embeddings in fp32 ####
+        if self.adam_8bit:
+            import bitsandbytes
+
+            manager = bitsandbytes.optim.GlobalOptimManager.get_instance()
+            for module in model.modules():
+                if isinstance(module, nn.Embedding):
+                    manager.register_module_override(module, "weight", {"optim_bits": 32})
+        #### end 8-bit Adam ####
+
+        return optimizer
 
     def backward(self, loss: torch.Tensor, model: nn.Module, optimizer: optim.Optimizer, **kwargs) -> None:
         if isinstance(model, Actor):
@@ -153,10 +183,16 @@ class DeepspeedStrategy(ABC):
         scheduler,
         name="model",
         **kwargs,
-    ) -> None:
+    ) -> Optional[float]:
         if isinstance(model, Actor):
             model = model.model
         model.step()
+        #### Gradient norm logging — extract from DeepSpeed internals ####
+        grad_norm = getattr(model, "_global_grad_norm", None)
+        if grad_norm is not None:
+            return float(grad_norm)
+        return None
+        #### end gradient norm logging ####
 
     def setup_dataloader(
         self,
@@ -233,17 +269,20 @@ class DeepspeedStrategy(ABC):
             else:
                 model = tp_model
 
-            # Recreate optimizer over sharded params to free pre-sharded weight references.
-            # Without this, the old optimizer still pins the full (unsharded) tensors in GPU
-            # memory, causing OOM when deepspeed.initialize() allocates gradient partitions.
+            #### AutoTP OOM fix — recreate optimizer over sharded params to free pre-sharded refs ####
             old_defaults = optim.defaults.copy()
+            del optim
             if scheduler is not None:
-                scheduler.optimizer = None
-            optim = self.create_optimizer(model, **old_defaults)
+                scheduler.optimizer = None  # break reference to old optimizer
+            sharded_model = model.model if is_actor else model
+            optim_params = get_optimizer_grouped_parameters(sharded_model, old_defaults.get("weight_decay", 0.0))
+            optim = self._create_adam(optim_params, **old_defaults)
             if scheduler is not None:
-                scheduler.optimizer = optim
+                scheduler.optimizer = optim  # rebind to new optimizer
+
             gc.collect()
             torch.cuda.empty_cache()
+            #### end AutoTP OOM fix ####
 
         engine, optim, _, scheduler = deepspeed.initialize(
             model=model.model if is_actor else model,
@@ -253,6 +292,23 @@ class DeepspeedStrategy(ABC):
             args={"local_rank": int(os.environ.get("LOCAL_RANK", "-1"))},
             dist_init_required=True,
         )
+
+        #### PyTorch nightly compat — fix LR scheduler param group mismatch after DS consolidation ####
+        if scheduler is not None and hasattr(scheduler, "base_lrs"):
+            n_groups = len(optim.param_groups)
+            if len(scheduler.base_lrs) != n_groups:
+                old_n = len(scheduler.base_lrs)
+                self.print(
+                    f"[ds_init] Fixing LR scheduler: {old_n} → {n_groups} param_groups"
+                )
+                orig_base_lr = scheduler.base_lrs[0]
+                scheduler.base_lrs = [orig_base_lr] * n_groups
+                if hasattr(scheduler, "lr_lambdas") and len(scheduler.lr_lambdas) != n_groups:
+                    scheduler.lr_lambdas = scheduler.lr_lambdas[:n_groups]
+                if hasattr(scheduler, "_last_lr") and len(getattr(scheduler, "_last_lr", [])) != n_groups:
+                    scheduler._last_lr = scheduler._last_lr[:n_groups]
+        #### end PyTorch nightly compat ####
+
         if self.deepcompile:
             engine.compile()
         if is_actor:
@@ -276,6 +332,7 @@ class DeepspeedStrategy(ABC):
             use_ds_universal_ckpt=self.use_ds_universal_ckpt,
             deepcompile=self.deepcompile,
             tensor_parallel_size=self.ds_tensor_parallel_size,
+            adam_8bit=self.adam_8bit,
         )
         if self.use_dynamic_batch:
             ds_config["train_micro_batch_size_per_gpu"] = 1
@@ -423,7 +480,19 @@ class DeepspeedStrategy(ABC):
         assert op in ("mean", "max", "sum")
         if isinstance(data, dict):
             ret = {}
-            for k, v in data.items():
+            #### Cross-rank key sync — ensure all ranks reduce the same set of keys ####
+            keys = sorted(data.keys())
+            if dist.is_initialized():
+                gathered_keys = [None] * self.world_size
+                dist.all_gather_object(gathered_keys, keys)
+                all_keys = sorted(set().union(*gathered_keys))
+                for missing_k in all_keys:
+                    if missing_k not in data:
+                        data[missing_k] = 0.0
+                keys = all_keys
+            #### end cross-rank key sync ####
+            for k in keys:
+                v = data[k]
                 ret[k] = self.all_reduce(v, op)
             return ret
         else:

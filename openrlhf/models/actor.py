@@ -1,3 +1,4 @@
+import logging
 from typing import Optional
 
 import deepspeed
@@ -11,6 +12,8 @@ from transformers.integrations.deepspeed import HfDeepSpeedConfig
 
 from .ring_attn_utils import gather_and_pad_tensor, unpad_and_slice_tensor
 from .utils import compute_entropy, log_probs_from_logits
+
+logger = logging.getLogger(__name__)
 
 
 class Actor(nn.Module):
@@ -200,9 +203,97 @@ class Actor(nn.Module):
         if not return_action_log_probs and return_logprobs:
             return (log_probs, output) if return_output else log_probs
 
-        action_log_probs = log_probs[:, -action_mask.shape[1] :] * action_mask.float()
+        action_log_probs = log_probs[:, -action_mask.shape[1] :]
+        #### NaN-safe masking — torch.where prevents masked NaN from propagating gradients ####
+        action_log_probs = torch.where(action_mask.bool(), action_log_probs, torch.zeros_like(action_log_probs))
+        #### end NaN-safe masking ####
 
         return (action_log_probs, output) if return_output else action_log_probs
+
+    #### forward_hidden_states — returns last hidden state (before lm_head) for fused loss kernels ####
+    def forward_hidden_states(
+        self,
+        sequences: torch.LongTensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        ring_attn_group: Optional[dist.ProcessGroup] = None,
+        packed_seq_lens: Optional[list[int]] = None,
+    ) -> tuple:
+        """Forward pass returning last hidden state (before lm_head) for fused loss kernels.
+
+        Returns:
+            (hidden_states, aux_loss): hidden_states shape [B, T, D] (full sequence),
+            aux_loss scalar or None.  The caller is responsible for slicing the
+            appropriate positions for next-token prediction.
+        """
+        batch, seqlen = sequences.size()
+        forward_attention_mask = attention_mask
+        if self.packing_samples:
+            sequences, position_ids, rolled_sequences, ring_attn_pad_len, indices = unpad_and_slice_tensor(
+                sequences, attention_mask, ring_attn_group
+            )
+            forward_attention_mask = None
+        else:
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 1)
+
+        # Get the transformer backbone (before lm_head).
+        # NOTE: cannot use hasattr(model, "base_model") — PreTrainedModel defines
+        # a base_model property (returns self.model), so it's True for ALL HF models.
+        # Must check for PeftModel explicitly.
+        causal_lm = self.model
+        if hasattr(causal_lm, "module"):
+            causal_lm = causal_lm.module
+        try:
+            from peft import PeftModel
+
+            if isinstance(causal_lm, PeftModel):
+                causal_lm = causal_lm.base_model.model
+        except ImportError:
+            pass
+        backbone = causal_lm.model  # e.g., LlamaModel, MistralModel, Qwen3Model
+
+        output = backbone(sequences, attention_mask=forward_attention_mask, position_ids=position_ids)
+        last_hidden_state = output.last_hidden_state
+
+        if self.packing_samples:
+            last_hidden_state = gather_and_pad_tensor(
+                last_hidden_state, ring_attn_group, ring_attn_pad_len, indices, batch, seqlen
+            )
+
+        # aux_loss (MoE load-balancing loss)
+        aux_loss = getattr(output, "aux_loss", None)
+        if aux_loss is None:
+            router_logits = getattr(output, "router_logits", None)
+            if router_logits is not None:
+                if not getattr(self, "_logged_aux_loss_recompute", False):
+                    logger.info(
+                        "[forward_hidden_states] aux_loss not in backbone output; "
+                        "recomputing from router_logits (Liger path MoE fix)"
+                    )
+                    self._logged_aux_loss_recompute = True
+                from transformers.models.mixtral.modeling_mixtral import load_balancing_loss_func
+
+                cfg = backbone.config
+                num_experts = cfg.num_local_experts
+                top_k = cfg.num_experts_per_tok
+                aux_loss = load_balancing_loss_func(router_logits, num_experts, top_k, attention_mask)
+
+        return last_hidden_state, aux_loss
+
+    def get_lm_head(self) -> nn.Linear:
+        """Return the lm_head module, handling PEFT wrapping."""
+        model = self.model
+        if hasattr(model, "module"):
+            model = model.module
+        try:
+            from peft import PeftModel
+
+            if isinstance(model, PeftModel):
+                model = model.base_model.model
+        except ImportError:
+            pass
+        return model.lm_head
+    #### end forward_hidden_states ####
 
     def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs={"use_reentrant": False}):
         self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)

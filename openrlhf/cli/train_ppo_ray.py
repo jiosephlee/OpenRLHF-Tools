@@ -65,7 +65,8 @@ def train(args):
             pg if args.colocate_all_models and not args.async_train else None,
             args.vllm_gpu_memory_utilization,
             args.vllm_enable_sleep,
-            "processed_logprobs" if args.enable_vllm_is_correction else None,
+            vllm_sleep_level=args.vllm_sleep_level,
+            logprobs_mode="processed_logprobs" if args.enable_vllm_is_correction else None,
             agent_func_path=args.agent_func_path,
             remote_rm_url=args.remote_rm_url,
         )
@@ -259,6 +260,14 @@ if __name__ == "__main__":
         default=False,
         help="Enable sleep mode for vLLM when using --colocate_all_models",
     )
+    #### vLLM sleep level ####
+    parser.add_argument(
+        "--vllm_sleep_level",
+        type=int,
+        default=1,
+        help="vLLM sleep level (1=backup weights to CPU, 2=discard weights)",
+    )
+    #### end vLLM sleep level ####
     parser.add_argument(
         "--vllm_gpu_memory_utilization",
         type=float,

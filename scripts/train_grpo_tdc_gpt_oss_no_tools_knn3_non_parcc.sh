@@ -1,67 +1,67 @@
 #!/bin/bash
 #
-# Unified interactive script for GPT-OSS GRPO training.
+# KNN-3 no-tools GRPO training for GPT-OSS on TDC binary classification.
 # Non-PARCC cluster variant (no SLURM, no InfiniBand, no conda activation).
+#
+# Uses KNN-3 augmented prompts (with precomputed RDKit descriptors + 3 nearest
+# neighbors per class baked into the text) instead of multi-turn tool calling.
+# Input key is "text" (plain string), not "messages".
+#
+# Data source: Intern-S1-recipe/DataPrepare/TDC_prepended/KNN_3/
+# Convert first: python scripts/convert_knn3_to_openrlhf.py
 #
 # Supports all quantization modes via env vars:
 #   QUANT_METHOD=mxfp4 (default) — MXFP4 QAT + FlashInfer MoE kernel
 #   QUANT_METHOD=nvfp4            — NVFP4 QAT + NVIDIA kernel backend
 #   DEQUANT=unsloth               — Load pre-converted BF16 model (no quant flags)
 #
-# When DEQUANT is set, QUANT_METHOD is ignored.
-#
 # Supports both colocated and distributed modes via MODE env var.
 #
-# Uses GPT-OSS Harmony tool-calling format:
-#   <|start|>assistant to=functions.<name><|channel|>commentary json<|message|>...
-#
 # Usage:
-#   VLLM_GPU_MEM_UTIL=0.6
-#   # MXFP4 QAT (default):
-#   TRAIN_MAX_TOKENS_PER_GPU=8192 QAT=fp4_fake_quantize bash train_grpo_tdc_gpt_oss_non_parcc.sh
-#
-#   # NVFP4 QAT:
-#   TRAIN_MAX_TOKENS_PER_GPU=1024 QUANT_METHOD=nvfp4 bash train_grpo_tdc_gpt_oss_non_parcc.sh
+#   # MXFP4 (default):
+#   bash scripts/train_grpo_tdc_gpt_oss_no_tools_knn3_non_parcc.sh
 #
 #   # Unsloth BF16:
-#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis TRAIN_MAX_TOKENS_PER_GPU=40960 SMART_REPLAY=1 REDUCE_OPTIMIZER=adam_offload LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=gspo bash train_grpo_tdc_gpt_oss_non_parcc.sh
-#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis TRAIN_MAX_TOKENS_PER_GPU=32768 SMART_REPLAY=1 REDUCE_OPTIMIZER=none LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=gspo bash train_grpo_tdc_gpt_oss_non_parcc.sh
+#   DEQUANT=unsloth LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo bash scripts/train_grpo_tdc_gpt_oss_no_tools_knn3_non_parcc.sh
+#
+#   # With features:
+#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis REDUCE_OPTIMIZER=adam_offload TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo SMART_REPLAY=1 DEQUANT=unsloth bash scripts/train_grpo_tdc_gpt_oss_no_tools_knn3_non_parcc.sh
+#
+#   # LoRA:
+#   USE_LORA=1 LEARNING_RATE=2e-5 DEQUANT=unsloth bash scripts/train_grpo_tdc_gpt_oss_no_tools_knn3_non_parcc.sh
+#
 #   # Distributed:
-#   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 bash scripts/train_grpo_tdc_gpt_oss_non_parcc.sh
+#   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 DEQUANT=unsloth bash scripts/train_grpo_tdc_gpt_oss_no_tools_knn3_non_parcc.sh
 #
 # Feature flags (all env-configurable):
 #   MODE=colocated|distributed           # Default: colocated
 #   QUANT_METHOD=mxfp4|nvfp4             # FP4 format (default: mxfp4, ignored when DEQUANT set)
 #   DEQUANT=unsloth                       # Skip quantization, run in BF16
-#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8       # Rollout batch size in distributed/async mode
-#   EFFECTIVE_MINI_GRADIENT_STEPS=2      # Mini gradient steps in distributed/async mode
-#   ASYNC_ADVANTAGE=4                    # Scale factor: colocated uses ASYNC_ADVANTAGE * EFFECTIVE_* for both
-#                                        # ROLLOUT and MINI, keeping ROLLOUT/MINI ratio constant across modes.
-#                                        # Reflects that colocated is synchronous and can afford more rollouts
-#                                        # before each update without the 1-step off-policy lag of async.
-#   COLO_EVAL_STEPS=16                   # Eval frequency (global steps) for colocated; distributed scales by ASYNC_ADVANTAGE
-#   TOOL_VERSION=v4                      # Tool schema version (default: v4)
-#   SMART_REPLAY=1                       # Enable smart replay with max_replay_rounds=2
+#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8       # Rollout batch size (distributed/async base)
+#   EFFECTIVE_MINI_GRADIENT_STEPS=2      # Mini gradient steps (distributed/async base)
+#   ASYNC_ADVANTAGE=4                    # Colocated multiplier for rollout/mini
+#   COLO_EVAL_STEPS=8                    # Eval frequency for colocated
+#   SMART_REPLAY=1                       # Enable smart replay
 #   CURRICULUM_BALANCED=1                # Enable curriculum-balanced sampling
-#   OVERSAMPLE_RATIO=1                   # Oversample ratio for dynamic filtering (default: 1)
+#   OVERSAMPLE_RATIO=1.6                 # Oversample ratio
 #   LIGER_GRPO_LOSS=1                    # Enable Liger fused GRPO loss
-#   LIGER_GRPO_BACKEND=triton            # Liger backend: triton (default) or chunked
-#   LOSS_TYPE=ppo                        # Loss type: ppo, dapo, bnpo, dr_grpo, gspo, cispo, sapo (controls ratio+reduction)
-#   LIGER_CHUNK_SIZE=1                   # Chunk size for chunked backend (1=max chunking)
-#   TIS=1                                # Enable Truncated Importance Sampling (off-policy correction)
-#   TIS_TYPE=tis                         # TIS variant: tis (default), icepop, seq-mask-tis
-#   TIS_THRESHOLDS="0.5 5.0"            # Low and high clamp thresholds (default: 0.5 5.0)
-#   QAT=fp4_fake_quantize                # QAT method (default: off). fp4_fake_quantize derives format from QUANT_METHOD
-#   KV_CACHE_DTYPE=fp8                   # KV cache dtype for vLLM (default: off, i.e. vLLM default auto)
-#   REDUCE_OPTIMIZER=adam_offload        # Optimizer: adam_offload (default), adam_8bit, or none
-#   MAX_EPOCHS=2                         # Training epochs (default: 1)
-#   USE_LORA=1                           # Enable LoRA (default: off); tweak LORA_RANK and LORA_ALPHA manually
-#   LORA_RANK=16                         # LoRA rank (default: 16, used when USE_LORA=1)
-#   LORA_ALPHA=32                        # LoRA alpha (default: 32, used when USE_LORA=1)
-#   UNSLOTH_MOE=1                        # Enable grouped GEMM MoE kernels (Triton A100+, grouped_mm H100+)
+#   LIGER_GRPO_BACKEND=triton            # Liger backend: triton or chunked
+#   LOSS_TYPE=ppo                        # Loss type: ppo, dapo, bnpo, dr_grpo, gspo, cispo, sapo
+#   LIGER_CHUNK_SIZE=1                   # Chunk size for chunked backend
+#   TIS=1                                # Truncated Importance Sampling
+#   TIS_TYPE=tis                         # TIS variant
+#   TIS_THRESHOLDS="0.5 5.0"            # Low and high clamp thresholds
+#   QAT=fp4_fake_quantize                # QAT method (default: off)
+#   KV_CACHE_DTYPE=fp8                   # KV cache dtype for vLLM (default: off)
+#   REDUCE_OPTIMIZER=adam_offload        # Optimizer: adam_offload, adam_8bit, none
+#   MAX_EPOCHS=1                         # Training epochs
+#   USE_LORA=1                           # Enable LoRA
+#   LORA_RANK=64                         # LoRA rank
+#   LORA_ALPHA=64                        # LoRA alpha
+#   UNSLOTH_MOE=1                        # Enable grouped GEMM MoE kernels
 #   LENGTH_PENALTY_MAX_LENGTH=0          # Length penalty (0=off)
 #   EXTRA_ARGS="..."                     # Additional CLI flags
-#
+
 ### QUANTIZATION MODE RESOLUTION ###
 QUANT_METHOD="${QUANT_METHOD:-mxfp4}"
 DEQUANT="${DEQUANT:-}"
@@ -84,7 +84,6 @@ else
         mxfp4)
             PRETRAIN_PATH="${PRETRAIN_PATH:-openai/gpt-oss-20b}"
             QUANT_FLAGS="--mxfp4_dequantize --vllm_sync_fp4 mxfp4"
-            # export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
             QUANT_LABEL="mxfp4"
             ;;
         nvfp4)
@@ -92,10 +91,6 @@ else
             NVFP4_BASE="${NVFP4_BASE:-unsloth/gpt-oss-20b-BF16}"
             QUANT_FLAGS="--vllm_sync_fp4 nvfp4 --nvfp4_dequantize_base_model $NVFP4_BASE"
             QUANT_LABEL="nvfp4"
-            # FlashInfer CUTEDSL/CUTLASS hang for hidden_size=2880 (not tile-aligned).
-            # Marlin crashes (group_size=16 unsupported).
-            # Use VLLM_CUTLASS with calibrated activation scales (w13/w2_input_scale).
-            # Run scripts/calibrate_nvfp4_activations.py to regenerate calibrated checkpoint.
             export VLLM_USE_FLASHINFER_MOE_FP4=0
             ;;
         *)
@@ -126,7 +121,6 @@ MODE="${MODE:-colocated}"
 EFFECTIVE_ROLLOUT_BATCH_SIZE="${EFFECTIVE_ROLLOUT_BATCH_SIZE:-8}"
 EFFECTIVE_MINI_GRADIENT_STEPS="${EFFECTIVE_MINI_GRADIENT_STEPS:-2}"
 ASYNC_ADVANTAGE="${ASYNC_ADVANTAGE:-4}"
-TOOL_VERSION="${TOOL_VERSION:-v4}"
 SMART_REPLAY="${SMART_REPLAY:-0}"
 MAX_REPLAY_ROUNDS="${MAX_REPLAY_ROUNDS:-2}"
 
@@ -135,7 +129,7 @@ LIGER_GRPO_BACKEND="${LIGER_GRPO_BACKEND:-triton}"
 LOSS_TYPE="${LOSS_TYPE:-ppo}"
 LIGER_CHUNK_SIZE="${LIGER_CHUNK_SIZE:-1}"
 CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
-OVERSAMPLE_RATIO="${OVERSAMPLE_RATIO:-1}"
+OVERSAMPLE_RATIO="${OVERSAMPLE_RATIO:-1.6}"
 TIS="${TIS:-0}"
 TIS_TYPE="${TIS_TYPE:-tis}"
 TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
@@ -153,14 +147,13 @@ VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE="${VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE:-}"
 LENGTH_PENALTY_MAX_LENGTH="${LENGTH_PENALTY_MAX_LENGTH:-0}"
 
 ### UNIFIED CONSTANTS ###
-AGENT_MAX_STEPS=30
 ZERO_STAGE=2
 PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-8192}"
-N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-8}"
-TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-8192}"
-ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.25" | bc | awk '{print int($1)}')}"
+N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-12}"
+TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-16384}"
+ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.5" | bc | awk '{print int($1)}')}"
 
-COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-16}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
+COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-8}"
 
 ### MODE-DEPENDENT DEFAULTS ###
 if [ "$MODE" = "colocated" ]; then
@@ -174,11 +167,11 @@ if [ "$MODE" = "colocated" ]; then
 elif [ "$MODE" = "distributed" ]; then
     ACTOR_GPUS="${ACTOR_GPUS:?"MODE=distributed requires ACTOR_GPUS"}"
     VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:?"MODE=distributed requires VLLM_NUM_ENGINES"}"
-    ROLLOUT_BATCH_SIZE=$EFFECTIVE_ROLLOUT_BATCH_SIZE  # Distributed uses the effective value directly; smaller than colocated to be more on-policy (only 1-step async lag).
-    MINI_GRADIENT_STEPS=$EFFECTIVE_MINI_GRADIENT_STEPS  # Fewer mini gradient steps to match; ROLLOUT/MINI ratio is identical to colocated, same total gradient steps.
+    ROLLOUT_BATCH_SIZE=$EFFECTIVE_ROLLOUT_BATCH_SIZE
+    MINI_GRADIENT_STEPS=$EFFECTIVE_MINI_GRADIENT_STEPS
     VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.96}"
     VLLM_SYNC_BACKEND=gloo
-    EVAL_STEPS="${EVAL_STEPS:-$(( COLO_EVAL_STEPS * ASYNC_ADVANTAGE ))}" # Distributed takes ASYNC_ADVANTAGE more global steps per colocated step, so scale eval frequency accordingly.
+    EVAL_STEPS="${EVAL_STEPS:-$(( COLO_EVAL_STEPS * ASYNC_ADVANTAGE ))}"
 else
     echo "Error: MODE must be 'colocated' or 'distributed', got '$MODE'" >&2
     exit 1
@@ -215,7 +208,7 @@ fi
 WARMUP_STEPS=10
 WARM_STEPS_MULTIPLIER=$(( MINI_GRADIENT_STEPS ))
 
-### MULTI-TASK ###
+### MULTI-TASK: all 16 TDC tasks ###
 TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
 TASK_LABEL="Base"
 
@@ -236,7 +229,7 @@ if [ ! -d "$PROJECT_ROOT/openrlhf" ]; then
 fi
 
 ### DATA ###
-DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_gpt_oss"
+DATA_DIR="$PROJECT_ROOT/data/tdc/knn3_format"
 mkdir -p "$PROJECT_ROOT/logs"
 
 TRAIN_PARTS=()
@@ -244,6 +237,7 @@ for t in "${TASK_NAMES[@]}"; do
     f="$DATA_DIR/${t}_train.jsonl"
     if [ ! -f "$f" ]; then
         echo "Error: Training data not found: $f"
+        echo "Have you run: python scripts/convert_knn3_to_openrlhf.py ?"
         echo "Available tasks:"
         ls "$DATA_DIR" 2>/dev/null | grep "_train.jsonl" | sed 's/_train.jsonl//' | sort
         exit 1
@@ -255,7 +249,6 @@ IFS=,; TRAIN_DATA="${TRAIN_PARTS[*]}"; unset IFS
 ### RUN CONFIG ###
 N_TASKS=${#TASK_NAMES[@]}
 DATE_TAG=$(date +%m%d_%H%M)
-CHAT_PROTOCOL="gpt_oss"
 
 # Build suffix tags for active features
 SUFFIX=""
@@ -266,23 +259,20 @@ SUFFIX=""
 
 if [ "$MODE" = "colocated" ]; then
     MODE_TAG="colo"
-    RUN_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
-    WANDB_GROUP="TDC-GPTOss-${QUANT_LABEL}-colo-$TASK_LABEL"
+    RUN_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-notools-knn3-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
+    WANDB_GROUP="TDC-GPTOss-${QUANT_LABEL}-no-tools-KNN3-colo-$TASK_LABEL"
 else
     MODE_TAG="dist-${LAYOUT_TAG}"
-    RUN_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
-    WANDB_GROUP="TDC-GPTOss-${QUANT_LABEL}-dist-${LAYOUT_TAG}-$TASK_LABEL"
+    RUN_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-notools-knn3-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
+    WANDB_GROUP="TDC-GPTOss-${QUANT_LABEL}-no-tools-KNN3-dist-${LAYOUT_TAG}-$TASK_LABEL"
 fi
 RUN_ID="${RUN_NAME}"
-HUB_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
+HUB_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-notools-knn3-ep${MAX_EPOCHS}-${DATE_TAG}"
 RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}"
 mkdir -p "$RUNS_DIR"
 LOCAL_SAVE_DIR="${LOCAL_SAVE_DIR:-/vast/projects/myatskar/design-documents/hf_home}"
 SAVE_PATH="$LOCAL_SAVE_DIR/$RUN_NAME"
 HUB_REPO_ID="jiosephlee/${HUB_NAME}"
-
-### TOOL-CALLING CONFIG ###
-AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
 
 ### GRPO CONFIG ###
 ADVANTAGE_ESTIMATOR="group_norm"
@@ -290,7 +280,7 @@ DYNAMIC_FILTERING=true
 DYNAMIC_FILTERING_REWARD_RANGE="0 1"
 
 WANDB_PROJECT="${WANDB_PROJECT:-openrlhf_tdc_grpo}"
-TEMPERATURE=1.0
+TEMPERATURE="${TEMPERATURE:-1.0}"
 TOP_P=0.95
 
 ### ENVIRONMENT VARIABLES ###
@@ -302,11 +292,9 @@ mkdir -p "$TRITON_CACHE_DIR"
 
 export VLLM_NO_USAGE_STATS=1
 export VLLM_DISABLE_TELEMETRY=1
-export VLLM_ALLOW_INSECURE_SERIALIZATION=1  # vLLM v1 msgspec can't serialize torch.dtype; fall back to pickle
+export VLLM_ALLOW_INSECURE_SERIALIZATION=1
 
 export OPENRLHF_MODEL_PATH="$PRETRAIN_PATH"
-export OPENRLHF_CHAT_PROTOCOL="$CHAT_PROTOCOL"
-export OPENRLHF_MAX_STEPS="$AGENT_MAX_STEPS"
 export DEBUG_TRACES="$DEBUG_TRACES"
 export OPENRLHF_DEBUG_LOGITS=0
 export OPENRLHF_DEBUG_NAN_GUARD=0
@@ -319,8 +307,7 @@ ulimit -n 65535 2>/dev/null || true
 CONDA_RAY="$(which python) -m ray.scripts.scripts"
 echo "Using ray from: $(which python)"
 
-# Clear any stale RAY_ADDRESS from the environment to prevent
-# connecting to another user's cluster on shared nodes.
+# Clear any stale RAY_ADDRESS
 unset RAY_ADDRESS
 
 $CONDA_RAY stop --force 2>/dev/null || true
@@ -335,7 +322,6 @@ $CONDA_RAY start --head \
     --num-gpus "$NUM_GPUS" \
     --temp-dir "$RAY_TMPDIR"
 
-# Set explicit address immediately — avoids "multiple active Ray instances" from other users
 export RAY_ADDRESS="$RAY_NODE_IP_ADDRESS:$RAY_PORT"
 
 echo "Waiting for Ray..."
@@ -356,11 +342,10 @@ echo "Ray is ready."
 
 ### PRINT CONFIG ###
 echo "========================================"
-echo "TDC GRPO Training — GPT-OSS (MODE=$MODE, QUANT=$QUANT_LABEL)"
+echo "TDC GRPO Training — GPT-OSS (No-Tools, KNN-3 Data, MODE=$MODE, QUANT=$QUANT_LABEL)"
 echo "========================================"
 echo "Tasks: ${TASK_NAMES[*]}"
 echo "Model: $PRETRAIN_PATH"
-echo "Chat Protocol: $CHAT_PROTOCOL"
 echo "Quantization: $QUANT_LABEL"
 echo "Quant Flags: $QUANT_FLAGS"
 echo "Learning Rate: $LEARNING_RATE"
@@ -381,7 +366,6 @@ echo "EVAL_STEPS: $EVAL_STEPS"
 echo "TRAIN_MAX_TOKENS_PER_GPU: $TRAIN_MAX_TOKENS_PER_GPU"
 echo "ROLLOUT_MAX_TOKENS_PER_GPU: $ROLLOUT_MAX_TOKENS_PER_GPU"
 echo "----------------------------------------"
-echo "Agent Max Steps: $AGENT_MAX_STEPS"
 echo "Samples per Prompt: $N_SAMPLES_PER_PROMPT"
 echo "Temperature: $TEMPERATURE"
 echo "Top-p: $TOP_P"
@@ -397,15 +381,10 @@ echo "TIS: $TIS (type=$TIS_TYPE, thresholds=$TIS_THRESHOLDS)"
 echo "KV Cache Dtype: ${KV_CACHE_DTYPE:-auto}"
 echo "VLLM_MAX_NUM_SEQS: $VLLM_MAX_NUM_SEQS"
 echo "VLLM_MAX_NUM_BATCHED_TOKENS: $VLLM_MAX_NUM_BATCHED_TOKENS"
-echo "Tool Version: $TOOL_VERSION"
 echo "----------------------------------------"
 echo "Runs Dir: $RUNS_DIR"
 echo "W&B: project=$WANDB_PROJECT group=$WANDB_GROUP run=$RUN_ID"
 echo "========================================"
-
-### GENERATE PER-TASK TOOLS JSON ###
-TDC_TOOLS_JSON="$PROJECT_ROOT/data/tdc/metadata/tools_per_task_${TOOL_VERSION}.json"
-python "$PROJECT_ROOT/scripts/generate_tools_json.py" --version "$TOOL_VERSION"
 
 ### BUILD TDC EVAL DATASET ###
 EVAL_DATA="$DATA_DIR/eval_tdc.jsonl"
@@ -494,7 +473,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --rollout_batch_size $ROLLOUT_BATCH_SIZE \
     --num_episodes $MAX_EPOCHS \
     --prompt_max_len $PROMPT_MAX_LEN \
-    --generate_max_len 2048 \
+    --generate_max_len 8192 \
     --max_samples 1000000 \
     --loss_type $LOSS_TYPE \
     --use_adaptive_batch \
@@ -509,20 +488,14 @@ python -m openrlhf.cli.train_ppo_ray \
     --eval_steps $EVAL_STEPS \
     --eval_temperature 0.1 \
     --eval_n_samples_per_prompt 1 \
-    --input_key messages \
+    --input_key text \
     --label_key answer \
     --apply_chat_template \
-    --tdc_tools "$TDC_TOOLS_JSON" \
-    --tool_version "$TOOL_VERSION" \
     --gradient_checkpointing \
     --vllm_sync_backend $VLLM_SYNC_BACKEND \
+    --vllm_max_num_seqs $VLLM_MAX_NUM_SEQS \
     --top_p $TOP_P \
     --temperature $TEMPERATURE \
-    --agent_func_path "$AGENT_FUNC_PATH" \
-    --agent_max_steps $AGENT_MAX_STEPS \
-    --vllm_stop_strings "<|return|>" "<|call|>" \
-    --vllm_max_num_seqs $VLLM_MAX_NUM_SEQS \
-    --chat_protocol "$CHAT_PROTOCOL" \
     --use_wandb 1 \
     --wandb_project "$WANDB_PROJECT" \
     --wandb_group "$WANDB_GROUP" \
@@ -534,8 +507,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --warmup_steps $WARMUP_STEPS \
     --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
     --attn_implementation "flex_attention" \
-    --length_penalty_max_length 10240 \
-    --freeze_router \
+    --length_penalty_max_length 6144 \
     $QUANT_FLAGS \
     $MODE_FLAGS \
     $OPTIONAL_FLAGS \

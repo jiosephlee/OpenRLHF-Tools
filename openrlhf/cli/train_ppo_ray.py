@@ -606,6 +606,16 @@ if __name__ == "__main__":
             "'cispo'/'sapo': Liger-only variants (require --use_liger_grpo_loss)."
         ),
     )
+    parser.add_argument(
+        "--legacy_loss_scaling",
+        action="store_true",
+        default=False,
+        help=(
+            "Use upstream-compatible loss scaling: flat token mean (token_level_loss=True) "
+            "and simple sequence-proportional rank-local loss_scale (len(partition)/sample_num) "
+            "for all loss types. No cross-rank sync of loss denominators."
+        ),
+    )
     #### end unified loss_type ####
     parser.add_argument(
         "--kl_estimator",
@@ -916,7 +926,9 @@ if __name__ == "__main__":
     #### Derive internal flags from --loss_type ####
     # token_level_loss: controls reduction in PolicyLoss (always LOCAL reduction).
     # Cross-rank normalization is handled by the replay buffer's loss_scale, not here.
-    if args.loss_type in ("ppo", "gspo", "dr_grpo", "sapo"):
+    if args.legacy_loss_scaling:
+        args.token_level_loss = True  # legacy: always flat token mean (upstream default)
+    elif args.loss_type in ("ppo", "gspo", "dr_grpo", "sapo"):
         args.token_level_loss = False  # per-sequence mean, then batch mean
     elif args.loss_type in ("dapo", "cispo", "bnpo"):
         args.token_level_loss = True  # flat token mean within rank

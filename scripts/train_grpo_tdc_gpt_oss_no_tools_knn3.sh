@@ -23,7 +23,8 @@
 #   # Unsloth BF16:
 #   DEQUANT=unsloth LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo bash scripts/train_grpo_tdc_gpt_oss_no_tools_knn3.sh
 #
-#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=ppo SMART_REPLAY=1 bash train_grpo_tdc_intern_s1_no_tools_knn3.sh
+#   USE_LORA=1 LEARNING_RATE=1e-5 DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=ppo SMART_REPLAY=1 bash train_grpo_tdc_gpt_oss_no_tools_knn3.sh
+#   DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=adam_offload TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=ppo SMART_REPLAY=1 bash train_grpo_tdc_gpt_oss_no_tools_knn3.sh
 #
 #   # With features:
 #   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis REDUCE_OPTIMIZER=adam_offload TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo SMART_REPLAY=1 DEQUANT=unsloth bash scripts/train_grpo_tdc_gpt_oss_no_tools_knn3.sh
@@ -218,6 +219,7 @@ WARM_STEPS_MULTIPLIER=$(( MINI_GRADIENT_STEPS ))
 
 ### MULTI-TASK: all 16 TDC tasks ###
 TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
+#TASK_NAMES=(DILI)
 TASK_LABEL="Base"
 
 ### NCCL / IB / NETWORK CONFIG ###
@@ -535,7 +537,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --constant_lr_with_warm_up \
     --warmup_steps $WARMUP_STEPS \
     --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
-    --attn_implementation "eager" \
+    --attn_implementation "flex_attention" \
     --length_penalty_max_length 6144 \
     --freeze_router \
     --aux_loss_coef 0 \

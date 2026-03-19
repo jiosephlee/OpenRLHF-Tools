@@ -24,7 +24,7 @@
 #
 #   # Unsloth BF16:
 #   PRETRAIN_PATH= EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=1 TIS=1 TIS_TYPE=tis TRAIN_MAX_TOKENS_PER_GPU=40960 SMART_REPLAY=1 REDUCE_OPTIMIZER=adam_offload LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss.sh
-#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis TRAIN_MAX_TOKENS_PER_GPU=32768 SMART_REPLAY=1 REDUCE_OPTIMIZER=none LIGER_GRPO_LOSS=0 DEQUANT=unsloth LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss.sh
+#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis TRAIN_MAX_TOKENS_PER_GPU=32768 SMART_REPLAY=1 REDUCE_OPTIMIZER=none LIGER_GRPO_LOSS=0 DEQUANT=unsloth LOSS_TYPE=gspo bash train_grpo_tdc_gpt_oss.sh
 #   # Distributed:
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 bash scripts/train_grpo_tdc_gpt_oss.sh
 #       
@@ -223,8 +223,8 @@ WARMUP_STEPS=5
 WARM_STEPS_MULTIPLIER=$(( MINI_GRADIENT_STEPS ))
 
 ### MULTI-TASK ###
-TASK_NAMES=(BBB_Martins ClinTox CYP3A4_Substrate_CarbonMangels)
-TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
+TASK_NAMES=(BBB_Martins ClinTox DILI)
+# TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
 TASK_LABEL="Base"
 
 ### NCCL / IB / NETWORK CONFIG ###
@@ -569,7 +569,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --constant_lr_with_warm_up \
     --warmup_steps $WARMUP_STEPS \
     --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
-    --attn_implementation "eager" \
+    --attn_implementation "flex_attention" \
     --length_penalty_max_length 10240 \
     --freeze_router \
     --aux_loss_coef 0 \

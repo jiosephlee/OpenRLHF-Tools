@@ -1,0 +1,243 @@
+<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-14
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|># hERG Blocker Assessment (IC50 < 10 µM)
+
+## This guide helps guide a probability P (0-100) assessment for the task.
+Probability the molecule blocks hERG (IC50 < 10 µM). Key determinants: lipophilicity increases risk (saturates ~logP 4), basic/cationic center increases risk (cation-π interactions with Y652/F656), higher polarity/TPSA decreases risk, strong acids/anions reduce risk, aromatic/hydrophobic ring content co-occurs with block.
+
+## Scoring — choose baseline bucket (P0)
+
+### 1) Very low (P0=5)
+- logP <1.0 AND no positive states at pH 7.4 AND TPSA ≥60
+
+### 2) Low (P0=15)
+- logP <2.0 AND charge ≤0 AND TPSA ≥40
+
+### 3) Medium (P0=40)
+- logP in [2, 3) OR ionization is ambiguous
+
+### 4) High (P0=70)
+- has_positive_states AND logP ≥3.0 AND TPSA ≤90
+
+### 5) Very high (P0=85)
+- has_positive_states AND logP ≥4.0 AND TPSA ≤75 AND MW in [250, 550]
+
+## Adjustments (apply to P0)
+
+### Ionization
+- charge ≤ -1: -25
+- charge == +1: +10
+- charge ≥ +2: -10 (permeability limitation)
+- is_ambiguous: move 10 points toward 50
+
+### Polarity
+- TPSA ≥120: -20
+- TPSA ≤40: +10
+
+### Size / flexibility
+- MW <250: -15
+- MW 300-500: +5
+- Rotatable bonds ≥8: +5
+
+### Aromatic / hydrophobe topology
+- aromatic_rings ≥3: +5
+- PAH-like (≥3 fused aromatics): +10
+- fraction_csp3 ≥0.6 AND aromatic_rings ≤1: -5
+
+### Mitigating polar motifs
+- amide_bonds ≥2: -5
+- Strong anion motif AND logP <3: -10
+
+### Classic blocker motif boost
+- Tertiary/quaternary amine + aromatic_rings ≥2: +10
+
+## Final calibration guards
+- P ≥95 only if: positive states AND logP≥4 AND TPSA≤60 AND (aromatic≥2 OR PAH-like) AND not anionic
+- P ≤5 only if: no positive states AND logP≤1.5 AND TPSA≥80 AND MW≤350
+- If many conflicting factors (cationic but very high TPSA): keep P near 50
+
+Clamp to [0, 100].
+
+=== Precomputed Tool Results for: N#Cc1ccc2c(=O)cc(C(=O)NC3CCN(Cc4ccc5c(c4)OCO5)CC3)oc2c1 ===
+
+[standardize]
+N#Cc1ccc2c(=O)cc(C(=O)NC3CCN(Cc4ccc5c(c4)OCO5)CC3)oc2c1
+
+[descriptors]
+{
+  "masses": {
+    "average_mw": 431.448,
+    "formula": "C24H21N3O5"
+  },
+  "atom_counts": {
+    "heavy_atoms": 32,
+    "heteroatoms": 8,
+    "nitrogen": 3,
+    "oxygen": 5,
+    "n_plus_o": 8
+  },
+  "surface_shape_props": {
+    "tpsa": 104.8,
+    "molar_refractivity": 115.5292,
+    "fraction_csp3": 0.2917,
+    "stereocenters": 0
+  },
+  "ring_counts": {
+    "total_rings": 5,
+    "aromatic_rings": 3,
+    "saturated_rings": 1
+  },
+  "logp": 2.7878,
+  "num_rotatable_bonds": 4,
+  "num_amide_bonds": 1,
+  "formal_charge": 0,
+  "qed": 0.6772,
+  "hydrogen_bonding": {
+    "hbd": 1,
+    "hba": 7
+  },
+  "lipinski_violations": {
+    "mw_violation": false,
+    "logp_violation": false,
+    "hbd_violation": false,
+    "hba_violation": false,
+    "num_violations": 0
+  },
+  "esol": {
+    "log_s_esol": -4.377,
+    "solubility_mg_per_ml": 0.0181,
+    "solubility_class": "moderately soluble"
+  }
+}
+
+[ionization]
+{
+  "num_variants": 2,
+  "net_charges": [
+    0,
+    1
+  ],
+  "charge_class_counts": {
+    "base": 1,
+    "neutral": 1
+  },
+  "has_positive_states": true,
+  "has_negative_states": false,
+  "is_ambiguous": true,
+  "representative": {
+    "smiles": "N#Cc1ccc2c(=O)cc(C(=O)NC3CCN(Cc4ccc5c(c4)OCO5)CC3)oc2c1",
+    "net_charge": 0,
+    "charge_class": "neutral"
+  }
+}
+
+[ring_systems]
+{
+  "ring_systems": [
+    {
+      "num_rings": 2,
+      "num_aromatic": 2,
+      "all_aromatic": true,
+      "atom_count": 10,
+      "ring_sizes": [
+        6,
+        6
+      ],
+      "heteroatoms": [
+        "O"
+      ]
+    },
+    {
+      "num_rings": 2,
+      "num_aromatic": 1,
+      "all_aromatic": false,
+      "atom_count": 9,
+      "ring_sizes": [
+        5,
+        6
+      ],
+      "heteroatoms": [
+        "O"
+      ]
+    },
+    {
+      "num_rings": 1,
+      "num_aromatic": 0,
+      "all_aromatic": false,
+      "atom_count": 6,
+      "ring_sizes": [
+        6
+      ],
+      "heteroatoms": [
+        "N"
+      ]
+    }
+  ],
+  "num_ring_systems": 3,
+  "largest_system_size": 2,
+  "largest_aromatic_system": 2,
+  "has_pah_like": false,
+  "largest_ring_size": 6,
+  "has_macrocycle": false,
+  "num_macrocycles": 0,
+  "spiro_atoms": 0,
+  "bridgehead_atoms": 0
+}
+
+[functional_groups]
+├──acetal
+│  ├──oxy
+│  ├──ether
+│  └──alkyl aryl ether
+├──secondary amide
+│  ├──amine
+│  └──carbonyl
+├──nitrile
+├──oxoarene
+├──hetero O
+├──benzene
+└──piperidine
+   ├──amine
+   └──tertiary aliphatic amine
+
+
+[substruct]
+{
+  "tertiary_amine": {
+    "present": true,
+    "count": 3
+  },
+  "quaternary_ammonium": {
+    "present": false,
+    "count": 0
+  },
+  "carboxylate": {
+    "present": false,
+    "count": 0
+  },
+  "sulfonate": {
+    "present": false,
+    "count": 0
+  },
+  "sulfonamide": {
+    "present": false,
+    "count": 0
+  },
+  "amide": {
+    "present": true,
+    "count": 1
+  }
+}
+
+
+Instructions: Answer the following question about drug properties.
+Context: Human ether-à-go-go related gene (hERG) is crucial for the coordination of the heart's beating. Thus, if a drug blocks the hERG, it could lead to severe adverse effects. Therefore, reliable prediction of hERG liability in the early stages of drug design is quite important to reduce the risk of cardiotoxicity-related attritions in the later development stages.
+Question: Given a drug SMILES string, predict whether it
+(A) does not block hERG (B) blocks hERG
+Drug SMILES: N#Cc1ccc2c(=O)cc(C(=O)NC3CCN(Cc4ccc5c(c4)OCO5)CC3)oc2c1
+Please think step by step and then put ONLY your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant

@@ -23,7 +23,8 @@
 #   # Unsloth BF16:
 #   DEQUANT=unsloth LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo bash scripts/train_grpo_tdc_gpt_oss_no_tools_knn3.sh
 #
-#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=ppo SMART_REPLAY=1 bash train_grpo_tdc_intern_s1_no_tools_knn3.sh
+#   USE_LORA=1 LEARNING_RATE=1e-5 DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=ppo SMART_REPLAY=1 bash train_grpo_tdc_gpt_oss_no_tools_knn3.sh
+#   DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=adam_offload TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=ppo SMART_REPLAY=1 bash train_grpo_tdc_gpt_oss_no_tools_knn3.sh
 #
 #   # With features:
 #   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis REDUCE_OPTIMIZER=adam_offload TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo SMART_REPLAY=1 DEQUANT=unsloth bash scripts/train_grpo_tdc_gpt_oss_no_tools_knn3.sh
@@ -80,7 +81,7 @@ if [ -n "$DEQUANT" ]; then
             ;;
     esac
     CUDA_MODULE="${CUDA_MODULE:-cuda/13.1.0}"
-    CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/openrlhf}"
+    CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern}"
 else
     case "$QUANT_METHOD" in
         mxfp4)
@@ -134,12 +135,12 @@ LIGER_GRPO_BACKEND="${LIGER_GRPO_BACKEND:-triton}"
 LOSS_TYPE="${LOSS_TYPE:-ppo}"
 LIGER_CHUNK_SIZE="${LIGER_CHUNK_SIZE:-1}"
 CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
-OVERSAMPLE_RATIO="${OVERSAMPLE_RATIO:-1.6}"
+OVERSAMPLE_RATIO="${OVERSAMPLE_RATIO:-1}"
 TIS="${TIS:-0}"
 TIS_TYPE="${TIS_TYPE:-tis}"
 TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
 QAT="${QAT:-}"
-KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-}"
+KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-fp8}"
 REDUCE_OPTIMIZER="${REDUCE_OPTIMIZER:-adam_offload}"
 MAX_EPOCHS="${MAX_EPOCHS:-1}"
 USE_LORA="${USE_LORA:-0}"
@@ -156,10 +157,10 @@ export TORCH_DYNAMO_RECOMPILE_LIMIT=1024
 
 ### UNIFIED CONSTANTS ###
 ZERO_STAGE=2
-PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-8192}"
-N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-12}"
+PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-18196}"
+N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-8}"
 TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-16384}"
-ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.5" | bc | awk '{print int($1)}')}"
+ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1" | bc | awk '{print int($1)}')}"
 
 COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-8}"
 
@@ -218,6 +219,7 @@ WARM_STEPS_MULTIPLIER=$(( MINI_GRADIENT_STEPS ))
 
 ### MULTI-TASK: all 16 TDC tasks ###
 TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
+#TASK_NAMES=(DILI)
 TASK_LABEL="Base"
 
 ### NCCL / IB / NETWORK CONFIG ###
@@ -407,7 +409,7 @@ echo "Loss Type: $LOSS_TYPE"
 echo "Liger GRPO Loss: $LIGER_GRPO_LOSS (backend=$LIGER_GRPO_BACKEND, chunk_size=$LIGER_CHUNK_SIZE)"
 echo "LoRA: USE_LORA=$USE_LORA (rank=$LORA_RANK, alpha=$LORA_ALPHA)"
 echo "TIS: $TIS (type=$TIS_TYPE, thresholds=$TIS_THRESHOLDS)"
-echo "KV Cache Dtype: ${KV_CACHE_DTYPE:-auto}"
+echo "KV Cache Dtype: ${KV_CACHE_DTYPE:-fp8}"
 echo "VLLM_MAX_NUM_SEQS: $VLLM_MAX_NUM_SEQS"
 echo "VLLM_MAX_NUM_BATCHED_TOKENS: $VLLM_MAX_NUM_BATCHED_TOKENS"
 echo "----------------------------------------"
@@ -490,7 +492,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --advantage_estimator $ADVANTAGE_ESTIMATOR \
     --init_kl_coef 0 \
     --kl_estimator k1 \
-    --eps_clip_low_high 0.3 0.372 \
+    --eps_clip_low_high 0.2 0.272 \
     --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
     --save_hf_ckpt \
     --disable_ds_ckpt \
@@ -537,6 +539,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
     --attn_implementation "flex_attention" \
     --length_penalty_max_length 6144 \
+    --freeze_router \
+    --aux_loss_coef 0 \
     $QUANT_FLAGS \
     $MODE_FLAGS \
     $OPTIONAL_FLAGS \

@@ -1,0 +1,238 @@
+<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-14
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|># Oral Bioavailability Assessment
+
+## This guide helps guide a probability P (0-100) assessment for the task.
+Probability the molecule is orally bioavailable (viable property space for absorption). Most reliable for Ro5-ish small molecules. Less reliable for macrocycles, peptides, active-transporter substrates.
+
+## Scoring (Base = 40)
+
+### A) Rule-of-5 block
+- 0 Lipinski violations: +20
+- 1 violation: +10
+- 2 violations: -10
+- 3-4 violations: -25
+- MW >600: additional -10
+
+### B) TPSA block
+- ≤60: +20; 60-90: +10; 90-120: +0; 120-140: -10; >140: -25
+
+### C) Flexibility (rotatable bonds)
+- ≤6: +10; 7-10: +0; 11-15: -10; >15: -20
+
+### D) Ionization/charge at pH 7.4
+- Neutral: +5; +1 (amine): +5; -1 (acid): +0; |charge| ≥2: -20; ambiguous: -5
+- Quaternary ammonium or sulfonate/phosphate present: -30
+
+### E) Solubility (ESOL logS)
+- >-3: +5; -3 to -4: +0; <-4: -10; <-6: -20
+
+### F) Aromaticity/fused aromatics
+- PAH-like: -10; aromatic_rings ≥4 + fraction_csp3 <0.2: -5
+
+### G) Structural alerts
+- Alert count ≥3: -5; ≥6: -10
+
+## Exception handling
+- Macrocycles: reduce penalty severity by ~50%, avoid extremes
+- Transporter substrates can violate Ro5: if violations present but resembles known transporter substrates, output 20-40 not near 0
+- If macrocycle/bRo5/ambiguous: compress toward 50: P = 50 + 0.7*(P-50)
+
+Clamp to [0, 100].
+
+=== Precomputed Tool Results for: CCN(CC)CCCC(C)Nc1ccnc2cc(Cl)ccc12 ===
+
+[standardize]
+CCN(CC)CCCC(C)Nc1ccnc2cc(Cl)ccc12
+
+[descriptors]
+{
+  "masses": {
+    "average_mw": 319.88,
+    "formula": "C18H26ClN3"
+  },
+  "atom_counts": {
+    "heavy_atoms": 22,
+    "heteroatoms": 4,
+    "nitrogen": 3,
+    "oxygen": 0,
+    "n_plus_o": 3
+  },
+  "surface_shape_props": {
+    "tpsa": 28.16,
+    "molar_refractivity": 96.8597,
+    "fraction_csp3": 0.5,
+    "stereocenters": 1
+  },
+  "ring_counts": {
+    "total_rings": 2,
+    "aromatic_rings": 2,
+    "saturated_rings": 0
+  },
+  "logp": 4.8106,
+  "num_rotatable_bonds": 8,
+  "num_amide_bonds": 0,
+  "formal_charge": 0,
+  "qed": 0.7564,
+  "hydrogen_bonding": {
+    "hbd": 1,
+    "hba": 3
+  },
+  "lipinski_violations": {
+    "mw_violation": false,
+    "logp_violation": false,
+    "hbd_violation": false,
+    "hba_violation": false,
+    "num_violations": 0
+  },
+  "esol": {
+    "log_s_esol": -4.662,
+    "solubility_mg_per_ml": 0.007,
+    "solubility_class": "moderately soluble"
+  }
+}
+
+[ionization]
+{
+  "num_variants": 4,
+  "net_charges": [
+    0,
+    1,
+    2
+  ],
+  "charge_class_counts": {
+    "base": 3,
+    "neutral": 1
+  },
+  "has_positive_states": true,
+  "has_negative_states": false,
+  "is_ambiguous": true,
+  "representative": {
+    "smiles": "CC[NH+](CC)CCCC(C)Nc1ccnc2cc(Cl)ccc12",
+    "net_charge": 1,
+    "charge_class": "base"
+  }
+}
+
+[functional_groups]
+├──tertiary aliphatic amine
+├──secondary mixed amine
+├──Aryl chloride
+└──quinoline
+   └──azecine
+      ├──benzene
+      └──pyridine
+         └──hetero N nonbasic
+
+
+[alerts_all]
+{
+  "library": "all",
+  "count": 1,
+  "alerts": [
+    {
+      "description": "Long aliphatic chain",
+      "filter_set": "ChEMBL23_MLSMR",
+      "scope": "ChEMBL 23 structural alerts rule-set: CHEMBL_MLSMR"
+    }
+  ]
+}
+
+[ring_systems]
+{
+  "ring_systems": [
+    {
+      "num_rings": 2,
+      "num_aromatic": 2,
+      "all_aromatic": true,
+      "atom_count": 10,
+      "ring_sizes": [
+        6,
+        6
+      ],
+      "heteroatoms": [
+        "N"
+      ]
+    }
+  ],
+  "num_ring_systems": 1,
+  "largest_system_size": 2,
+  "largest_aromatic_system": 2,
+  "has_pah_like": false,
+  "largest_ring_size": 6,
+  "has_macrocycle": false,
+  "num_macrocycles": 0,
+  "spiro_atoms": 0,
+  "bridgehead_atoms": 0
+}
+
+[substruct]
+{
+  "quaternary_ammonium": {
+    "present": false,
+    "count": 0
+  },
+  "sulfonate": {
+    "present": false,
+    "count": 0
+  },
+  "phosphonate": {
+    "present": false,
+    "count": 0
+  },
+  "phosphate_dianion": {
+    "present": false,
+    "count": 0
+  },
+  "guanidinium": {
+    "present": false,
+    "count": 0
+  },
+  "carboxylic_acid": {
+    "present": false,
+    "count": 0
+  },
+  "sulfonamide": {
+    "present": false,
+    "count": 0
+  },
+  "amide": {
+    "present": false,
+    "count": 0
+  },
+  "urea": {
+    "present": false,
+    "count": 0
+  },
+  "epoxide": {
+    "present": false,
+    "count": 0
+  },
+  "aziridine": {
+    "present": false,
+    "count": 0
+  },
+  "acyl_halide": {
+    "present": false,
+    "count": 0
+  },
+  "michael_acceptor": {
+    "present": false,
+    "count": 0
+  }
+}
+
+
+Instructions: Answer the following question about drug properties.
+Context: Oral bioavailability is defined as “the rate and extent to which the active ingredient or active moiety is absorbed from a drug product and becomes available at the site of action”.
+
+
+Question: Given a drug SMILES string, predict whether it
+(A) has oral bioavailability < 20% (B) has oral bioavailability ≥ 20%
+Drug SMILES: CCN(CC)CCCC(C)Nc1ccnc2cc(Cl)ccc12
+Please think step by step and then put ONLY your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant

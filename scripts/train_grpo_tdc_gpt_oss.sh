@@ -23,8 +23,8 @@
 #   TRAIN_MAX_TOKENS_PER_GPU=1024 QUANT_METHOD=nvfp4 bash train_grpo_tdc_gpt_oss.sh
 #
 #   # Unsloth BF16:
-#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis TRAIN_MAX_TOKENS_PER_GPU=40960 SMART_REPLAY=1 REDUCE_OPTIMIZER=adam_offload LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=gspo bash train_grpo_tdc_gpt_oss.sh
-#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis TRAIN_MAX_TOKENS_PER_GPU=32768 SMART_REPLAY=1 REDUCE_OPTIMIZER=none LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=gspo bash train_grpo_tdc_gpt_oss.sh
+#   PRETRAIN_PATH= EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=1 TIS=1 TIS_TYPE=tis TRAIN_MAX_TOKENS_PER_GPU=40960 SMART_REPLAY=1 REDUCE_OPTIMIZER=adam_offload LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss.sh
+#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis TRAIN_MAX_TOKENS_PER_GPU=32768 SMART_REPLAY=1 REDUCE_OPTIMIZER=none LIGER_GRPO_LOSS=0 DEQUANT=unsloth LOSS_TYPE=gspo bash train_grpo_tdc_gpt_oss.sh
 #   # Distributed:
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 bash scripts/train_grpo_tdc_gpt_oss.sh
 #       
@@ -62,6 +62,7 @@
 #   EXTRA_ARGS="..."                     # Additional CLI flags
 #
 ### QUANTIZATION MODE RESOLUTION ###
+
 QUANT_METHOD="${QUANT_METHOD:-mxfp4}"
 DEQUANT="${DEQUANT:-}"
 
@@ -78,7 +79,7 @@ if [ -n "$DEQUANT" ]; then
             ;;
     esac
     CUDA_MODULE="${CUDA_MODULE:-cuda/13.1.0}"
-    CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/openrlhf}"
+    CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern}"
 else
     case "$QUANT_METHOD" in
         mxfp4)
@@ -144,7 +145,7 @@ TIS="${TIS:-0}"
 TIS_TYPE="${TIS_TYPE:-tis}"
 TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
 QAT="${QAT:-}"
-KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-}"
+KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-fp8}"
 REDUCE_OPTIMIZER="${REDUCE_OPTIMIZER:-adam_offload}"
 MAX_EPOCHS="${MAX_EPOCHS:-1}"
 USE_LORA="${USE_LORA:-0}"
@@ -218,12 +219,12 @@ else
 fi
 
 ### WARMUP LOGIC ###
-WARMUP_STEPS=10
+WARMUP_STEPS=5
 WARM_STEPS_MULTIPLIER=$(( MINI_GRADIENT_STEPS ))
 
 ### MULTI-TASK ###
-TASK_NAMES=(BBB_Martins ClinTox CYP3A4_Substrate_CarbonMangels)
-TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
+TASK_NAMES=(BBB_Martins ClinTox DILI)
+# TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
 TASK_LABEL="Base"
 
 ### NCCL / IB / NETWORK CONFIG ###
@@ -571,6 +572,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --attn_implementation "flex_attention" \
     --length_penalty_max_length 10240 \
     --freeze_router \
+    --aux_loss_coef 0 \
     $QUANT_FLAGS \
     $MODE_FLAGS \
     $OPTIONAL_FLAGS \

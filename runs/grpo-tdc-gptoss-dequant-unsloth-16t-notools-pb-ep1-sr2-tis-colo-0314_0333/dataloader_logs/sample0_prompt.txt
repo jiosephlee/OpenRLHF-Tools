@@ -1,0 +1,289 @@
+<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-14
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|># PAMPA Permeability Assessment
+
+## This guide helps guide a probability P (0-100) assessment for the task.
+Probability of high passive membrane permeability (PAMPA). This is a purely passive diffusion assay — no transporters.
+
+## Scoring (Base score = 50)
+
+### Unionized fraction (pKa-derived, largest driver)
+- fraction_neutral ≥0.30: +20; 0.10-0.30: +10; 0.03-0.10: +0; 0.01-0.03: -10; <0.01: -20
+
+### Charge-state penalties
+- |net charge| ≥2: -30
+- Zwitterion: -25
+- Ambiguous: -10
+- LogD warnings (polyprotic/amphoteric): -5
+
+### Delocalized cation exception
+- Quaternary ammonium BUT aromatic_rings ≥2: add back +10
+
+### Lipophilicity (logD7.4)
+- 2.0-4.0: +15; 1.0-2.0: +5; 4.0-5.0: +0; <1.0: -10; >5.0: -10
+
+### Polarity (TPSA)
+- <60: +15; 60-90: +5; 90-120: -10; >120: -25
+
+### H-bonding
+HBD: 0-1 +10; 2 +5; 3 -5; ≥4 -15
+HBA: ≤6 +5; 7-10 +0; >10 -10
+
+### Size/flexibility
+MW: <350 +10; 350-500 +0; 500-700 -10; >700 -25
+RB: ≤5 +5; 6-10 +0; >10 -10
+
+### Macrocycle adjustments
+- If macrocycle: soften MW penalty +10
+- If macrocycle + high amide count > HBD (N-methylation proxy): +10
+
+### Hard stops
+- ≥2 carboxylic acids OR sulfonic/phosphonic acid: -20
+- Guanidinium: -25
+
+Clamp to [0, 100].
+
+=== Precomputed Tool Results for: CC(C)(C)C1=CC(=NO1)NC(=O)NC2=CC=C(C=C2)C3=CN4C5=C(C=C(C=C5)OCCN6CCOCC6)SC4=N3 ===
+
+[standardize]
+CC(C)(C)c1cc(NC(=O)Nc2ccc(-c3cn4c(n3)sc3cc(OCCN5CCOCC5)ccc34)cc2)no1
+
+[descriptors]
+{
+  "masses": {
+    "average_mw": 560.68,
+    "formula": "C29H32N6O4S"
+  },
+  "atom_counts": {
+    "heavy_atoms": 40,
+    "heteroatoms": 11,
+    "nitrogen": 6,
+    "oxygen": 4,
+    "n_plus_o": 10
+  },
+  "surface_shape_props": {
+    "tpsa": 106.16,
+    "molar_refractivity": 156.6094,
+    "fraction_csp3": 0.3448,
+    "stereocenters": 0
+  },
+  "ring_counts": {
+    "total_rings": 6,
+    "aromatic_rings": 5,
+    "saturated_rings": 1
+  },
+  "logp": 5.8565,
+  "num_rotatable_bonds": 7,
+  "num_amide_bonds": 2,
+  "formal_charge": 0,
+  "qed": 0.2569,
+  "hydrogen_bonding": {
+    "hbd": 2,
+    "hba": 8
+  },
+  "lipinski_violations": {
+    "mw_violation": true,
+    "logp_violation": true,
+    "hbd_violation": false,
+    "hba_violation": false,
+    "num_violations": 2
+  },
+  "esol": {
+    "log_s_esol": -6.969,
+    "solubility_mg_per_ml": 0.0001,
+    "solubility_class": "poorly soluble"
+  }
+}
+
+[ionization]
+{
+  "num_variants": 2,
+  "net_charges": [
+    0,
+    1
+  ],
+  "charge_class_counts": {
+    "neutral": 1,
+    "base": 1
+  },
+  "has_positive_states": true,
+  "has_negative_states": false,
+  "is_ambiguous": true,
+  "representative": {
+    "smiles": "CC(C)(C)c1cc(NC(=O)Nc2ccc(-c3cn4c(n3)sc3cc(OCCN5CCOCC5)ccc34)cc2)no1",
+    "net_charge": 0,
+    "charge_class": "neutral"
+  }
+}
+
+[logd]
+{
+  "logd": 5.8258,
+  "logp": 5.8565,
+  "ph": 7.4,
+  "fraction_neutral": 0.9318,
+  "most_basic_pka": 6.2645039558410645,
+  "most_acidic_pka": 12.405529975891113,
+  "num_basic_sites": 4,
+  "num_acidic_sites": 2,
+  "mapped_smiles": "[C:1]([C:2]([C:3]([H:44])([H:45])[H:46])([C:4]([H:47])([H:48])[H:49])[c:5]1[c:6]([H:50])[c:7]([N:8]([C:9](=[O:10])[N:11]([c:12]2[c:13]([H:53])[c:14]([H:54])[c:15](-[c:16]3[c:17]([H:55])[n:18]4[c:19]([n:20]3)[s:21][c:22]3[c:23]([H:56])[c:24]([O:25][C:26]([C:27]([N:28]5[C:29]([H:61])([H:62])[C:30]([H:63])([H:64])[O:31][C:32]([H:65])([H:66])[C:33]5([H:67])[H:68])([H:59])[H:60])([H:57])[H:58])[c:34]([H:69])[c:35]([H:70])[c:36]43)[c:37]([H:71])[c:38]2[H:72])[H:52])[H:51])[n:39][o:40]1)([H:41])([H:42])[H:43]",
+  "warnings": [
+    "Multiple basic sites; using only most_basic_pka for neutral-fraction estimate.",
+    "Multiple acidic sites; using only most_acidic_pka for neutral-fraction estimate.",
+    "Amphoteric molecule; neutral-fraction estimate assumes independent sites."
+  ]
+}
+
+[functional_groups]
+├──alkyl aryl ether
+├──urea
+│  └──amide
+│     ├──amine
+│     ├──secondary mixed amine
+│     └──carbonyl
+├──isothiourea
+│  ├──hetero N basic no H
+│  ├──hetero N nonbasic
+│  └──hetero S
+├──benzene
+├──imidazole
+│  ├──hetero N basic no H
+│  └──hetero N nonbasic
+├──isoxazole
+│  ├──hetero N nonbasic
+│  └──hetero O
+├──morpholine
+│  ├──oxy
+│  ├──ether
+│  ├──dialkyl ether
+│  ├──amine
+│  └──tertiary aliphatic amine
+└──benzo[d]thiazole
+   ├──benzene
+   └──thiazole
+      ├──hetero N basic no H
+      └──hetero S
+
+
+[ring_systems]
+{
+  "ring_systems": [
+    {
+      "num_rings": 3,
+      "num_aromatic": 3,
+      "all_aromatic": true,
+      "atom_count": 12,
+      "ring_sizes": [
+        5,
+        5,
+        6
+      ],
+      "heteroatoms": [
+        "N",
+        "S"
+      ]
+    },
+    {
+      "num_rings": 1,
+      "num_aromatic": 1,
+      "all_aromatic": true,
+      "atom_count": 5,
+      "ring_sizes": [
+        5
+      ],
+      "heteroatoms": [
+        "N",
+        "O"
+      ]
+    },
+    {
+      "num_rings": 1,
+      "num_aromatic": 1,
+      "all_aromatic": true,
+      "atom_count": 6,
+      "ring_sizes": [
+        6
+      ],
+      "heteroatoms": []
+    },
+    {
+      "num_rings": 1,
+      "num_aromatic": 0,
+      "all_aromatic": false,
+      "atom_count": 6,
+      "ring_sizes": [
+        6
+      ],
+      "heteroatoms": [
+        "N",
+        "O"
+      ]
+    }
+  ],
+  "num_ring_systems": 4,
+  "largest_system_size": 3,
+  "largest_aromatic_system": 3,
+  "has_pah_like": true,
+  "largest_ring_size": 6,
+  "has_macrocycle": false,
+  "num_macrocycles": 0,
+  "spiro_atoms": 0,
+  "bridgehead_atoms": 0
+}
+
+[substruct]
+{
+  "quaternary_ammonium": {
+    "present": false,
+    "count": 0
+  },
+  "amidinium": {
+    "present": false,
+    "count": 0
+  },
+  "guanidinium": {
+    "present": false,
+    "count": 0
+  },
+  "carboxylic_acid": {
+    "present": false,
+    "count": 0
+  },
+  "sulfonic_acid": {
+    "present": false,
+    "count": 0
+  },
+  "phosphonic_acid": {
+    "present": false,
+    "count": 0
+  },
+  "polyol_motif": {
+    "present": false,
+    "count": 0
+  },
+  "urea": {
+    "present": true,
+    "count": 1
+  },
+  "sulfonamide": {
+    "present": false,
+    "count": 0
+  },
+  "amide": {
+    "present": true,
+    "count": 2
+  }
+}
+
+
+Instructions: Answer the following question about drug properties.
+Context: Membrane permeability is a measure of the ability of a drug to pass through a cellular membrane through passive diffusion, which is necessary for the drug to affect a cell. In general, small hydrophobic drugs can easily pass through membranes whereas large polar/charged drugs do not easily pass through. PAMPA (parallel artificial membrane permeability assay) is a commonly employed non-cell-based assay to evaluate drug permeability across the cellular membrane.
+Question: Given a drug SMILES string, predict whether it
+(A) is not permeable to cell membranes in a PAMPA assay (B) is permeable to cell membranes in a PAMPA assay
+Drug SMILES: CC(C)(C)C1=CC(=NO1)NC(=O)NC2=CC=C(C=C2)C3=CN4C5=C(C=C(C=C5)OCCN6CCOCC6)SC4=N3
+Please think step by step and then put ONLY your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant

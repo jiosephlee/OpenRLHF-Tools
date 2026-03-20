@@ -251,7 +251,7 @@ run_task() {
     DYNAMIC_FILTERING=true
     DYNAMIC_FILTERING_REWARD_RANGE="0 1"
 
-    WANDB_PROJECT="${WANDB_PROJECT:-openrlhf_tdc_grpo}"
+    WANDB_PROJECT="${WANDB_PROJECT:-openrlhf_v2}"
     TEMPERATURE=1.0
     TOP_P=0.95
 

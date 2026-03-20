@@ -644,6 +644,10 @@ class PPOTrainer(BasePPOTrainer):
             # Save discarded prompts for offline analysis.
             self.samples_generator.save_discarded_indices(episode)
 
+            #### Flush easy/hard collection (Phase 12) ####
+            self.samples_generator.save_easy_hard_collection()
+            #### end flush easy/hard ####
+
             # LeftOverPrompts phase after main episode, before smart replay.
             if getattr(self.args, "oversample_ratio", 1.0) > 1.0:
                 global_step = self._run_leftover_phase(episode, global_step, total_consumed_prompts)
@@ -697,6 +701,10 @@ class PPOTrainer(BasePPOTrainer):
             except Exception as e:
                 logger.warning(f"Failed to write run summary: {e}")
         #### end write run timing ####
+
+        #### Final flush easy/hard collection (Phase 12) ####
+        self.samples_generator.save_easy_hard_collection()
+        #### end final flush easy/hard ####
 
         # Close trackers
         if self.wandb_logger:
@@ -766,6 +774,53 @@ class PPOTrainer(BasePPOTrainer):
             self.wandb_logger.log_eval(global_step, logs)
         if self.tensorboard_logger:
             self.tensorboard_logger.log_eval(global_step, logs)
+
+        #### Eval sample saving (Phase 12) ####
+        try:
+            eval_traces_dir = getattr(self.samples_generator, "eval_traces_dir", None)
+            if eval_traces_dir and self.strategy.is_rank_0():
+                correct_samples = {}  # datasource -> sample dict
+                wrong_samples = {}    # datasource -> sample dict
+
+                for i in range(num_prompts):
+                    original_prompt = all_prompts[i * n_samples_per_prompt]
+                    datasource = prompt_to_datasource.get(original_prompt, "unknown")
+                    chunk_rewards = rewards[i]
+
+                    best_idx = chunk_rewards.argmax().item()
+                    worst_idx = chunk_rewards.argmin().item()
+
+                    # Correct sample: highest reward > 0, one per datasource
+                    if chunk_rewards[best_idx].item() > 0 and datasource not in correct_samples:
+                        exp = samples_list[i * n_samples_per_prompt + best_idx]
+                        correct_samples[datasource] = {
+                            "prompt": original_prompt,
+                            "response": self.tokenizer.decode(exp.sequences[0], skip_special_tokens=True),
+                            "reward": chunk_rewards[best_idx].item(),
+                        }
+
+                    # Wrong sample: lowest reward <= 0, one per datasource
+                    if chunk_rewards[worst_idx].item() <= 0 and datasource not in wrong_samples:
+                        exp = samples_list[i * n_samples_per_prompt + worst_idx]
+                        wrong_samples[datasource] = {
+                            "prompt": original_prompt,
+                            "response": self.tokenizer.decode(exp.sequences[0], skip_special_tokens=True),
+                            "reward": chunk_rewards[worst_idx].item(),
+                        }
+
+                eval_trace = {"global_step": global_step, "datasources": {}}
+                for ds in set(list(correct_samples) + list(wrong_samples)):
+                    eval_trace["datasources"][ds] = {
+                        "correct": correct_samples.get(ds),
+                        "wrong": wrong_samples.get(ds),
+                    }
+
+                trace_path = os.path.join(eval_traces_dir, f"eval_step_{global_step}.json")
+                with open(trace_path, "w") as f:
+                    json.dump(eval_trace, f, indent=2, ensure_ascii=False, default=str)
+        except Exception as e:
+            logger.warning(f"Failed to save eval traces: {e}")
+        #### end eval sample saving ####
 
         end_time = time.time()
         duration = end_time - start_time

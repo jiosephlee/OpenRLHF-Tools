@@ -204,24 +204,25 @@ class Experience:
         return Experience(**result)
 
 
-#### Updated _collect_prompt_batch: returns dataset indices for replay tracking ####
+#### Updated _collect_prompt_batch: returns dataset indices and datasources for replay tracking ####
 def _collect_prompt_batch(dataloader_iter, num_prompts: int):
     """Draw up to `num_prompts` items from the prompt dataloader."""
-    indices, prompts, labels = [], [], []
+    indices, datasources, prompts, labels = [], [], [], []
     exhausted = False
 
     while len(prompts) < num_prompts:
         try:
-            batch_indices, _, batch_prompts, batch_labels = next(dataloader_iter)
+            batch_indices, batch_datasources, batch_prompts, batch_labels = next(dataloader_iter)
             remaining = num_prompts - len(prompts)
             indices.extend(batch_indices[:remaining])
+            datasources.extend(batch_datasources[:remaining])
             prompts.extend(batch_prompts[:remaining])
             labels.extend(batch_labels[:remaining])
         except StopIteration:
             exhausted = True
             break
 
-    return indices, prompts, labels, exhausted
+    return indices, datasources, prompts, labels, exhausted
 #### end updated _collect_prompt_batch ####
 
 
@@ -280,6 +281,12 @@ class SamplesGenerator:
         self._episode_missed_count = 0
         self._original_dataset = prompts_dataloader.dataset if prompts_dataloader is not None else None
         #### end oversampling ####
+
+        #### Easy/hard prompt tracking (Phase 12) ####
+        self._easy_hard_collection = {"easy": [], "hard": []}
+        self.eval_traces_dir = os.path.join(self.runs_dir, "eval_traces")
+        os.makedirs(self.eval_traces_dir, exist_ok=True)
+        #### end easy/hard tracking ####
 
     #### Trace helper methods (L6) ####
     def _to_jsonable(self, value):
@@ -362,6 +369,95 @@ class SamplesGenerator:
                 json.dump(decoded_traces, f, ensure_ascii=False, indent=2, default=str)
         except Exception as e:
             logger.warning(f"Failed to write eval trace: {e}")
+    #### Prompt group trace methods (Phase 12) ####
+    def _build_prompt_group_record(self, responses, ds_idx, datasource, global_step):
+        """Build a serializable record of a prompt group with decoded outputs."""
+        prompt = responses[0].get("prompt", "")
+        label = responses[0].get("label", "")
+        samples = []
+        for r in responses:
+            decoded = self._decode_trace(r)
+            samples.append({
+                "reward": r.get("reward"),
+                "score": r.get("scores"),
+                "decoded_sections": decoded.get("sections", []),
+                "full_text": decoded.get("full_text", ""),
+            })
+        return {
+            "dataset_idx": ds_idx,
+            "datasource": datasource,
+            "global_step": global_step,
+            "prompt": prompt,
+            "label": label,
+            "samples": samples,
+        }
+
+    def _write_prompt_group_traces(self, step_idx, prompt_groups):
+        """Write prompt group traces in JSON and TXT formats (Phase 12)."""
+        if not prompt_groups:
+            return
+
+        # JSON format
+        json_path = os.path.join(self.rollout_trace_run_dir, f"step{step_idx}_groups.json")
+        try:
+            record = {"step": step_idx, "groups": prompt_groups}
+            with open(json_path, "w") as f:
+                json.dump(record, f, indent=2, ensure_ascii=False, default=str)
+        except Exception as e:
+            logger.warning(f"Failed to write prompt group JSON: {e}")
+
+        # TXT format
+        txt_path = os.path.join(self.rollout_trace_run_dir, f"step{step_idx}_groups.txt")
+        try:
+            with open(txt_path, "w") as f:
+                for gi, group in enumerate(prompt_groups, 1):
+                    ds_idx = group.get("dataset_idx", "?")
+                    ds_name = group.get("datasource", "?")
+                    f.write(f"=== Group {gi} (dataset_idx={ds_idx}, datasource={ds_name}) ===\n")
+                    f.write(f"PROMPT: {group.get('prompt', '')}\n")
+                    f.write(f"LABEL: {group.get('label', '')}\n\n")
+                    for si, sample in enumerate(group.get("samples", []), 1):
+                        reward = sample.get("reward", "?")
+                        f.write(f"--- Sample {si} (reward={reward}) ---\n")
+                        f.write(f"{sample.get('full_text', '')}\n\n")
+                    f.write("=====================================\n\n")
+        except Exception as e:
+            logger.warning(f"Failed to write prompt group TXT: {e}")
+
+    def save_easy_hard_collection(self):
+        """Write accumulated easy/hard examples to disk (Phase 12)."""
+        if not self._easy_hard_collection["easy"] and not self._easy_hard_collection["hard"]:
+            return
+
+        # JSON format
+        json_path = os.path.join(self.runs_dir, "easy_hard_prompts.json")
+        try:
+            with open(json_path, "w") as f:
+                json.dump(self._easy_hard_collection, f, indent=2, ensure_ascii=False, default=str)
+        except Exception as e:
+            logger.warning(f"Failed to write easy/hard JSON: {e}")
+
+        # TXT format
+        txt_path = os.path.join(self.runs_dir, "easy_hard_prompts.txt")
+        try:
+            with open(txt_path, "w") as f:
+                for category in ("easy", "hard"):
+                    for group in self._easy_hard_collection[category]:
+                        step = group.get("global_step", "?")
+                        ds_idx = group.get("dataset_idx", "?")
+                        ds_name = group.get("datasource", "?")
+                        f.write(f"[{category.upper()} @ step {step}] (dataset_idx={ds_idx}, datasource={ds_name})\n")
+                        f.write(f"PROMPT: {group.get('prompt', '')}\n")
+                        f.write(f"LABEL: {group.get('label', '')}\n\n")
+                        for si, sample in enumerate(group.get("samples", []), 1):
+                            reward = sample.get("reward", "?")
+                            f.write(f"--- Sample {si} (reward={reward}) ---\n")
+                            f.write(f"{sample.get('full_text', '')}\n\n")
+                        f.write("=====================================\n\n")
+        except Exception as e:
+            logger.warning(f"Failed to write easy/hard TXT: {e}")
+    #### end prompt group trace methods ####
+
     #### end trace helper methods ####
 
     #### vLLM stats collection methods (L5, L7, L8) ####
@@ -500,7 +596,7 @@ class SamplesGenerator:
         if self.args.vllm_enable_sleep:
             batch_vllm_engine_call(self.vllm_engines, "wake_up")
 
-        experiences, traces, prompts_consumed, exhausted = self._generate_vllm(
+        experiences, traces, prompts_consumed, exhausted, _, _, _ = self._generate_vllm(
             dataloader_iter=self._eval_dataloader_iter,
             num_prompts=len(self.eval_dataloader),
             dynamic_filtering=False,
@@ -610,7 +706,7 @@ class SamplesGenerator:
         oversample_ratio = generate_kwargs.pop("oversample_ratio", getattr(self.args, "oversample_ratio", 1.0))
         #### end oversampling ratio ####
 
-        experiences, traces, prompts_consumed, exhausted = self._generate_vllm(
+        experiences, traces, prompts_consumed, exhausted, prompt_groups, easy_ex, hard_ex = self._generate_vllm(
             dataloader_iter=self._dataloader_iter,
             num_prompts=self.args.rollout_batch_size,
             dynamic_filtering=self.args.dynamic_filtering,
@@ -619,6 +715,15 @@ class SamplesGenerator:
             **generate_kwargs,
         )
         self._step_prompts_consumed = prompts_consumed
+
+        #### Write prompt group traces and collect easy/hard (Phase 12) ####
+        if prompt_groups and self.strategy.is_rank_0():
+            self._write_prompt_group_traces(self._trace_step_idx, prompt_groups)
+        if easy_ex:
+            self._easy_hard_collection["easy"].append(easy_ex)
+        if hard_ex:
+            self._easy_hard_collection["hard"].append(hard_ex)
+        #### end prompt group traces ####
 
         #### Collect vLLM stats (L7) ####
         gen_time = getattr(self, "_last_generation_wall_time", 0)
@@ -653,7 +758,7 @@ class SamplesGenerator:
 
     def _generate_vllm(
         self, dataloader_iter, num_prompts: int, dynamic_filtering, **generate_kwargs
-    ) -> Tuple[List[Experience], list, int, bool]:
+    ) -> Tuple[List[Experience], list, int, bool, list, Optional[dict], Optional[dict]]:
         """Generate a batch of Experiences with optional reward filtering and oversampling."""
         prompts_consumed = 0
 
@@ -672,23 +777,27 @@ class SamplesGenerator:
 
         generation_start_time = time.time()
 
-        ds_indices, prompts, labels, exhausted = _collect_prompt_batch(dataloader_iter, oversampled_count)
+        ds_indices, ds_datasources, prompts, labels, exhausted = _collect_prompt_batch(dataloader_iter, oversampled_count)
         # Stop early if the prompt source is fully consumed.
         if exhausted and len(prompts) < num_prompts:
-            return [], [], prompts_consumed, exhausted
+            return [], [], prompts_consumed, exhausted, [], None, None
 
         pending_result = self._dispatch_prompts_to_vllm(prompts, labels, **generate_kwargs)
         prompts_consumed += len(prompts)
 
-        # Build ref→engine and ref→dataset_index mappings
+        # Build ref→engine, ref→dataset_index, and ref→datasource mappings
         ref_to_engine = {}
         ref_to_dataset_idx = {}
+        ref_to_datasource = {}
         pending_refs = []
         for ref, engine_idx in pending_result:
             pending_refs.append(ref)
             ref_to_engine[ref] = engine_idx
+            ref_idx = len(pending_refs) - 1
             if ds_indices:
-                ref_to_dataset_idx[ref] = ds_indices[len(pending_refs) - 1] if len(pending_refs) - 1 < len(ds_indices) else None
+                ref_to_dataset_idx[ref] = ds_indices[ref_idx] if ref_idx < len(ds_indices) else None
+            if ds_datasources:
+                ref_to_datasource[ref] = ds_datasources[ref_idx] if ref_idx < len(ds_datasources) else None
 
         engine_pending = defaultdict(int)
         for ref in pending_refs:
@@ -699,6 +808,13 @@ class SamplesGenerator:
         accepted_experiences: List[Experience] = []
         accepted_prompt_groups = 0
         episode_traces: list = []
+
+        #### Prompt group tracking (Phase 12) ####
+        step_prompt_groups = []
+        step_easy_example = None
+        step_hard_example = None
+        #### end prompt group tracking ####
+
         pbar = tqdm(range(num_prompts), desc="Generate samples")
 
         while pending_refs:
@@ -707,6 +823,7 @@ class SamplesGenerator:
                 engine_idx = ref_to_engine.get(ref, 0)
                 engine_pending[engine_idx] = max(0, engine_pending[engine_idx] - 1)
                 ds_idx = ref_to_dataset_idx.get(ref)
+                datasource = ref_to_datasource.get(ref)
 
                 try:
                     responses = ray.get(ref)
@@ -737,6 +854,12 @@ class SamplesGenerator:
                         self._episode_easy_count += 1
                         if smart_replay and ds_idx is not None:
                             self._discarded_easy_indices.add(ds_idx)
+                        #### Capture easy example (Phase 12) ####
+                        if step_easy_example is None and responses:
+                            step_easy_example = self._build_prompt_group_record(
+                                responses, ds_idx, datasource, trace_step_idx
+                            )
+                        #### end capture easy ####
                         experiences = []
                     elif avg_reward <= min_r:
                         self._step_too_hard_count += 1
@@ -744,6 +867,12 @@ class SamplesGenerator:
                         if smart_replay and ds_idx is not None:
                             self._replay_hard_indices.add(ds_idx)
                             self._discarded_hard_indices.add(ds_idx)
+                        #### Capture hard example (Phase 12) ####
+                        if step_hard_example is None and responses:
+                            step_hard_example = self._build_prompt_group_record(
+                                responses, ds_idx, datasource, trace_step_idx
+                            )
+                        #### end capture hard ####
                         experiences = []
                     else:
                         if smart_replay and ds_idx is not None:
@@ -756,6 +885,13 @@ class SamplesGenerator:
                     accepted_prompt_groups += 1
                     pbar.set_postfix({"prompts_consumed": prompts_consumed})
                     pbar.update()
+
+                    #### Record prompt group (Phase 12, limit 5 per step) ####
+                    if len(step_prompt_groups) < 5 and responses:
+                        step_prompt_groups.append(
+                            self._build_prompt_group_record(responses, ds_idx, datasource, trace_step_idx)
+                        )
+                    #### end record prompt group ####
 
                     #### Early termination when oversampled (L10) ####
                     if accepted_prompt_groups >= num_prompts and oversample_ratio > 1.0:
@@ -777,7 +913,7 @@ class SamplesGenerator:
                 elif not exhausted:
                     replace_ratio = getattr(self.args, "replace_discarded_prompts_ratio", 1.0)
                     if replace_ratio > 0:
-                        new_ds_indices, new_prompts, new_labels, exhausted = _collect_prompt_batch(dataloader_iter, 1)
+                        new_ds_indices, new_ds_datasources, new_prompts, new_labels, exhausted = _collect_prompt_batch(dataloader_iter, 1)
                         prompts_consumed += len(new_prompts)
                         if exhausted and not new_prompts:
                             continue
@@ -788,6 +924,8 @@ class SamplesGenerator:
                                 ref_to_engine[new_ref] = new_engine_idx
                                 if new_ds_indices:
                                     ref_to_dataset_idx[new_ref] = new_ds_indices[0]
+                                if new_ds_datasources:
+                                    ref_to_datasource[new_ref] = new_ds_datasources[0]
                                 engine_pending[new_engine_idx] += 1
 
         pbar.close()
@@ -809,7 +947,7 @@ class SamplesGenerator:
             )
         #### end smart replay logging ####
 
-        return accepted_experiences, episode_traces, prompts_consumed, exhausted
+        return accepted_experiences, episode_traces, prompts_consumed, exhausted, step_prompt_groups, step_easy_example, step_hard_example
 
     def _dispatch_prompts_to_vllm(self, prompts: List[str], labels: List[str], **generate_kwargs) -> List[Tuple]:
         """Send prompts to rollout executors and return (ref, engine_idx) tuples."""

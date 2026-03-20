@@ -6,7 +6,7 @@ JSON mappings of the form:
     {task_name: basic_schemas + task_specific, "__default__": basic_schemas}
 
 Usage:
-    python scripts/generate_tools_json.py --version v1|v2|v3|v4|all
+    python scripts/generate_tools_json.py --version v1|v2|v3|v4|v5|v6|all
 
 Output: data/tdc/metadata/tools_per_task_<version>.json
 """

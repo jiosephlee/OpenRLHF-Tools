@@ -388,7 +388,24 @@ class LigerPolicyLoss(nn.Module):
 
         # Unpack metrics: [kl, clip_ratio] if beta>0, else [clip_ratio]
         clip_ratio = metrics[-1]
-        ppo_kl = metrics[0] if self.use_ref_model else torch.tensor(0.0)
+
+        #### Compute ppo_kl from hidden states (approx KL between new and old policy) ####
+        # The Liger kernel computes new log probs internally but doesn't expose them.
+        # Recompute per-sequence in no_grad to avoid materializing full (B,L,V) logits.
+        with torch.no_grad():
+            if self.backend == "triton":
+                hs_for_lp = hidden_states[:, :-1, :]  # (B, L, D)
+            else:
+                hs_for_lp = hidden_states  # already (B, L, D)
+            per_seq_lp = []
+            for b in range(hs_for_lp.shape[0]):
+                logits_b = F.linear(hs_for_lp[b], lm_head.weight, getattr(lm_head, "bias", None))
+                lp_b = logits_b.log_softmax(-1).gather(-1, completion_ids[b].unsqueeze(-1)).squeeze(-1)
+                per_seq_lp.append(lp_b)
+            new_log_probs = torch.stack(per_seq_lp)
+            log_ratio = new_log_probs - old_log_probs
+            ppo_kl = masked_mean(-log_ratio, action_mask, dim=None)
+        #### end compute ppo_kl ####
 
         return loss, clip_ratio, ppo_kl, vllm_kl
 #### end Liger fused GRPO loss wrapper ####

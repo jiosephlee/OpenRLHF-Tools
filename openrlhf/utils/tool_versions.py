@@ -7,6 +7,8 @@ Versions (incremental):
   - v4: v2 + predict_pka + estimate_logd + score_structural_alerts (no 3DEPSA)
   - v5: v4 + predict_synthesizability (RAscore) + predict_metabolic_sites (SyGMa)
          + predict_electronic_properties (GFN2-xTB)
+  - v6: Consolidated therapeutic tools — 11 semantic tools with metadata cache,
+         replaces fine-grained per-descriptor tools
 
 Usage::
 
@@ -311,6 +313,18 @@ for _name, _fn in [
         _V5_CALLABLES[_name] = _fn
 
 # ---------------------------------------------------------------------------
+# v6: Consolidated therapeutic tools (11 semantic tools, metadata-cached)
+# ---------------------------------------------------------------------------
+from openrlhf.tools.therapeutic_tools import (
+    CONSOLIDATED_TOOLS as _V6_SCHEMAS_LIST,
+    _FUNCTION_MAP as _V6_CALLABLES,
+)
+
+# v6 uses the same tools for ALL tasks — no task-specific extras needed since
+# find_similar_molecules already takes a task parameter for task-aware retrieval.
+_V6_TASK_MAP: Dict[str, List[Dict[str, Any]]] = {}
+
+# ---------------------------------------------------------------------------
 # Public registry
 # ---------------------------------------------------------------------------
 TOOL_VERSIONS: Dict[str, Dict[str, Any]] = {
@@ -338,6 +352,11 @@ TOOL_VERSIONS: Dict[str, Dict[str, Any]] = {
         "basic_schemas": _V5_SCHEMAS,
         "task_specific_map": TDC_RDKIT_SPECIFIC_OPENAI_TOOLS_MAP,
         "callables": _V5_CALLABLES,
+    },
+    "v6": {
+        "basic_schemas": _V6_SCHEMAS_LIST,
+        "task_specific_map": _V6_TASK_MAP,
+        "callables": _V6_CALLABLES,
     },
 }
 

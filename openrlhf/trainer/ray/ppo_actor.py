@@ -494,11 +494,24 @@ class ActorPPOTrainer(ABC):
                 )
             raise RuntimeError(f"Non-finite actor_loss detected. {diag}")
 
-        #### Shared post-loss: metrics, KL, aux_loss, entropy, distill ####
+        #### Shared post-loss: metrics, KL, aux_loss, entropy, IS ratios, distill ####
         experience.info["ppo_clip_ratio"] = clip_ratio.detach()
         experience.info["ppo_kl"] = ppo_kl.detach()
         if vllm_kl is not None:
             experience.info["vllm_kl"] = vllm_kl.detach()
+
+        #### Importance sampling ratio reporting (Phase 12) ####
+        # Policy IS ratio: how far current policy is from old policy (standard path only)
+        if action_log_probs is not None:
+            policy_log_ratio = action_log_probs - old_action_log_probs
+            policy_is_ratio = masked_mean(policy_log_ratio.exp().detach(), action_mask)
+            experience.info["importance_ratio"] = policy_is_ratio
+        # vLLM off-policy IS ratio: how stale the rollout is
+        if experience.rollout_log_probs is not None:
+            vllm_log_ratio = old_action_log_probs - experience.rollout_log_probs
+            vllm_is_ratio = masked_mean(vllm_log_ratio.exp().detach(), action_mask)
+            experience.info["vllm_importance_ratio"] = vllm_is_ratio
+        #### end IS ratio reporting ####
 
         loss = actor_loss
 

@@ -85,7 +85,8 @@ class GenerateSamplesActor:
         os.makedirs(log_dir, exist_ok=True)
 
         all_samples = []
-        for _indices, datasources, prompts, _labels in self.prompts_dataloader:
+        for batch in self.prompts_dataloader:
+            _indices, datasources, prompts = batch[0], batch[1], batch[2]
             for ds, prompt in zip(datasources, prompts):
                 all_samples.append((ds, prompt))
 

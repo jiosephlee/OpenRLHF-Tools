@@ -81,6 +81,8 @@ class WandbLogger:
         wandb.define_metric("parse/*", step_metric="train/global_step", step_sync=True)
         wandb.define_metric("system/*", step_metric="train/global_step", step_sync=True)
         wandb.define_metric("vllm/*", step_metric="train/global_step", step_sync=True)
+        wandb.define_metric("batch/*", step_metric="train/global_step", step_sync=True)
+        wandb.define_metric("knn/*", step_metric="train/global_step", step_sync=True)
         wandb.define_metric("eval/global_step")
         wandb.define_metric("eval/*", step_metric="eval/global_step", step_sync=True)
         wandb.define_metric("episode/round")
@@ -94,6 +96,10 @@ class WandbLogger:
     @staticmethod
     def _route_key(k: str) -> str:
         """Return the wandb section prefix for a given metric key."""
+        if k.startswith("knn_"):
+            return "knn"
+        if k.startswith("micro_batch/"):
+            return "batch"
         if k.startswith("vllm_"):
             return "vllm"
         if k.startswith("parse_method__") or k in WandbLogger._PARSE_KEYS:

@@ -1,9 +1,12 @@
 import json
 import random
+import re
 from collections import defaultdict
 
 from torch.utils.data import Dataset
 from tqdm import tqdm
+
+_KNN_PSEUDO_LABEL_RE = re.compile(r"pseudo label.*?KNN prediction is \(([A-Z])\)", re.IGNORECASE)
 
 
 def interleave_indices_by_datasource(indices, datasources_list, seed):
@@ -110,11 +113,14 @@ class PromptDataset(Dataset):
         self.prompts = []
         self.labels = []
         self.datasources = []
+        self.knn_pseudo_labels = []  # KNN pseudo-label extracted from prompt text, or None
         for data in tqdm(dataset, desc="Preprocessing data", disable=not self.strategy.is_rank_0()):
             prompt, label = preprocess_data(data, input_template, input_key, label_key, apply_chat_template, tools_map=tools_map)
             self.prompts.append(prompt)
             self.labels.append(label)
             self.datasources.append(data.get("datasource", "default"))
+            m = _KNN_PSEUDO_LABEL_RE.search(prompt)
+            self.knn_pseudo_labels.append(m.group(1) if m else None)
 
         if getattr(self.strategy.args, "curriculum_balanced", False):
             self._apply_curriculum_balancing(getattr(self.strategy.args, "seed", 42))
@@ -130,23 +136,26 @@ class PromptDataset(Dataset):
         self.prompts = [self.prompts[i] for i in order]
         self.labels = [self.labels[i] for i in order]
         self.datasources = [self.datasources[i] for i in order]
+        self.knn_pseudo_labels = [self.knn_pseudo_labels[i] for i in order]
 
     def __len__(self):
         length = len(self.prompts)
         return length
 
     def __getitem__(self, idx):
-        return idx, self.datasources[idx], self.prompts[idx], self.labels[idx]
+        return idx, self.datasources[idx], self.prompts[idx], self.labels[idx], self.knn_pseudo_labels[idx]
 
     def collate_fn(self, item_list):
         indices = []
         datasources = []
         prompts = []
         labels = []
-        for idx, datasource, prompt, label in item_list:
+        knn_pseudo_labels = []
+        for idx, datasource, prompt, label, knn_pl in item_list:
             indices.append(idx)
             datasources.append(datasource)
             prompts.append(prompt)
             labels.append(label)
+            knn_pseudo_labels.append(knn_pl)
 
-        return indices, datasources, prompts, labels
+        return indices, datasources, prompts, labels, knn_pseudo_labels

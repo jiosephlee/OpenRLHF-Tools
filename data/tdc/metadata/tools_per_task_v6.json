@@ -217,7 +217,7 @@
       "type": "function",
       "function": {
         "name": "predict_metabolism_sites",
-        "description": "Predict which atoms in a molecule are most likely to be oxidized by cytochrome P450 enzymes. Uses FAME3R (generic Phase 1 & 2 SoM) or RDKit SMARTS heuristics as fallback. Use for: (1) CYP inhibition tasks — SoM reasoning about enzyme-substrate interactions; (2) DILI — identifying reactive metabolite formation sites; (3) AMES — metabolic activation of pro-mutagens.",
+        "description": "Predict CYP450 sites of metabolism and likely metabolite structures. Returns: (1) ATTNSOM isoform-specific SoM predictions showing which atoms each CYP isoform is most likely to oxidize; (2) SyGMa metabolite predictions with SMILES structures and pathways for both Phase 1 (oxidation, reduction, hydrolysis) and Phase 2 (glucuronidation, sulfation, GSH conjugation, acetylation, glycination). Available CYP isoforms: 1A2, 2A6, 2B6, 2C8, 2C9, 2C19, 2D6, 2E1, 3A4. Use for: (1) CYP inhibition/substrate tasks — SoM + metabolite reasoning; (2) DILI — reactive metabolites vs. detoxifying conjugation; (3) AMES — metabolic activation of pro-mutagens.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -225,18 +225,15 @@
               "type": "string",
               "description": "SMILES string of the molecule."
             },
-            "engine": {
-              "type": "string",
-              "description": "Prediction backend: 'auto' (default), 'fame3r', or 'rdkit'.",
-              "enum": [
-                "auto",
-                "fame3r",
-                "rdkit"
-              ]
+            "isoforms": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "CYP isoforms to predict (e.g. ['2C9', '3A4']). Defaults to all 9 isoforms if omitted."
             }
           },
           "required": [
-            "smiles"
+            "smiles",
+            "isoforms"
           ],
           "additionalProperties": false
         }

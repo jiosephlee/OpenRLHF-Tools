@@ -385,6 +385,21 @@ class SamplesGenerator:
                         )
 
         decoded["sections"] = sections
+
+        # Extract response-only text (excluding prompt)
+        full_text = decoded["full_text"]
+        protocol = os.environ.get("OPENRLHF_CHAT_PROTOCOL", "")
+        if protocol == "gpt_oss":
+            split_marker = "<|start|>assistant"
+        elif protocol in ("intern_s1", "qwen3"):
+            split_marker = "<|im_start|>assistant"
+        else:
+            split_marker = None
+        if split_marker and split_marker in full_text:
+            decoded["response_text"] = full_text[full_text.index(split_marker):]
+        else:
+            decoded["response_text"] = full_text
+
         return decoded
 
     def _strip_token_ids(self, trace: dict) -> dict:
@@ -441,8 +456,7 @@ class SamplesGenerator:
             samples.append({
                 "reward": r.get("reward"),
                 "score": r.get("scores"),
-                "decoded_sections": decoded.get("sections", []),
-                "full_text": decoded.get("full_text", ""),
+                "response_text": decoded.get("response_text", decoded.get("full_text", "")),
             })
         return {
             "dataset_idx": ds_idx,
@@ -513,7 +527,7 @@ class SamplesGenerator:
                         for si, sample in enumerate(group.get("samples", []), 1):
                             reward = sample.get("reward", "?")
                             f.write(f"--- Sample {si} (reward={reward}) ---\n")
-                            f.write(f"{sample.get('full_text', '')}\n\n")
+                            f.write(f"{sample.get('response_text', '')}\n\n")
                         f.write("=====================================\n\n")
         except Exception as e:
             logger.warning(f"Failed to write easy/hard TXT: {e}")
@@ -1074,7 +1088,6 @@ class SamplesGenerator:
                 experiences = [
                     self._process_response_into_experience(response, **generate_kwargs) for response in responses
                 ]
-                del responses  # free raw vLLM response dicts before processing next batch
                 # Filter out None entries from failed/empty generations.
                 experiences = [e for e in experiences if e is not None]
                 if not experiences:
@@ -1229,6 +1242,8 @@ class SamplesGenerator:
                             if new_ds_datasources:
                                 ref_to_datasource[new_ref] = new_ds_datasources[j] if j < len(new_ds_datasources) else "unknown"
                             engine_pending[new_engine_idx] += 1
+
+                del responses  # free raw vLLM response dicts
 
         self._last_episode_trace = episode_traces[0] if episode_traces else None
         self._last_total_episodes = total_episodes

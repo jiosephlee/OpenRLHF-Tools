@@ -24,7 +24,7 @@
 #   DEQUANT=unsloth LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo bash scripts/train_grpo_tdc_gpt_oss_no_tools_knn3.sh
 #
 #   USE_LORA=1 LEARNING_RATE=1e-5 DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=ppo SMART_REPLAY=1 bash train_grpo_tdc_gpt_oss_no_tools_knn3.sh
-#   OVERSAMPLE_RATIO=2 DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=49152 LIGER_GRPO_LOSS=1 LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss_no_tools_knn3.sh
+#   OVERSAMPLE_RATIO=2 DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss_no_tools_knn3.sh
 #
 #   # With features:
 #   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis REDUCE_OPTIMIZER=adam_offload TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo SMART_REPLAY=1 DEQUANT=unsloth bash scripts/train_grpo_tdc_gpt_oss_no_tools_knn3.sh
@@ -81,7 +81,7 @@ if [ -n "$DEQUANT" ]; then
             ;;
     esac
     CUDA_MODULE="${CUDA_MODULE:-cuda/13.1.0}"
-    CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern}"
+    CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/openrlhf_nightly}"
 else
     case "$QUANT_METHOD" in
         mxfp4)

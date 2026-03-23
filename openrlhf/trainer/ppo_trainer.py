@@ -734,26 +734,48 @@ class BasePPOTrainer(ABC):
             if not found:
                 return
 
-            _decode_fn = self.tokenizer.decode if _TRANSFORMERS_V5 else lambda seq: self.tokenizer.batch_decode([seq], skip_special_tokens=True)[0]
+            # Determine response split marker based on chat protocol
+            protocol = os.environ.get("OPENRLHF_CHAT_PROTOCOL", "")
+            if protocol == "gpt_oss":
+                _split_marker = "<|start|>assistant"
+            elif protocol in ("intern_s1", "qwen3"):
+                _split_marker = "<|im_start|>assistant"
+            else:
+                _split_marker = None
 
             for gtype, gi in found.items():
                 start = gi * n_samples
                 end = start + n_samples
                 group_rewards = rewards[start:end].tolist()
+                group_prompt = sorted_prompts[start] if start < len(sorted_prompts) else ""
+                group_label = sorted_labels[start] if start < len(sorted_labels) else ""
                 samples = []
                 for si in range(start, end):
-                    decoded = _decode_fn(sequences[si], skip_special_tokens=True) if _TRANSFORMERS_V5 else self.tokenizer.decode(sequences[si], skip_special_tokens=True)
+                    # Strip padding tokens before decoding
+                    seq = sequences[si]
+                    pad_id = self.tokenizer.pad_token_id
+                    eos_id = self.tokenizer.eos_token_id
+                    # Remove trailing pad/eos tokens
+                    end_idx = len(seq)
+                    while end_idx > 0 and seq[end_idx - 1].item() in (pad_id, eos_id, 0):
+                        end_idx -= 1
+                    full_text = self.tokenizer.decode(seq[:end_idx], skip_special_tokens=False)
+                    # Extract response only (strip prompt)
+                    if _split_marker and _split_marker in full_text:
+                        response_text = full_text[full_text.index(_split_marker):]
+                    else:
+                        response_text = full_text
                     samples.append({
                         "reward": group_rewards[si - start],
-                        "decoded_text": decoded,
-                        "prompt": sorted_prompts[si] if si < len(sorted_prompts) else "",
-                        "label": sorted_labels[si] if si < len(sorted_labels) else "",
+                        "response_text": response_text,
                     })
 
                 record = {
                     "step": global_step,
                     "type": gtype,
                     "group_rewards": group_rewards,
+                    "prompt": group_prompt,
+                    "label": group_label,
                     "samples": samples,
                 }
                 trace_path = os.path.join(trace_dir, f"group_trace_step{global_step}_{gtype}.json")

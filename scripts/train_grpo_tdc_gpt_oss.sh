@@ -24,7 +24,7 @@
 #
 #   # Unsloth BF16:
 #   PRETRAIN_PATH= EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=1 TIS=1 TIS_TYPE=tis TRAIN_MAX_TOKENS_PER_GPU=40960 SMART_REPLAY=1 REDUCE_OPTIMIZER=adam_offload LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss.sh
-#   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TRAIN_MAX_TOKENS_PER_GPU=49152 SMART_REPLAY=1 REDUCE_OPTIMIZER=none LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss.sh
+#   USE_LORA=1 LEARNING_RATE=2e-5 EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TRAIN_MAX_TOKENS_PER_GPU=65536 REDUCE_OPTIMIZER=none LIGER_GRPO_LOSS=0 DEQUANT=unsloth LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss.sh
 #   # Distributed:
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 bash scripts/train_grpo_tdc_gpt_oss.sh
 #       
@@ -79,7 +79,7 @@ if [ -n "$DEQUANT" ]; then
             ;;
     esac
     CUDA_MODULE="${CUDA_MODULE:-cuda/13.1.0}"
-    CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern}"
+    CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/openrlhf}"
 else
     case "$QUANT_METHOD" in
         mxfp4)
@@ -140,7 +140,7 @@ LIGER_GRPO_BACKEND="${LIGER_GRPO_BACKEND:-triton}"
 LOSS_TYPE="${LOSS_TYPE:-ppo}"
 LIGER_CHUNK_SIZE="${LIGER_CHUNK_SIZE:-1}"
 CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
-OVERSAMPLE_RATIO="${OVERSAMPLE_RATIO:-1}"
+OVERSAMPLE_RATIO="${OVERSAMPLE_RATIO:-2}"
 TIS="${TIS:-0}"
 TIS_TYPE="${TIS_TYPE:-tis}"
 TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
@@ -149,8 +149,8 @@ KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-fp8}"
 REDUCE_OPTIMIZER="${REDUCE_OPTIMIZER:-adam_offload}"
 MAX_EPOCHS="${MAX_EPOCHS:-1}"
 USE_LORA="${USE_LORA:-0}"
-LORA_RANK="${LORA_RANK:-64}"
-LORA_ALPHA="${LORA_ALPHA:-64}"
+LORA_RANK="${LORA_RANK:-128}"
+LORA_ALPHA="${LORA_ALPHA:-256}"
 VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-256}"
 VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
@@ -165,9 +165,9 @@ ZERO_STAGE=2
 PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-8192}"
 N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-8}"
 TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-8192}"
-ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.25" | bc | awk '{print int($1)}')}"
+ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.5" | bc | awk '{print int($1)}')}"
 
-COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-16}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
+COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-8}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
 
 ### MODE-DEPENDENT DEFAULTS ###
 if [ "$MODE" = "colocated" ]; then
@@ -556,6 +556,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --temperature $TEMPERATURE \
     --agent_func_path "$AGENT_FUNC_PATH" \
     --agent_max_steps $AGENT_MAX_STEPS \
+    --enable_tool_calling_rewards \
     --vllm_stop_strings "<|return|>" "<|call|>" \
     --vllm_max_num_seqs $VLLM_MAX_NUM_SEQS \
     --chat_protocol "$CHAT_PROTOCOL" \

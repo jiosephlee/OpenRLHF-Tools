@@ -180,10 +180,10 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
         # Cap the total format reward to 0.01 to prevent linear buildup.
         if "format_reward" in extra_logs:
             format_reward = extra_logs["format_reward"]
-            if format_reward > 0.01:
-                excess = format_reward - 0.01
+            if format_reward > 0.25:
+                excess = format_reward - 0.25
                 total_reward -= excess
-                extra_logs["format_reward"] = 0.01
+                extra_logs["format_reward"] = 0.25
 
         # Soft length penalty: linearly scale penalty from 0 at sequence length 8192 to 1 at length_penalty_max_length
         if self.length_penalty_max_length > 0:

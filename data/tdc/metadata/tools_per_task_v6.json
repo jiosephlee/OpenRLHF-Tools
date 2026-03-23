@@ -4,7 +4,7 @@
       "type": "function",
       "function": {
         "name": "get_molecule_profile",
-        "description": "Get a comprehensive molecular profile including identity (MW), drug-likeness (QED, Lipinski violations), key physicochemical properties (logP, TPSA, HBD, HBA, rotatable bonds, Fsp3, molar refractivity), charge information, complexity metrics (Bertz CT, stereocenters), and pharmacophore feature counts (hydrophobic, aromatic, ionizable, Zn-binder).",
+        "description": "Get a comprehensive molecular profile including identity (MW), drug-likeness (QED, Lipinski violations), key physicochemical properties (logP, TPSA, HBD, HBA, rotatable bonds, Fsp3, molar refractivity), charge information, complexity metrics (Bertz CT, stereocenters), topology indices (Hall-Kier, Kappa, Balaban J, IPC), and pharmacophore feature counts (hydrophobic, aromatic, ionizable, Zn-binder).",
         "parameters": {
           "type": "object",
           "properties": {
@@ -107,8 +107,8 @@
     {
       "type": "function",
       "function": {
-        "name": "screen_safety",
-        "description": "Screen a molecule for toxicophores — structural motifs associated with specific toxicity mechanisms. Groups alerts into mechanistic categories (e.g. Michael acceptor, alkylating agent, PAH) with explanations. Also screens ToxAlerts endpoint-specific patterns for skin sensitization, mutagenicity, carcinogenicity, and reactive metabolite formation. Returns matched alert counts per category.",
+        "name": "screen_toxicophores",
+        "description": "Screen a molecule for toxicophores — structural motifs associated with specific toxicity mechanisms. Groups alerts into categories like 'Michael acceptor' (protein-reactive electrophile), 'alkylating agent' (DNA-reactive), 'PAH' (CYP-activated), etc. Each category includes a mechanistic explanation. Also screens against ToxAlerts endpoint-specific patterns covering skin sensitization, mutagenicity, carcinogenicity, reactive metabolite formation, electrophilic reactivity, chelation, and promiscuity. Returns pharmacophore feature counts (donor/acceptor/aromatic/hydrophobe). Use this to identify structural liabilities and understand their toxicological mechanisms.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -217,23 +217,37 @@
       "type": "function",
       "function": {
         "name": "predict_metabolism_sites",
-        "description": "Predict CYP450 metabolism: returns top 3 ranked metabolites with SMILES, reaction types, and priority scores for Phase 1 (oxidation, reduction, hydrolysis) and Phase 2 (glucuronidation, sulfation, GSH conjugation). Uses GLORYx (FAME3 SoM + reaction rules) when cached, otherwise ATTNSOM + SyGMa as fallback. Use for: (1) CYP inhibition/substrate tasks — metabolite reasoning; (2) DILI — reactive metabolites vs. detoxifying conjugation; (3) AMES — metabolic activation of pro-mutagens.",
+        "description": "Predict CYP450 metabolism: returns top 3 ranked metabolites with SMILES, reaction types, and priority scores for Phase 1 (oxidation, reduction, hydrolysis) and Phase 2 (glucuronidation, sulfation, GSH conjugation). Uses GLORYx (FAME3 SoM + reaction rules) when cached, otherwise SyGMa rule-based metabolite prediction as fallback. ",
         "parameters": {
           "type": "object",
           "properties": {
             "smiles": {
               "type": "string",
               "description": "SMILES string of the molecule."
-            },
-            "isoforms": {
-              "type": "array",
-              "items": {"type": "string"},
-              "description": "CYP isoforms to predict (e.g. ['2C9', '3A4']). Defaults to all 9 isoforms if omitted."
             }
           },
           "required": [
-            "smiles",
-            "isoforms"
+            "smiles"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_scaffold",
+        "description": "Extract the Murcko scaffold (core ring+linker skeleton with side chains stripped) and generic framework (pure topological skeleton). Shows what fraction of the molecule is scaffold vs. side chains. Use this to identify the core structural class of a molecule and compare scaffolds across molecules.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string",
+              "description": "SMILES string of the molecule."
+            }
+          },
+          "required": [
+            "smiles"
           ],
           "additionalProperties": false
         }

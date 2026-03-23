@@ -4,7 +4,7 @@
       "type": "function",
       "function": {
         "name": "get_molecule_profile",
-        "description": "Get a comprehensive molecular profile including identity (MW, formula), drug-likeness (QED, Lipinski violations), key physicochemical properties (logP, TPSA, HBD, HBA, rotatable bonds, Fsp3, molar refractivity), charge information, and complexity metrics (Bertz CT, stereocenters).",
+        "description": "Get a comprehensive molecular profile including identity (MW), drug-likeness (QED, Lipinski violations), key physicochemical properties (logP, TPSA, HBD, HBA, rotatable bonds, Fsp3, molar refractivity), charge information, complexity metrics (Bertz CT, stereocenters), and pharmacophore feature counts (hydrophobic, aromatic, ionizable, Zn-binder).",
         "parameters": {
           "type": "object",
           "properties": {
@@ -44,7 +44,7 @@
       "type": "function",
       "function": {
         "name": "analyze_ring_systems",
-        "description": "Analyze ring topology, aromaticity, and topological shape indices. Includes fused ring system analysis, PAH detection (≥3 fused aromatic rings), macrocycle detection, ring type breakdown (aromatic/aliphatic/saturated/heterocyclic), aromaticity metrics, and topology indices (Hall-Kier, Kappa, Balaban J).",
+        "description": "Analyze ring topology and aromaticity. Includes fused ring system analysis, PAH detection (≥3 fused aromatic rings), macrocycle detection, ring type breakdown (aromatic/aliphatic/saturated/heterocyclic), and aromaticity metrics.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -108,7 +108,7 @@
       "type": "function",
       "function": {
         "name": "screen_safety",
-        "description": "Screen a molecule for safety concerns: structural alerts (PAINS, Brenk, NIH, ZINC, ChEMBL filters) and pharmacophore features (donor/acceptor/aromatic/hydrophobe with atom IDs). Use get_electronic_properties for charge/EState analysis.",
+        "description": "Screen a molecule for toxicophores — structural motifs associated with specific toxicity mechanisms. Groups alerts into mechanistic categories (e.g. Michael acceptor, alkylating agent, PAH) with explanations. Also screens ToxAlerts endpoint-specific patterns for skin sensitization, mutagenicity, carcinogenicity, and reactive metabolite formation. Returns matched alert counts per category.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -128,7 +128,7 @@
       "type": "function",
       "function": {
         "name": "find_similar_molecules",
-        "description": "Find the most similar molecules from the training set using task-aware embeddings. Returns K nearest neighbors with their labels, cached molecular properties, and shared scaffolds (MCS), plus the closest molecule with the opposite label for contrastive SAR reasoning. Use this for structure-activity analysis.",
+        "description": "Find the most similar molecules from the training set using task-aware embeddings. Returns K nearest neighbors with their labels and functional groups, plus the closest molecule with the opposite label for contrastive SAR reasoning. Includes KNN accuracy metrics (global and local neighborhood). Use this for structure-activity analysis.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -217,7 +217,7 @@
       "type": "function",
       "function": {
         "name": "predict_metabolism_sites",
-        "description": "Predict CYP450 sites of metabolism and likely metabolite structures. Returns: (1) ATTNSOM isoform-specific SoM predictions showing which atoms each CYP isoform is most likely to oxidize; (2) SyGMa metabolite predictions with SMILES structures and pathways for both Phase 1 (oxidation, reduction, hydrolysis) and Phase 2 (glucuronidation, sulfation, GSH conjugation, acetylation, glycination). Available CYP isoforms: 1A2, 2A6, 2B6, 2C8, 2C9, 2C19, 2D6, 2E1, 3A4. Use for: (1) CYP inhibition/substrate tasks — SoM + metabolite reasoning; (2) DILI — reactive metabolites vs. detoxifying conjugation; (3) AMES — metabolic activation of pro-mutagens.",
+        "description": "Predict CYP450 metabolism: returns top 3 ranked metabolites with SMILES, reaction types, and priority scores for Phase 1 (oxidation, reduction, hydrolysis) and Phase 2 (glucuronidation, sulfation, GSH conjugation). Uses GLORYx (FAME3 SoM + reaction rules) when cached, otherwise ATTNSOM + SyGMa as fallback. Use for: (1) CYP inhibition/substrate tasks — metabolite reasoning; (2) DILI — reactive metabolites vs. detoxifying conjugation; (3) AMES — metabolic activation of pro-mutagens.",
         "parameters": {
           "type": "object",
           "properties": {

@@ -386,19 +386,14 @@ class SamplesGenerator:
 
         decoded["sections"] = sections
 
-        # Extract response-only text (excluding prompt)
-        full_text = decoded["full_text"]
-        protocol = os.environ.get("OPENRLHF_CHAT_PROTOCOL", "")
-        if protocol == "gpt_oss":
-            split_marker = "<|start|>assistant"
-        elif protocol in ("intern_s1", "qwen3"):
-            split_marker = "<|im_start|>assistant"
+        # Extract response-only text (excluding prompt) using action_ranges.
+        if action_ranges:
+            first_action_start = action_ranges[0][0]
+            decoded["response_text"] = self.tokenizer.decode(
+                obs_tokens[first_action_start:], skip_special_tokens=True
+            )
         else:
-            split_marker = None
-        if split_marker and split_marker in full_text:
-            decoded["response_text"] = full_text[full_text.index(split_marker):]
-        else:
-            decoded["response_text"] = full_text
+            decoded["response_text"] = decoded["full_text"]
 
         return decoded
 
@@ -599,14 +594,18 @@ class SamplesGenerator:
             if exp.attention_mask is not None and exp.action_mask is not None:
                 total_prefill += exp.attention_mask.sum().item() - exp.action_mask.sum().item()
 
+        total_rollout = total_decode + total_prefill
+
         result = {
             "total_decode_tokens": int(total_decode),
             "total_prefill_tokens": int(total_prefill),
+            "total_rollout_tokens": int(total_rollout),
             "generation_wall_time_sec": round(wall_time, 2),
         }
         if wall_time > 0:
             result["decode_tokens_per_sec"] = round(total_decode / wall_time, 1)
             result["prefill_tokens_per_sec"] = round(total_prefill / wall_time, 1)
+            result["total_rollout_tokens_per_sec"] = round(total_rollout / wall_time, 1)
         return result
 
     def _collect_and_write_vllm_stats(
@@ -658,6 +657,8 @@ class SamplesGenerator:
             "vllm_prefill_tokens_per_sec": throughput.get("prefill_tokens_per_sec", 0),
             "vllm_total_decode_tokens": throughput.get("total_decode_tokens", 0),
             "vllm_total_prefill_tokens": throughput.get("total_prefill_tokens", 0),
+            "vllm_total_rollout_tokens": throughput.get("total_rollout_tokens", 0),
+            "vllm_total_rollout_tokens_per_sec": throughput.get("total_rollout_tokens_per_sec", 0),
         }
         if "kv_cache_usage_pct" in engine_stats:
             flat["vllm_kv_cache_usage_pct_mean"] = engine_stats["kv_cache_usage_pct"]["mean"]
@@ -1165,7 +1166,7 @@ class SamplesGenerator:
                     #### end record prompt group ####
 
                     #### Oversampling: early termination once enough accepted ####
-                    if accepted_prompt_groups >= num_prompts and oversample_ratio > 1.0:
+                    if accepted_prompt_groups >= num_prompts:
                         cancelled_refs = list(pending_refs)
                         for cancel_ref in cancelled_refs:
                             missed_idx = ref_to_dataset_idx.get(cancel_ref)
@@ -1738,6 +1739,17 @@ class RemoteExperienceMaker:
         rewards = torch.empty_like(raw_rewards)
         rewards[indices] = raw_rewards  # sorted
 
+        #### Compute prompt_tokens for prompt-level loss aggregation ####
+        # prompt_tokens[i] = total action tokens across all completions for sequence i's prompt.
+        # Computed in sorted order (prompt groups are contiguous), then remapped to original order.
+        if getattr(args, "loss_aggregation", "sample") == "prompt":
+            # Get per-sequence action token counts in original order, then sort
+            raw_action_counts = torch.cat(
+                [exp.action_mask.sum(dim=-1).float() for exp in experiences], dim=0
+            )
+            sorted_action_counts = torch.empty_like(raw_action_counts)
+            sorted_action_counts[indices] = raw_action_counts  # to sorted order
+
         # Check if we have variable group sizes (ERL mode)
         prompt_group_sizes = getattr(self, "_current_step_group_sizes", None)
         use_variable_groups = (
@@ -1799,6 +1811,27 @@ class RemoteExperienceMaker:
                 rewards = (rewards - rewards.mean(-1, keepdim=True)) / (rewards.std(-1, keepdim=True) + 1e-9)
 
             rewards = rewards.reshape(-1)[indices].split(exp_len)
+
+        #### Store prompt_tokens in experiences ####
+        if getattr(args, "loss_aggregation", "sample") == "prompt":
+            if use_variable_groups:
+                # Variable group sizes (ERL): group by prompt_group_sizes
+                pt_groups = torch.split(sorted_action_counts, prompt_group_sizes)
+                prompt_tokens_sorted = torch.cat(
+                    [g.sum().expand(len(g)) for g in pt_groups]
+                )
+            else:
+                # Fixed group sizes: reshape to (P, G)
+                G = args.n_samples_per_prompt
+                pt_grouped = sorted_action_counts.reshape(-1, G)
+                # Sum within each prompt group, broadcast back to (P, G)
+                prompt_tokens_sorted = pt_grouped.sum(dim=-1, keepdim=True).expand_as(pt_grouped).reshape(-1)
+
+            # Remap from sorted order back to original, then split per experience
+            prompt_tokens_orig = prompt_tokens_sorted[indices].split(exp_len)
+            for experience, pt in zip(experiences, prompt_tokens_orig):
+                experience.info["prompt_tokens"] = pt
+        #### end prompt_tokens ####
 
         # calculate return and advantages
         for experience, reward in zip(experiences, rewards):

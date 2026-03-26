@@ -92,10 +92,11 @@ def train(args):
                 f"and {args.vllm_num_engines * args.vllm_tensor_parallel_size}"
             )
 
+        vllm_pretrain = args.vllm_pretrain if args.vllm_pretrain else args.pretrain
         vllm_engines = create_vllm_engines(
             args.vllm_num_engines,
             args.vllm_tensor_parallel_size,
-            args.pretrain,
+            vllm_pretrain,
             args.seed,
             args.full_determinism,
             args.enable_prefix_caching,
@@ -112,7 +113,7 @@ def train(args):
             vllm_stop_strings=args.vllm_stop_strings,
             chat_protocol=args.chat_protocol,
             tool_version=args.tool_version,
-            length_penalty_max_length=args.length_penalty_max_length,
+            length_penalty_start=args.length_penalty_start,
             enable_tool_calling_rewards=args.enable_tool_calling_rewards,
             reduce_cuda_graph=args.optimal_flags_b200_gpt_oss,
             vllm_cudagraph_max_capture_size=args.vllm_cudagraph_max_capture_size,
@@ -447,23 +448,8 @@ if __name__ == "__main__":
         help="Use Liger fused lm_head+GRPO loss to reduce peak memory (requires liger-kernel-nightly>=0.7.0)",
     )
     #### Liger GRPO loss args ####
-    parser.add_argument(
-        "--liger_grpo_backend",
-        type=str,
-        default="triton",
-        choices=["triton", "chunked"],
-        help="Liger GRPO loss backend: 'triton' (default) uses fused Triton kernels "
-        "(still materializes logits but saves log-softmax memory by recomputing in backward); "
-        "'chunked' fuses lm_head+loss and processes chunk_size sequences at a time "
-        "(never materializes full logits tensor).",
-    )
-    parser.add_argument(
-        "--liger_chunk_size",
-        type=int,
-        default=1,
-        help="Chunk size for Liger fused GRPO loss. chunk_size=1 means max chunking (one sequence per chunk, "
-        "minimum memory). Higher values process more sequences together (faster but more memory).",
-    )
+    # Liger uses the Triton backend exclusively (reduce=False for per-token
+    # losses, then our own sum-based reduction).
     #### end Liger GRPO loss args ####
 
     parser.add_argument("--grad_accum_dtype", type=str, default=None, help="Adam grad accum data type")
@@ -500,6 +486,17 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Path to the BF16 base model for NVFP4 loading. OpenRLHF will load this unquantized BF16 model while vLLM handles the packed NVFP4 model natively.",
+    )
+    parser.add_argument(
+        "--vllm_pretrain",
+        type=str,
+        default=None,
+        help=(
+            "Override model path for vLLM engine initialization. Use this when training a "
+            "dequantized BF16 checkpoint (e.g. unsloth dequant) but wanting vLLM to load the "
+            "original quantized model (e.g. openai/gpt-oss-20b) for native MXFP4 serving. "
+            "If not set, vLLM uses --pretrain."
+        ),
     )
     parser.add_argument(
         "--vllm_sync_fp4",
@@ -603,7 +600,8 @@ if __name__ == "__main__":
             "'bnpo': token-level PPO ratio, flat token mean within rank (no cross-rank sync). "
             "'dr_grpo': token-level PPO ratio, per-sequence mean with cross-rank seq-count sync. "
             "'gspo': sequence-level IS ratio, per-sequence mean with cross-rank seq-count sync. "
-            "'cispo'/'sapo': Liger-only variants (require --use_liger_grpo_loss)."
+            "'cispo': truncated IS with vanilla policy gradient (ScaleRL). "
+            "'sapo': soft sigmoid-based clipping."
         ),
     )
     parser.add_argument(
@@ -614,6 +612,33 @@ if __name__ == "__main__":
             "Use upstream-compatible loss scaling: flat token mean (token_level_loss=True) "
             "and simple sequence-proportional rank-local loss_scale (len(partition)/sample_num) "
             "for all loss types. No cross-rank sync of loss denominators."
+        ),
+    )
+    parser.add_argument(
+        "--sapo_temperature_pos",
+        type=float,
+        default=20.0,
+        help="SAPO positive advantage temperature (only used with --loss_type sapo)",
+    )
+    parser.add_argument(
+        "--sapo_temperature_neg",
+        type=float,
+        default=20.0,
+        help="SAPO negative advantage temperature (only used with --loss_type sapo)",
+    )
+    parser.add_argument(
+        "--loss_aggregation",
+        type=str,
+        default=None,
+        choices=["sample", "token", "prompt"],
+        help=(
+            "Loss aggregation strategy (overrides auto-derived default from --loss_type). "
+            "'sample': per-sequence mean then batch mean (each rollout weighs equally). "
+            "'token': flat token mean (each token weighs equally). "
+            "'prompt': each prompt contributes equally — token-mean within prompt group, "
+            "then mean across prompts (ScaleRL recommended). "
+            "Default: auto-derived from --loss_type (sample for ppo/gspo/sapo/dr_grpo, "
+            "token for dapo/cispo/bnpo)."
         ),
     )
     #### end unified loss_type ####
@@ -696,10 +721,12 @@ if __name__ == "__main__":
     parser.add_argument("--agent_func_path", type=str, default=None, help="Agent script path")
     parser.add_argument("--agent_max_steps", type=int, default=5, help="Maximum number of agent turns per episode")
     parser.add_argument(
-        "--length_penalty_max_length",
+        "--length_penalty_start",
         type=int,
         default=0,
-        help="Upper limit of length penalty; 0 disables it",
+        help="Total sequence length (prompt + generation) at which the soft length penalty begins ramping. "
+        "Penalty grows linearly from 0 here to 0.1 at max_length (prompt_max_len + generate_max_len). "
+        "0 disables it.",
     )
     parser.add_argument(
         "--enable_tool_calling_rewards",
@@ -759,6 +786,12 @@ if __name__ == "__main__":
         help="Path to JSON mapping {task_name: [tool_schemas]} for per-task tool injection into apply_chat_template",
     )
     parser.add_argument(
+        "--knn_pseudo_labels_path",
+        type=str,
+        default=None,
+        help="Path to JSON mapping {task: {smiles: {pseudo_label, ...}}} for KNN reversal tracking on prompts that lack inline pseudo labels",
+    )
+    parser.add_argument(
         "--tool_version",
         type=str,
         choices=["v1", "v2", "v3", "v4", "v5", "v6"],
@@ -796,6 +829,19 @@ if __name__ == "__main__":
         default=1.0,
         help="Dispatch ceil(batch_size * ratio) prompts; early-terminate once batch_size accepted. "
         "Cancelled prompts recycled via LeftOverPrompts phase. Default 1.0 (no oversampling).",
+    )
+    parser.add_argument(
+        "--leftover_oversample_ratio",
+        type=float,
+        default=1.5,
+        help="Oversample ratio for Phase 1 of the LeftOverPrompts sweep. "
+        "Phase 2 always uses 1.0 (no oversampling). Default 1.5.",
+    )
+    parser.add_argument(
+        "--replace_discarded_prompts_ratio",
+        type=float,
+        default=1.0,
+        help="Fraction of discarded prompts to replace (0.0 = no replacement, 1.0 = replace all discarded prompts).",
     )
     #### end oversampling ####
     parser.add_argument(
@@ -924,16 +970,26 @@ if __name__ == "__main__":
             args.packing_samples = True
 
     #### Derive internal flags from --loss_type ####
-    # token_level_loss: controls reduction in PolicyLoss (always LOCAL reduction).
-    # Cross-rank normalization is handled by the replay buffer's loss_scale, not here.
+    # loss_aggregation: "sample", "token", or "prompt"
+    #   - PolicyLoss uses loss_aggregation to decide per-sequence weighting
+    #     and always returns a SUM.  The replay buffer's loss_scale handles
+    #     global normalization (÷ N_global, P_global, or T_global).
+    # token_level_loss: still used by ValueLoss / SFTLoss (NOT PolicyLoss).
+    if args.loss_aggregation is None:
+        # Auto-derive from loss_type
+        if args.loss_type in ("ppo", "gspo", "dr_grpo", "sapo"):
+            args.loss_aggregation = "sample"
+        elif args.loss_type in ("dapo", "cispo", "bnpo"):
+            args.loss_aggregation = "token"
+        else:
+            args.loss_aggregation = "sample"
+
     if args.legacy_loss_scaling:
         args.token_level_loss = True  # legacy: always flat token mean (upstream default)
-    elif args.loss_type in ("ppo", "gspo", "dr_grpo", "sapo"):
+    elif args.loss_aggregation == "sample":
         args.token_level_loss = False  # per-sequence mean, then batch mean
-    elif args.loss_type in ("dapo", "cispo", "bnpo"):
-        args.token_level_loss = True  # flat token mean within rank
     else:
-        args.token_level_loss = False
+        args.token_level_loss = True
 
     # policy_loss_type: controls ratio computation in PolicyLoss
     args.policy_loss_type = "gspo" if args.loss_type == "gspo" else "ppo"
@@ -942,9 +998,7 @@ if __name__ == "__main__":
     LIGER_LOSS_TYPE_MAP = {"ppo": "grpo", "gspo": "grpo"}
     args.liger_loss_type = LIGER_LOSS_TYPE_MAP.get(args.loss_type, args.loss_type)
 
-    # Validate Liger-only variants
-    if args.loss_type in ("cispo", "sapo") and not getattr(args, "use_liger_grpo_loss", False):
-        raise ValueError(f"--loss_type {args.loss_type} requires --use_liger_grpo_loss")
+    # cispo/sapo now supported in both PolicyLoss and LigerPolicyLoss
     #### end derive from loss_type ####
 
     if args.use_adaptive_batch:

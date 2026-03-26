@@ -56,7 +56,17 @@ def preprocess_data(data, input_template=None, input_key="input", label_key=None
         if tools_map is not None:
             # Per-task tool lookup: data["task"] → tool list, fallback to __default__
             task = data.get("task", "__default__")
-            kwargs["tools"] = tools_map.get(task, tools_map.get("__default__", []))
+            task_tools = tools_map.get(task)
+            default_tools = tools_map.get("__default__", [])
+            if task_tools is None:
+                kwargs["tools"] = default_tools
+            elif isinstance(task_tools, dict) and "_extend_default" in task_tools:
+                # Resolve tool refs: strings are looked up in _tool_defs, dicts are inline schemas
+                tool_defs = tools_map.get("_tool_defs", {})
+                extras = [tool_defs[t] if isinstance(t, str) else t for t in task_tools["_extend_default"]]
+                kwargs["tools"] = default_tools + extras
+            else:
+                kwargs["tools"] = task_tools
         prompt = apply_chat_template(chat, **kwargs)
     else:
         prompt = data[input_key]
@@ -110,6 +120,14 @@ class PromptDataset(Dataset):
             with open(tdc_tools_path) as f:
                 tools_map = json.load(f)
 
+        # Load external KNN pseudo-label mapping for prompts that lack inline pseudo labels.
+        # Format: {task: {smiles: {"pseudo_label": "(A)", ...}}}
+        knn_pl_map = None
+        knn_pl_path = getattr(self.strategy.args, "knn_pseudo_labels_path", None)
+        if knn_pl_path:
+            with open(knn_pl_path) as f:
+                knn_pl_map = json.load(f)
+
         self.prompts = []
         self.labels = []
         self.datasources = []
@@ -119,8 +137,20 @@ class PromptDataset(Dataset):
             self.prompts.append(prompt)
             self.labels.append(label)
             self.datasources.append(data.get("datasource", "default"))
-            m = _KNN_PSEUDO_LABEL_RE.search(prompt)
-            self.knn_pseudo_labels.append(m.group(1) if m else None)
+            # Use external mapping if provided (avoids regex over long prompts),
+            # otherwise fall back to inline regex extraction.
+            if knn_pl_map is not None:
+                task = data.get("task") or data.get("datasource", "")
+                smiles = data.get("smiles", "")
+                entry = knn_pl_map.get(task, {}).get(smiles, {})
+                pl = entry.get("pseudo_label")
+                # Normalize "(A)" → "A" to match inline regex format
+                if pl and pl.startswith("(") and pl.endswith(")"):
+                    pl = pl[1:-1]
+                self.knn_pseudo_labels.append(pl)
+            else:
+                m = _KNN_PSEUDO_LABEL_RE.search(prompt)
+                self.knn_pseudo_labels.append(m.group(1) if m else None)
 
         if getattr(self.strategy.args, "curriculum_balanced", False):
             self._apply_curriculum_balancing(getattr(self.strategy.args, "seed", 42))

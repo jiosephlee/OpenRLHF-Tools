@@ -164,16 +164,23 @@ class WorkerWrap:
         packed_weight = torch.stack(packed_list)
         packed_scales = torch.stack(scale_list)
 
-        # Use HF naming convention — vLLM's hf_to_vllm_mapper handles the rest:
-        #   gate_up_proj → w13_weight, gate_up_proj_scales → w13_weight_scale
-        #   down_proj → w2_weight, down_proj_scales → w2_weight_scale
+        # Use HF checkpoint naming convention — vLLM's hf_to_vllm_mapper handles the rest:
+        #   gate_up_proj_blocks → w13_weight, gate_up_proj_scales → w13_weight_scale
+        #   down_proj_blocks → w2_weight, down_proj_scales → w2_weight_scale
+        # Note: the checkpoint stores packed weights as "_blocks", not the bare name.
+        # Using the bare name (e.g. "gate_up_proj") silently fails to map.
+        blocks_name = (
+            name.replace("gate_up_proj", "gate_up_proj_blocks")
+            if is_gate_up
+            else name.replace("down_proj", "down_proj_blocks")
+        )
         scale_name = (
             name.replace("gate_up_proj", "gate_up_proj_scales")
             if is_gate_up
             else name.replace("down_proj", "down_proj_scales")
         )
 
-        yield name, packed_weight
+        yield blocks_name, packed_weight
         yield scale_name, packed_scales
 
     def _maybe_quantize_nvfp4_for_vllm(self, name, weight):
@@ -216,7 +223,13 @@ class WorkerWrap:
         # global_scale is per-expert: [num_experts] or [num_experts, 1] depending on vLLM layout
         global_scales = torch.stack(global_scale_list)
 
-        # Use HF naming convention — vLLM's hf_to_vllm_mapper handles the rest
+        # Use HF checkpoint naming convention — vLLM's hf_to_vllm_mapper handles the rest.
+        # Packed weights use "_blocks" suffix in the checkpoint (not the bare name).
+        blocks_name = (
+            name.replace("gate_up_proj", "gate_up_proj_blocks")
+            if is_gate_up
+            else name.replace("down_proj", "down_proj_blocks")
+        )
         scale_name = (
             name.replace("gate_up_proj", "gate_up_proj_scales")
             if is_gate_up
@@ -228,7 +241,7 @@ class WorkerWrap:
             else name.replace("down_proj", "down_proj_scales_2")
         )
 
-        yield name, packed_weight
+        yield blocks_name, packed_weight
         yield scale_name, packed_scales
         yield global_scale_name, global_scales
 

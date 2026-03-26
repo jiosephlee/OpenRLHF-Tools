@@ -155,9 +155,13 @@ class PolicyLoss(nn.Module):
             raise ValueError(f"Invalid policy loss type: {self.policy_loss_type}")
 
         if self.loss_type == "cispo":
-            # CISPO: truncated IS weight (stop-grad) * advantage * log π
-            # Gradient flows only through log_probs, not through the ratio.
-            clamped_ratio = torch.clamp(ratio, max=self.clip_eps_high).detach()
+            # CISPO (ScaleRL Eq.4): sg(min(ρ, ε_max)) * Â * log π
+            # Uses π_train / π_old as the IS ratio.  Off-policy correction
+            # (π_old / π_gen) is handled by the separate vLLM IS block below,
+            # same as all other loss types.  The two factors compose to give
+            # the paper's ρ = π_train / π_gen, each clipped independently.
+            cispo_ratio = ratio  # π_train / π_old
+            clamped_ratio = torch.clamp(cispo_ratio, max=1 + self.clip_eps_high).detach()
             loss = -clamped_ratio * advantages * log_probs
         elif self.loss_type == "sapo":
             # SAPO: soft sigmoid-based clipping (gradient flows through ratio)
@@ -222,9 +226,9 @@ class PolicyLoss(nn.Module):
         #### end loss reduction ####
 
         if self.loss_type == "cispo":
-            # CISPO clip metric: fraction of tokens where ratio exceeded eps_high
+            # CISPO clip metric: fraction of tokens where π_train/π_old ratio exceeded upper bound
             clip_ratio = masked_mean(
-                (ratio > self.clip_eps_high).float(), action_mask, dim=None
+                (cispo_ratio > 1 + self.clip_eps_high).float(), action_mask, dim=None
             )
         elif self.loss_type == "sapo":
             # SAPO has no hard clip; report fraction where ratio deviates > eps_high

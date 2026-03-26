@@ -32,10 +32,10 @@ class AgentInstanceBase(ABC):
 
 
 class MultiTurnAgentExecutor(AgentExecutorBase):
-    def __init__(self, agent_instance_cls, length_penalty_max_length: int = 0, **agent_kwargs):
+    def __init__(self, agent_instance_cls, length_penalty_start: int = 0, **agent_kwargs):
         assert issubclass(agent_instance_cls, AgentInstanceBase), "AgentInstance must inherit from AgentInstanceBase"
         self.agent_instance_cls = agent_instance_cls
-        self.length_penalty_max_length = length_penalty_max_length
+        self.length_penalty_start = length_penalty_start
         self._agent_kwargs = agent_kwargs
 
     async def execute(self, prompt, label, sampling_params, max_length: int, hf_tokenizer, llm_engine, log_trajectory: bool = False):
@@ -185,16 +185,18 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
                 total_reward -= excess
                 extra_logs["format_reward"] = 0.25
 
-        # Soft length penalty: linearly scale penalty from 0 at sequence length 8192 to 1 at length_penalty_max_length
-        if self.length_penalty_max_length > 0:
-            total_gen_len = sum(end - start for start, end in action_ranges)
-            if total_gen_len > 8192:
-                penalty = 0.1 * (total_gen_len - 8192) / max(1, self.length_penalty_max_length - 8192)
-                extra_logs["length_penalty"] = penalty
-                if total_reward > 0:
-                    total_reward = max(0.0, total_reward - penalty)
-                    if isinstance(final_scores, (int, float)):
-                        final_scores = max(0.0, final_scores - penalty)
+        # DAPO-style overlong reward shaping: R_length ramps from 0 at length_penalty_start to -1 at max_length, clamped at -1
+        if self.length_penalty_start > 0:
+            total_seq_len = len(current_obs_tokens)
+            if total_seq_len > max_length:
+                r_length = -1.0
+            elif total_seq_len > self.length_penalty_start:
+                r_length = -(total_seq_len - self.length_penalty_start) / max(1, max_length - self.length_penalty_start)
+            else:
+                r_length = 0.0
+            if r_length != 0.0:
+                extra_logs["length_penalty"] = r_length
+                total_reward += r_length
 
         # Store the final response when agent execution is complete
         final_response = {
@@ -213,10 +215,10 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
 class SingleTurnAgentExecutor(AgentExecutorBase):
     """Single-turn agent executor with optional reward post-processing."""
 
-    def __init__(self, remote_rm_url=None, length_penalty_max_length: int = 0):
+    def __init__(self, remote_rm_url=None, length_penalty_start: int = 0):
         reward_endpoints = [remote_rm_url] if isinstance(remote_rm_url, str) else remote_rm_url
         self.reward_endpoints = reward_endpoints or []
-        self.length_penalty_max_length = length_penalty_max_length
+        self.length_penalty_start = length_penalty_start
 
         # Optional user-provided reward_func from a Python file.
         self.reward_func = None
@@ -304,15 +306,18 @@ class SingleTurnAgentExecutor(AgentExecutorBase):
                     if isinstance(s, list):
                         s = s[0]
                     
-                    if self.length_penalty_max_length > 0:
-                        total_gen_len = sum(end - start for start, end in action_ranges)
-                        if total_gen_len > 8192:
-                            penalty = 0.1 * (total_gen_len - 8192) / max(1, self.length_penalty_max_length - 8192)
-                            el["length_penalty"] = penalty
-                            if r is not None and r > 0:
-                                r = max(0.0, r - penalty)
-                            if s is not None and s > 0:
-                                s = max(0.0, s - penalty)
+                    if self.length_penalty_start > 0:
+                        total_seq_len = len(observation_token_ids)
+                        if total_seq_len > max_length:
+                            r_length = -1.0
+                        elif total_seq_len > self.length_penalty_start:
+                            r_length = -(total_seq_len - self.length_penalty_start) / max(1, max_length - self.length_penalty_start)
+                        else:
+                            r_length = 0.0
+                        if r_length != 0.0:
+                            el["length_penalty"] = r_length
+                            if r is not None:
+                                r += r_length
                     
                     output.update(
                         reward=r,

@@ -200,8 +200,9 @@ class NaiveReplayBuffer(ABC):
         packing_samples: bool = False,
         dynamic_batch: bool = False,
         adaptive_batch: bool = False,
-        loss_type: str = "ppo",
         legacy_loss_scaling: bool = False,
+        loss_aggregation: str = "sample",
+        n_samples_per_prompt: int = 1,
     ) -> None:
         super().__init__()
         self.sample_batch_size = sample_batch_size
@@ -209,8 +210,9 @@ class NaiveReplayBuffer(ABC):
         self.limit = limit
         self.cpu_offload = cpu_offload
         self.packing_samples = packing_samples
-        self.loss_type = loss_type
         self.legacy_loss_scaling = legacy_loss_scaling
+        self.loss_aggregation = loss_aggregation
+        self.n_samples_per_prompt = n_samples_per_prompt
         self.target_device = torch.device(f"cuda:{torch.cuda.current_device()}")
         self.items: List[BufferItem] = []
         self.dynamic_batch = dynamic_batch
@@ -348,63 +350,63 @@ class NaiveReplayBuffer(ABC):
         #### end micro batch stats tracking ####
 
         #### Loss scaling ####
+        # PolicyLoss.forward() returns a SUM (not a mean).  The loss_scale
+        # converts that local sum into the correct fraction of the global mean:
+        #
+        #   accumulated_grad = Σ_mb (local_sum_mb * loss_scale_mb / world_size)
+        #
+        # DeepSpeed divides gradients by world_size, so loss_scale must include
+        # a ×world_size factor to compensate.  The denominator D_global depends
+        # on the aggregation mode:
+        #
+        #   sample: D = N_global  (total sequences across all ranks)
+        #   prompt: D = P_global  (unique prompts = N_global / G)
+        #   token:  D = T_global  (total action tokens across all ranks)
+        #
+        # loss_scale = world_size / D_global   (same for every microbatch)
+        #
+        # This is constant across microbatches within an optimizer step because
+        # PolicyLoss already returns the correct partial sum for each microbatch.
         loss_scales = []
         optimizer_steps = []
+        world_size = dist.get_world_size()
 
         if self.legacy_loss_scaling:
             # Legacy (upstream-compatible): sequence-proportional, rank-local,
-            # no cross-rank sync, same formula for all loss types.
-            # Pairs with token_level_loss=True (flat token mean) in PolicyLoss.
+            # no cross-rank sync.  Kept for backward compat with old checkpoints.
             for partitions in data_partitions:
                 sample_num = sum(len(partition) for partition in partitions)
                 loss_scale = [len(partition) / max(sample_num, 1) for partition in partitions]
                 optimizer_step = [0] * (len(partitions) - 1) + [1]
                 loss_scales.extend(loss_scale)
                 optimizer_steps.extend(optimizer_step)
-        elif self.loss_type in ("ppo", "gspo", "sapo", "dr_grpo"):
-            # Sequence-level: loss_scale = B_mb × R / N_global_sequences
-            # Undoes the local mean (× local_count), compensates for DeepSpeed's
-            # ÷world_size gradient averaging (× world_size), and applies the global
-            # mean (÷ global_count).
-            world_size = dist.get_world_size()
+        elif self.loss_aggregation in ("sample", "prompt"):
+            # Sample: D = N_global (total sequences)
+            # Prompt: D = P_global = N_global / G (unique prompts)
+            G = self.n_samples_per_prompt if self.loss_aggregation == "prompt" else 1
             for partitions in data_partitions:
                 local_N = sum(len(partition) for partition in partitions)
                 global_N = torch.tensor(local_N, dtype=torch.float, device=torch.cuda.current_device())
                 dist.all_reduce(global_N, op=dist.ReduceOp.SUM)
-                global_N = global_N.item()
-                loss_scale = [len(partition) * world_size / max(global_N, 1.0) for partition in partitions]
+                D_global = global_N.item() / G  # N_global for sample, P_global for prompt
+                scale = world_size / max(D_global, 1.0)
+                loss_scale = [scale] * len(partitions)
                 optimizer_step = [0] * (len(partitions) - 1) + [1]
                 loss_scales.extend(loss_scale)
                 optimizer_steps.extend(optimizer_step)
-        elif self.loss_type in ("dapo", "cispo"):
-            # Token-level with global normalization:
-            # loss_scale = tc_mb × R / T_global_tokens
-            world_size = dist.get_world_size()
+        elif self.loss_aggregation == "token":
+            # Token: D = T_global (total action tokens)
             for partitions in data_partitions:
-                token_counts = []
-                for partition in partitions:
-                    tc = sum(self.items[idx].action_mask.sum().item() for idx in partition)
-                    token_counts.append(tc)
-                local_T = sum(token_counts)
+                local_T = sum(
+                    self.items[idx].action_mask.sum().item()
+                    for partition in partitions
+                    for idx in partition
+                )
                 global_T = torch.tensor(local_T, dtype=torch.float, device=torch.cuda.current_device())
                 dist.all_reduce(global_T, op=dist.ReduceOp.SUM)
-                global_T = global_T.item()
-                loss_scale = [tc * world_size / max(global_T, 1.0) for tc in token_counts]
-                optimizer_step = [0] * (len(partitions) - 1) + [1]
-                loss_scales.extend(loss_scale)
-                optimizer_steps.extend(optimizer_step)
-        else:
-            # BNPO: token-level, rank-local only (no cross-rank normalization).
-            for partitions in data_partitions:
-                token_counts = []
-                for partition in partitions:
-                    tc = sum(self.items[idx].action_mask.sum().item() for idx in partition)
-                    token_counts.append(tc)
-                total_tokens = sum(token_counts)
-                if total_tokens > 0:
-                    loss_scale = [tc / total_tokens for tc in token_counts]
-                else:
-                    loss_scale = [1.0 / len(partitions)] * len(partitions)
+                D_global = global_T.item()
+                scale = world_size / max(D_global, 1.0)
+                loss_scale = [scale] * len(partitions)
                 optimizer_step = [0] * (len(partitions) - 1) + [1]
                 loss_scales.extend(loss_scale)
                 optimizer_steps.extend(optimizer_step)
@@ -515,52 +517,39 @@ class NaiveReplayBuffer(ABC):
         # Same logic as setup_dynamic_batch — see comments there.
         loss_scales = []
         optimizer_steps = []
+        world_size = dist.get_world_size()
 
         if self.legacy_loss_scaling:
-            # Legacy (upstream-compatible): sequence-proportional, rank-local.
             for partitions in data_partitions:
                 sample_num = sum(len(partition) for partition in partitions)
                 loss_scale = [len(partition) / max(sample_num, 1) for partition in partitions]
                 optimizer_step = [0] * (len(partitions) - 1) + [1]
                 loss_scales.extend(loss_scale)
                 optimizer_steps.extend(optimizer_step)
-        elif self.loss_type in ("ppo", "gspo", "sapo", "dr_grpo"):
-            world_size = dist.get_world_size()
+        elif self.loss_aggregation in ("sample", "prompt"):
+            G = self.n_samples_per_prompt if self.loss_aggregation == "prompt" else 1
             for partitions in data_partitions:
                 local_N = sum(len(partition) for partition in partitions)
                 global_N = torch.tensor(local_N, dtype=torch.float, device=torch.cuda.current_device())
                 dist.all_reduce(global_N, op=dist.ReduceOp.SUM)
-                global_N = global_N.item()
-                loss_scale = [len(partition) * world_size / max(global_N, 1.0) for partition in partitions]
+                D_global = global_N.item() / G
+                scale = world_size / max(D_global, 1.0)
+                loss_scale = [scale] * len(partitions)
                 optimizer_step = [0] * (len(partitions) - 1) + [1]
                 loss_scales.extend(loss_scale)
                 optimizer_steps.extend(optimizer_step)
-        elif self.loss_type in ("dapo", "cispo"):
-            world_size = dist.get_world_size()
+        elif self.loss_aggregation == "token":
             for partitions in data_partitions:
-                token_counts = []
-                for partition in partitions:
-                    tc = sum(self.items[idx].action_mask.sum().item() for idx in partition)
-                    token_counts.append(tc)
-                local_T = sum(token_counts)
+                local_T = sum(
+                    self.items[idx].action_mask.sum().item()
+                    for partition in partitions
+                    for idx in partition
+                )
                 global_T = torch.tensor(local_T, dtype=torch.float, device=torch.cuda.current_device())
                 dist.all_reduce(global_T, op=dist.ReduceOp.SUM)
-                global_T = global_T.item()
-                loss_scale = [tc * world_size / max(global_T, 1.0) for tc in token_counts]
-                optimizer_step = [0] * (len(partitions) - 1) + [1]
-                loss_scales.extend(loss_scale)
-                optimizer_steps.extend(optimizer_step)
-        else:
-            for partitions in data_partitions:
-                token_counts = []
-                for partition in partitions:
-                    tc = sum(self.items[idx].action_mask.sum().item() for idx in partition)
-                    token_counts.append(tc)
-                total_tokens = sum(token_counts)
-                if total_tokens > 0:
-                    loss_scale = [tc / total_tokens for tc in token_counts]
-                else:
-                    loss_scale = [1.0 / len(partitions)] * len(partitions)
+                D_global = global_T.item()
+                scale = world_size / max(D_global, 1.0)
+                loss_scale = [scale] * len(partitions)
                 optimizer_step = [0] * (len(partitions) - 1) + [1]
                 loss_scales.extend(loss_scale)
                 optimizer_steps.extend(optimizer_step)

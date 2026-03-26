@@ -4,7 +4,7 @@
       "type": "function",
       "function": {
         "name": "get_molecule_profile",
-        "description": "Get a comprehensive molecular profile including identity (MW), drug-likeness (QED, Lipinski violations), key physicochemical properties (logP, TPSA, HBD, HBA, rotatable bonds, Fsp3, molar refractivity), charge information, complexity metrics (Bertz CT, stereocenters), topology indices (Hall-Kier, Kappa, Balaban J, IPC), and pharmacophore feature counts (hydrophobic, aromatic, ionizable, Zn-binder).",
+        "description": "Get a comprehensive molecular profile including identity (MW), drug-likeness (QED, Lipinski violations), key physicochemical properties (logP, TPSA, HBD, HBA, rotatable bonds, Fsp3, molar refractivity), complexity metrics (Bertz CT, stereocenters), topology indices (Hall-Kier, Kappa, Balaban J, IPC), pharmacophore feature counts (hydrophobic, aromatic, ionizable), and electronic properties (Gasteiger charges, EState indices, HOMO/LUMO gap).",
         "parameters": {
           "type": "object",
           "properties": {
@@ -44,7 +44,7 @@
       "type": "function",
       "function": {
         "name": "analyze_ring_systems",
-        "description": "Analyze ring topology and aromaticity. Includes fused ring system analysis, PAH detection (≥3 fused aromatic rings), macrocycle detection, ring type breakdown (aromatic/aliphatic/saturated/heterocyclic), and aromaticity metrics.",
+        "description": "Analyze ring topology and aromaticity. Returns per-system descriptions with ring sizes and heteroatom content, ring type counts (aromatic/aliphatic/saturated/heterocyclic), aromaticity metrics, and flags for PAH, macrocycle, spiro, and bridgehead features.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -87,27 +87,7 @@
     {
       "type": "function",
       "function": {
-        "name": "get_3d_properties",
-        "description": "Compute 3D conformational properties from a multi-conformer ensemble. Returns Boltzmann-weighted exposed polar surface area (ePSA), polar fraction, and 3D shape descriptors (PMI ratios for rod/disc/sphere classification, radius of gyration, asphericity, eccentricity, spherocity). Computationally expensive (~seconds). Use only when 3D surface/shape information is specifically needed beyond 2D TPSA.",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "smiles": {
-              "type": "string",
-              "description": "SMILES string of the molecule."
-            }
-          },
-          "required": [
-            "smiles"
-          ],
-          "additionalProperties": false
-        }
-      }
-    },
-    {
-      "type": "function",
-      "function": {
-        "name": "screen_toxicophores",
+        "name": "screen_structural_alerts",
         "description": "Screen a molecule for toxicophores — structural motifs associated with specific toxicity mechanisms. Groups alerts into categories like 'Michael acceptor' (protein-reactive electrophile), 'alkylating agent' (DNA-reactive), 'PAH' (CYP-activated), etc. Each category includes a mechanistic explanation. Also screens against ToxAlerts endpoint-specific patterns covering skin sensitization, mutagenicity, carcinogenicity, reactive metabolite formation, electrophilic reactivity, chelation, and promiscuity. Returns pharmacophore feature counts (donor/acceptor/aromatic/hydrophobe). Use this to identify structural liabilities and understand their toxicological mechanisms.",
         "parameters": {
           "type": "object",
@@ -128,7 +108,7 @@
       "type": "function",
       "function": {
         "name": "find_similar_molecules",
-        "description": "Find the most similar molecules from the training set using task-aware embeddings. Returns K nearest neighbors with their labels and functional groups, plus the closest molecule with the opposite label for contrastive SAR reasoning. Includes KNN accuracy metrics (global and local neighborhood). Use this for structure-activity analysis.",
+        "description": "Find the most similar molecules from the training set using task-aware embeddings. Returns K nearest neighbors with their labels, key properties (MW, logP, TPSA), and functional groups, plus the closest molecule with the opposite label for contrastive SAR reasoning. Includes KNN accuracy metrics (global and local neighborhood). Use this for structure-activity analysis.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -176,68 +156,8 @@
     {
       "type": "function",
       "function": {
-        "name": "evaluate_arithmetic",
-        "description": "Evaluate a simple arithmetic expression. Supports basic math operations (+, -, *, /) and functions: exp, log, sqrt, sin, cos, round.",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "expression": {
-              "type": "string",
-              "description": "The arithmetic expression to evaluate."
-            }
-          },
-          "required": [
-            "expression"
-          ],
-          "additionalProperties": false
-        }
-      }
-    },
-    {
-      "type": "function",
-      "function": {
-        "name": "get_electronic_properties",
-        "description": "Compute electronic properties: HOMO/LUMO energies and gap, dipole moment, electrophilicity index. Uses GFN2-xTB semi-empirical quantum chemistry if available, otherwise falls back to RDKit Gasteiger charges. HOMO-LUMO gap indicates reactivity (small gap → more reactive → potential mutagenicity). Dipole moment correlates with solubility and membrane permeability.",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "smiles": {
-              "type": "string",
-              "description": "SMILES string of the molecule."
-            }
-          },
-          "required": [
-            "smiles"
-          ],
-          "additionalProperties": false
-        }
-      }
-    },
-    {
-      "type": "function",
-      "function": {
-        "name": "predict_metabolism_sites",
+        "name": "predict_metabolites",
         "description": "Predict CYP450 metabolism: returns top 3 ranked metabolites with SMILES, reaction types, and priority scores for Phase 1 (oxidation, reduction, hydrolysis) and Phase 2 (glucuronidation, sulfation, GSH conjugation). Uses GLORYx (FAME3 SoM + reaction rules) when cached, otherwise SyGMa rule-based metabolite prediction as fallback. ",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "smiles": {
-              "type": "string",
-              "description": "SMILES string of the molecule."
-            }
-          },
-          "required": [
-            "smiles"
-          ],
-          "additionalProperties": false
-        }
-      }
-    },
-    {
-      "type": "function",
-      "function": {
-        "name": "get_scaffold",
-        "description": "Extract the Murcko scaffold (core ring+linker skeleton with side chains stripped) and generic framework (pure topological skeleton). Shows what fraction of the molecule is scaffold vs. side chains. Use this to identify the core structural class of a molecule and compare scaffolds across molecules.",
         "parameters": {
           "type": "object",
           "properties": {

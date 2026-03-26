@@ -385,8 +385,8 @@ class ToolCallingTurn(AgentInstanceBase):
 # Executor (required name for vllm_engine._load_agent_executor)
 # ---------------------------------------------------------------------------
 class AgentExecutor(MultiTurnAgentExecutor):
-    def __init__(self, reward_fn=None, length_penalty_max_length: int = 0, enable_tool_calling_rewards: bool = True, **kwargs):
-        super().__init__(ToolCallingTurn, reward_fn=reward_fn, length_penalty_max_length=length_penalty_max_length, enable_tool_calling_rewards=enable_tool_calling_rewards, **kwargs)
+    def __init__(self, reward_fn=None, length_penalty_start: int = 0, enable_tool_calling_rewards: bool = True, **kwargs):
+        super().__init__(ToolCallingTurn, reward_fn=reward_fn, length_penalty_start=length_penalty_start, enable_tool_calling_rewards=enable_tool_calling_rewards, **kwargs)
 
 
 __all__ = ["ToolCallingTurn", "AgentExecutor"]

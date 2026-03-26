@@ -293,7 +293,7 @@ class LLMRayActor:
         vllm_stop_strings: Optional[list] = None,
         chat_protocol: str = "glm_flash",
         tool_version: Optional[str] = None,
-        length_penalty_max_length: int = 0,
+        length_penalty_start: int = 0,
         enable_tool_calling_rewards: bool = True,
         **kwargs,
     ):
@@ -325,13 +325,13 @@ class LLMRayActor:
         if agent_func_path:
             self.executor = _load_agent_executor(
                 agent_func_path,
-                length_penalty_max_length=length_penalty_max_length,
+                length_penalty_start=length_penalty_start,
                 enable_tool_calling_rewards=enable_tool_calling_rewards,
             )
         else:
             self.executor = SingleTurnAgentExecutor(
                 remote_rm_url,
-                length_penalty_max_length=length_penalty_max_length,
+                length_penalty_start=length_penalty_start,
             )
 
         self.kwargs = kwargs
@@ -608,7 +608,7 @@ def create_vllm_engines(
     vllm_stop_strings: Optional[list] = None,
     chat_protocol: str = "glm_flash",
     tool_version: Optional[str] = None,
-    length_penalty_max_length: int = 0,
+    length_penalty_start: int = 0,
     enable_tool_calling_rewards: bool = True,
     reduce_cuda_graph: bool = False,
     vllm_cudagraph_max_capture_size: Optional[int] = None,
@@ -635,7 +635,7 @@ def create_vllm_engines(
         os.environ["OPENRLHF_ERL_MAX_REFLECTION_TOKENS"] = str(erl_max_reflection_tokens)
 
     vllm_engines = []
-    distributed_executor_backend = "uni" if tensor_parallel_size == 1 else "ray"
+    distributed_executor_backend = "uni" if tensor_parallel_size == 1 else "mp"
     use_hybrid_engine = shared_pg is not None
     num_gpus = int(tensor_parallel_size == 1)
     if use_hybrid_engine and tensor_parallel_size == 1:
@@ -693,30 +693,19 @@ def create_vllm_engines(
         if reduce_cuda_graph and not enforce_eager:
             from vllm.config import CompilationConfig, CompilationMode
 
-            max_capture = vllm_cudagraph_max_capture_size if vllm_cudagraph_max_capture_size is not None else 128
-            # 15 capture sizes with denser coverage at mid-range batch sizes,
-            # saving VRAM from CUDA graph storage while keeping max capture size.
-            # vLLM pads to next captured size; the tighter spacing reduces
-            # wasted padding for common batch sizes.
-            cudagraph_sizes = [s for s in [1, 2, 4, 8, 12, 16, 20, 24, 32, 40, 48, 64, 80, 96, 128] if s <= max_capture]
-            if max_capture not in cudagraph_sizes:
-                cudagraph_sizes.append(max_capture)
+            max_capture = vllm_cudagraph_max_capture_size if vllm_cudagraph_max_capture_size is not None else 256
             actor_kwargs["compilation_config"] = CompilationConfig(
                 mode=CompilationMode.VLLM_COMPILE,
-                cudagraph_capture_sizes=sorted(set(cudagraph_sizes)),
+                max_cudagraph_capture_size=max_capture,
                 pass_config={"fuse_allreduce_rms": True, "eliminate_noops": True, "fuse_attn_quant": True},
             )
             actor_kwargs["async_scheduling"] = True
         elif vllm_cudagraph_max_capture_size is not None and not enforce_eager:
             from vllm.config import CompilationConfig, CompilationMode
 
-            max_capture = vllm_cudagraph_max_capture_size
-            cudagraph_sizes = [s for s in [1, 2, 4, 8, 16, 32, 64, 128] if s <= max_capture]
-            if max_capture not in cudagraph_sizes:
-                cudagraph_sizes.append(max_capture)
             actor_kwargs["compilation_config"] = CompilationConfig(
                 mode=CompilationMode.VLLM_COMPILE,
-                cudagraph_capture_sizes=sorted(set(cudagraph_sizes)),
+                max_cudagraph_capture_size=vllm_cudagraph_max_capture_size,
             )
 
         actor_kwargs.update(
@@ -727,7 +716,7 @@ def create_vllm_engines(
                 "vllm_stop_strings": vllm_stop_strings,
                 "chat_protocol": chat_protocol,
                 "tool_version": tool_version,
-                "length_penalty_max_length": length_penalty_max_length,
+                "length_penalty_start": length_penalty_start,
                 "enable_tool_calling_rewards": enable_tool_calling_rewards,
             }
         )

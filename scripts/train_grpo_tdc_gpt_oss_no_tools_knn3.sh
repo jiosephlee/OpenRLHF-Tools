@@ -24,7 +24,7 @@
 #   DEQUANT=unsloth LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo bash scripts/train_grpo_tdc_gpt_oss_no_tools_knn3.sh
 #
 #   USE_LORA=1 LEARNING_RATE=1e-5 DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=ppo SMART_REPLAY=1 bash train_grpo_tdc_gpt_oss_no_tools_knn3.sh
-#   OVERSAMPLE_RATIO=2 DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss_no_tools_knn3.sh
+#   OVERSAMPLE_RATIO=2 TIS=1 TIS_TYPE=tis DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=cispo bash train_grpo_tdc_gpt_oss_no_tools_knn3.sh
 #
 #   # With features:
 #   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis REDUCE_OPTIMIZER=adam_offload TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo SMART_REPLAY=1 DEQUANT=unsloth bash scripts/train_grpo_tdc_gpt_oss_no_tools_knn3.sh
@@ -61,19 +61,26 @@
 #   LORA_RANK=64                         # LoRA rank
 #   LORA_ALPHA=64                        # LoRA alpha
 #   UNSLOTH_MOE=1                        # Enable grouped GEMM MoE kernels
-#   LENGTH_PENALTY_MAX_LENGTH=0          # Length penalty (0=off)
+#   LENGTH_PENALTY_START=0          # Length penalty (0=off)
 #   EXTRA_ARGS="..."                     # Additional CLI flags
 
 ### QUANTIZATION MODE RESOLUTION ###
 QUANT_METHOD="${QUANT_METHOD:-mxfp4}"
 DEQUANT="${DEQUANT:-}"
+VLLM_PRETRAIN="${VLLM_PRETRAIN:-}"
 
 if [ -n "$DEQUANT" ]; then
     case "$DEQUANT" in
         unsloth)
             PRETRAIN_PATH="${PRETRAIN_PATH:-unsloth/gpt-oss-20b-BF16}"
-            QUANT_FLAGS=""
-            QUANT_LABEL="dequant-unsloth"
+            if [ -n "$VLLM_PRETRAIN" ]; then
+                # Train BF16 actor, serve MXFP4 vLLM with on-the-fly quantized weight sync
+                QUANT_FLAGS="--vllm_pretrain $VLLM_PRETRAIN --vllm_sync_fp4 mxfp4"
+                QUANT_LABEL="dequant-unsloth-mxfp4sync"
+            else
+                QUANT_FLAGS=""
+                QUANT_LABEL="dequant-unsloth"
+            fi
             ;;
         *)
             echo "Error: DEQUANT must be 'unsloth', got '$DEQUANT'" >&2
@@ -115,6 +122,7 @@ export DS_SKIP_CUDA_CHECK=1
 rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ ~/.cache/vllm/torch_compile_cache/ 2>/dev/null || true
 
 export VLLM_USE_FLASHINFER_MOE_FP16=1
+export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
 export VLLM_FLASHINFER_MOE_BACKEND=latency
 
 ### ARGS ###
@@ -150,7 +158,7 @@ VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-256}"
 VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE="${VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE:-}"
-LENGTH_PENALTY_MAX_LENGTH="${LENGTH_PENALTY_MAX_LENGTH:-0}"
+LENGTH_PENALTY_START="${LENGTH_PENALTY_START:-0}"
 
 export TORCH_DYNAMO_CACHE_SIZE_LIMIT=1024
 export TORCH_DYNAMO_RECOMPILE_LIMIT=1024
@@ -446,10 +454,7 @@ fi
 OPTIONAL_FLAGS+=" --oversample_ratio $OVERSAMPLE_RATIO"
 
 if [ "$LIGER_GRPO_LOSS" = "1" ]; then
-    OPTIONAL_FLAGS+=" --use_liger_grpo_loss --liger_grpo_backend $LIGER_GRPO_BACKEND"
-    if [ "$LIGER_GRPO_BACKEND" = "chunked" ]; then
-        OPTIONAL_FLAGS+=" --liger_chunk_size $LIGER_CHUNK_SIZE"
-    fi
+    OPTIONAL_FLAGS+=" --use_liger_grpo_loss"
 fi
 if [ "$TIS" = "1" ]; then
     OPTIONAL_FLAGS+=" --enable_vllm_is_correction --vllm_is_correction_type $TIS_TYPE --vllm_is_truncated_threshold $TIS_THRESHOLDS"
@@ -463,8 +468,8 @@ fi
 if [ -n "$VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE" ]; then
     OPTIONAL_FLAGS+=" --vllm_cudagraph_max_capture_size $VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE"
 fi
-if [ "$LENGTH_PENALTY_MAX_LENGTH" -gt 0 ]; then
-    OPTIONAL_FLAGS+=" --length_penalty_max_length $LENGTH_PENALTY_MAX_LENGTH"
+if [ "$LENGTH_PENALTY_START" -gt 0 ]; then
+    OPTIONAL_FLAGS+=" --length_penalty_start $LENGTH_PENALTY_START"
 fi
 if [ "$USE_LORA" = "1" ]; then
     OPTIONAL_FLAGS+=" --lora_rank $LORA_RANK --lora_alpha $LORA_ALPHA"
@@ -534,11 +539,12 @@ python -m openrlhf.cli.train_ppo_ray \
     --save_path "$SAVE_PATH" \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
+    --replace_discarded_prompts_ratio 2.0 \
     --constant_lr_with_warm_up \
     --warmup_steps $WARMUP_STEPS \
     --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
     --attn_implementation "flex_attention" \
-    --length_penalty_max_length 6144 \
+    --length_penalty_start 6144 \
     --freeze_router \
     --aux_loss_coef 0 \
     $QUANT_FLAGS \

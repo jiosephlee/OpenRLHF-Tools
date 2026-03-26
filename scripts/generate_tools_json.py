@@ -21,7 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from openrlhf.utils.tool_versions import TOOL_VERSIONS, get_version
+from openrlhf.utils.tool_versions import _ALL_VERSIONS, get_version
 
 
 def _write_version(ver: str, output_dir: Path) -> None:
@@ -49,7 +49,7 @@ def main():
     parser.add_argument(
         "--version",
         required=True,
-        choices=list(TOOL_VERSIONS.keys()) + ["all"],
+        choices=sorted(_ALL_VERSIONS) + ["all"],
         help="Tool version to generate (v1, v2, v3, v4, or all).",
     )
     parser.add_argument(
@@ -63,7 +63,7 @@ def main():
     output_dir = Path(args.output_dir) if args.output_dir else (PROJECT_ROOT / "data" / "tdc" / "metadata")
 
     if args.version == "all":
-        for ver in TOOL_VERSIONS:
+        for ver in sorted(_ALL_VERSIONS):
             _write_version(ver, output_dir)
     else:
         _write_version(args.version, output_dir)

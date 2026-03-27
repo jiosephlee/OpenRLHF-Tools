@@ -368,6 +368,11 @@ class ActorPPOTrainer(ABC):
             status_mean.update(self.replay_buffer.micro_batch_stats)
 
         # Inject raw token count — NOT averaged, used for throughput computation in train_step.
+        # All-reduce across DP ranks so total_trained_tokens is global (matching vllm_total_* stats).
+        if torch.distributed.is_initialized():
+            token_tensor = torch.tensor([total_trained_tokens], dtype=torch.long, device=device)
+            torch.distributed.all_reduce(token_tensor, op=torch.distributed.ReduceOp.SUM)
+            total_trained_tokens = int(token_tensor.item())
         status_mean["total_trained_tokens"] = total_trained_tokens
 
         return status_mean

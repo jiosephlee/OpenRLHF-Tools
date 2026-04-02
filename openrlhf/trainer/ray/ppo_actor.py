@@ -175,26 +175,30 @@ class ActorPPOTrainer(ABC):
                 beta=0.0,  # KL handled externally in shared post-loss code
                 temperature=getattr(self.args, "temperature", 1.0),
                 loss_type=getattr(self.args, "liger_loss_type", "grpo"),
-                backend=getattr(self.args, "liger_grpo_backend", "chunked"),
-                chunk_size=getattr(self.args, "liger_chunk_size", 1),
+                loss_aggregation=getattr(self.args, "loss_aggregation", "sample"),
                 enable_vllm_is_correction=self.args.enable_vllm_is_correction,
                 vllm_is_truncated_threshold=(
                     self.args.vllm_is_truncated_threshold if self.args.enable_vllm_is_correction else None
                 ),
                 vllm_is_correction_type=self.args.vllm_is_correction_type,
+                sapo_temperature_pos=getattr(self.args, "sapo_temperature_pos", 20.0),
+                sapo_temperature_neg=getattr(self.args, "sapo_temperature_neg", 20.0),
             )
         else:
             self.actor_loss_fn = PolicyLoss(
                 clip_eps_low=self.args.eps_clip_low_high[0],
                 clip_eps_high=self.args.eps_clip_low_high[1],
                 dual_clip=self.args.dual_clip,
-                token_level_loss=getattr(self.args, "token_level_loss", True),
                 policy_loss_type=self.args.policy_loss_type,
+                loss_type=getattr(self.args, "loss_type", "ppo"),
+                loss_aggregation=getattr(self.args, "loss_aggregation", "sample"),
                 enable_vllm_is_correction=self.args.enable_vllm_is_correction,
                 vllm_is_truncated_threshold=(
                     self.args.vllm_is_truncated_threshold if self.args.enable_vllm_is_correction else None
                 ),
                 vllm_is_correction_type=self.args.vllm_is_correction_type,
+                sapo_temperature_pos=getattr(self.args, "sapo_temperature_pos", 20.0),
+                sapo_temperature_neg=getattr(self.args, "sapo_temperature_neg", 20.0),
             )
         #### end policy loss init ####
 
@@ -205,8 +209,9 @@ class ActorPPOTrainer(ABC):
             getattr(self.args, "packing_samples", False),
             getattr(self.args, "use_dynamic_batch", False),
             getattr(self.args, "use_adaptive_batch", False),
-            loss_type=getattr(self.args, "loss_type", "ppo"),
             legacy_loss_scaling=getattr(self.args, "legacy_loss_scaling", False),
+            loss_aggregation=getattr(self.args, "loss_aggregation", "sample"),
+            n_samples_per_prompt=getattr(self.args, "n_samples_per_prompt", 1),
         )
 
         # Init torch group for weights sync
@@ -297,6 +302,7 @@ class ActorPPOTrainer(ABC):
 
         status_list = []
         status_mean = {}
+        total_trained_tokens = 0  # accumulate non-padding tokens across all steps/epochs
         for epoch in range(self.max_epochs):
             pbar = tqdm(
                 dataloader,
@@ -305,6 +311,9 @@ class ActorPPOTrainer(ABC):
             )
             for step, experience in enumerate(pbar):
                 experience.to_device(device)
+                # Count non-padding tokens seen this microbatch (attention_mask.sum())
+                if experience.attention_mask is not None:
+                    total_trained_tokens += int(experience.attention_mask.sum().item())
                 status = self.training_step(experience, kl_ctl, step)
                 status["kl"] *= status["response_length"]
                 if "logprobs_diff" in status:
@@ -357,6 +366,14 @@ class ActorPPOTrainer(ABC):
         # Inject micro batch partition stats (computed once per setup, not per step).
         if self.replay_buffer.micro_batch_stats:
             status_mean.update(self.replay_buffer.micro_batch_stats)
+
+        # Inject raw token count — NOT averaged, used for throughput computation in train_step.
+        # All-reduce across DP ranks so total_trained_tokens is global (matching vllm_total_* stats).
+        if torch.distributed.is_initialized():
+            token_tensor = torch.tensor([total_trained_tokens], dtype=torch.long, device=device)
+            torch.distributed.all_reduce(token_tensor, op=torch.distributed.ReduceOp.SUM)
+            total_trained_tokens = int(token_tensor.item())
+        status_mean["total_trained_tokens"] = total_trained_tokens
 
         return status_mean
 
@@ -436,17 +453,11 @@ class ActorPPOTrainer(ABC):
             )
             L = action_mask.shape[1]
             lm_head = self.actor.get_lm_head()
-            backend = getattr(self.args, "liger_grpo_backend", "chunked")
             # hidden_states is (B, S, D) — full sequence, no pre-slicing.
             # Triton needs L+1 positions: h[t] → logits[t] → predicts token[t+1].
-            #   For L completion tokens we need L+1 hidden states (the one before
-            #   the first completion token through the last completion token).
-            # Chunked needs L positions: same L hidden states but shifted by one
-            #   (h[t-1] for each completion token t), so we slice -(L+1):-1.
-            if backend == "triton":
-                hs_slice = hidden_states[:, -(L + 1) :, :]   # (B, L+1, D)
-            else:
-                hs_slice = hidden_states[:, -(L + 1) : -1, :]  # (B, L, D)
+            # For L completion tokens we need L+1 hidden states (the one before
+            # the first completion token through the last completion token).
+            hs_slice = hidden_states[:, -(L + 1) :, :]   # (B, L+1, D)
 
             actor_loss, clip_ratio, ppo_kl, vllm_kl = self.actor_loss_fn(
                 hidden_states=hs_slice,
@@ -456,6 +467,7 @@ class ActorPPOTrainer(ABC):
                 advantages=advantages,
                 old_log_probs=old_action_log_probs,
                 rollout_log_probs=experience.rollout_log_probs,
+                prompt_tokens=experience.info.get("prompt_tokens"),
             )
         else:
             # Standard: full forward → PolicyLoss on log_probs
@@ -474,6 +486,7 @@ class ActorPPOTrainer(ABC):
                 advantages,
                 action_mask=experience.action_mask,
                 rollout_log_probs=experience.rollout_log_probs,
+                prompt_tokens=experience.info.get("prompt_tokens"),
             )
             aux_loss = getattr(model_output, "aux_loss", None)
         #### end forward pass + policy loss ####
@@ -494,11 +507,24 @@ class ActorPPOTrainer(ABC):
                 )
             raise RuntimeError(f"Non-finite actor_loss detected. {diag}")
 
-        #### Shared post-loss: metrics, KL, aux_loss, entropy, distill ####
+        #### Shared post-loss: metrics, KL, aux_loss, entropy, IS ratios, distill ####
         experience.info["ppo_clip_ratio"] = clip_ratio.detach()
         experience.info["ppo_kl"] = ppo_kl.detach()
         if vllm_kl is not None:
             experience.info["vllm_kl"] = vllm_kl.detach()
+
+        #### Importance sampling ratio reporting (Phase 12) ####
+        # Policy IS ratio: how far current policy is from old policy (standard path only)
+        if action_log_probs is not None:
+            policy_log_ratio = action_log_probs - old_action_log_probs
+            policy_is_ratio = masked_mean(policy_log_ratio.exp().detach(), action_mask)
+            experience.info["importance_ratio"] = policy_is_ratio
+        # vLLM off-policy IS ratio: how stale the rollout is
+        if experience.rollout_log_probs is not None:
+            vllm_log_ratio = old_action_log_probs - experience.rollout_log_probs
+            vllm_is_ratio = masked_mean(vllm_log_ratio.exp().detach(), action_mask)
+            experience.info["vllm_importance_ratio"] = vllm_is_ratio
+        #### end IS ratio reporting ####
 
         loss = actor_loss
 
@@ -567,8 +593,12 @@ class ActorPPOTrainer(ABC):
             else:
                 self.strategy.moving_average(self.actor, self.ema_model, self.ema_beta, "cuda")
 
-        # status
-        status = {"policy_loss": actor_loss.detach().item(), "actor_lr": self.actor_scheduler.get_last_lr()[0]}
+        # status — log policy_loss after loss_scale normalization for comparable magnitudes
+        if self.args.use_dynamic_batch:
+            logged_policy_loss = (actor_loss * self.replay_buffer.dynamic_loss_scale[step]).detach().item()
+        else:
+            logged_policy_loss = actor_loss.detach().item()
+        status = {"policy_loss": logged_policy_loss, "actor_lr": self.actor_scheduler.get_last_lr()[0]}
         if grad_norm is not None:
             status["grad_norm"] = grad_norm
         if self.args.entropy_loss_coef is not None:

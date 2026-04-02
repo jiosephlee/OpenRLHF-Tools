@@ -90,7 +90,7 @@ VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-256}"
 VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE="${VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE:-}"
-LENGTH_PENALTY_MAX_LENGTH="${LENGTH_PENALTY_MAX_LENGTH:-0}"
+LENGTH_PENALTY_START="${LENGTH_PENALTY_START:-0}"
 LANGUAGE_MODEL_ONLY="${LANGUAGE_MODEL_ONLY:-1}"
 
 export TORCH_DYNAMO_CACHE_SIZE_LIMIT=1024
@@ -396,10 +396,7 @@ fi
 OPTIONAL_FLAGS+=" --oversample_ratio $OVERSAMPLE_RATIO"
 
 if [ "$LIGER_GRPO_LOSS" = "1" ]; then
-    OPTIONAL_FLAGS+=" --use_liger_grpo_loss --liger_grpo_backend $LIGER_GRPO_BACKEND"
-    if [ "$LIGER_GRPO_BACKEND" = "chunked" ]; then
-        OPTIONAL_FLAGS+=" --liger_chunk_size $LIGER_CHUNK_SIZE"
-    fi
+    OPTIONAL_FLAGS+=" --use_liger_grpo_loss"
 fi
 if [ "$TIS" = "1" ]; then
     OPTIONAL_FLAGS+=" --enable_vllm_is_correction --vllm_is_correction_type $TIS_TYPE --vllm_is_truncated_threshold $TIS_THRESHOLDS"
@@ -410,8 +407,8 @@ fi
 if [ -n "$VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE" ]; then
     OPTIONAL_FLAGS+=" --vllm_cudagraph_max_capture_size $VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE"
 fi
-if [ "$LENGTH_PENALTY_MAX_LENGTH" -gt 0 ]; then
-    OPTIONAL_FLAGS+=" --length_penalty_max_length $LENGTH_PENALTY_MAX_LENGTH"
+if [ "$LENGTH_PENALTY_START" -gt 0 ]; then
+    OPTIONAL_FLAGS+=" --length_penalty_start $LENGTH_PENALTY_START"
 fi
 if [ "$USE_LORA" = "1" ]; then
     OPTIONAL_FLAGS+=" --lora_rank $LORA_RANK --lora_alpha $LORA_ALPHA"
@@ -496,7 +493,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --warmup_steps $WARMUP_STEPS \
     --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
     --attn_implementation "flash_attention_2" \
-    --length_penalty_max_length 10240 \
+    --length_penalty_start 10240 \
     --freeze_router \
     --freeze_visual \
     $MODE_FLAGS \

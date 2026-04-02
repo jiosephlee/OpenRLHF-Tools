@@ -232,21 +232,29 @@ class Experience:
 
 def _collect_prompt_batch(dataloader_iter, num_prompts: int):
     """Draw up to `num_prompts` items from the prompt dataloader."""
-    indices, prompts, labels = [], [], []
+    indices, datasources, prompts, labels, knn_pseudo_labels = [], [], [], [], []
     exhausted = False
 
     while len(prompts) < num_prompts:
         try:
-            batch_indices, _, batch_prompts, batch_labels = next(dataloader_iter)
+            batch = next(dataloader_iter)
+            # Support both 4-tuple (legacy) and 5-tuple (with knn_pseudo_labels)
+            if len(batch) == 5:
+                batch_indices, batch_datasources, batch_prompts, batch_labels, batch_knn = batch
+            else:
+                batch_indices, batch_datasources, batch_prompts, batch_labels = batch
+                batch_knn = [None] * len(batch_prompts)
             remaining = num_prompts - len(prompts)
             indices.extend(batch_indices[:remaining])
+            datasources.extend(batch_datasources[:remaining])
             prompts.extend(batch_prompts[:remaining])
             labels.extend(batch_labels[:remaining])
+            knn_pseudo_labels.extend(batch_knn[:remaining])
         except StopIteration:
             exhausted = True
             break
 
-    return indices, prompts, labels, exhausted
+    return indices, datasources, prompts, labels, knn_pseudo_labels, exhausted
 
 
 class SamplesGenerator:
@@ -307,6 +315,12 @@ class SamplesGenerator:
         # Store reference to original dataset for index lookups during replay.
         self._original_dataset = prompts_dataloader.dataset if prompts_dataloader is not None else None
         #### end oversampling ####
+
+        #### Easy/hard prompt tracking (Phase 12) ####
+        self._easy_hard_collection = {"easy": [], "hard": []}
+        self.eval_traces_dir = os.path.join(self.runs_dir, "eval_traces")
+        os.makedirs(self.eval_traces_dir, exist_ok=True)
+        #### end easy/hard tracking ####
 
     def _to_jsonable(self, value):
         if isinstance(value, torch.Tensor):
@@ -371,6 +385,16 @@ class SamplesGenerator:
                         )
 
         decoded["sections"] = sections
+
+        # Extract response-only text (excluding prompt) using action_ranges.
+        if action_ranges:
+            first_action_start = action_ranges[0][0]
+            decoded["response_text"] = self.tokenizer.decode(
+                obs_tokens[first_action_start:], skip_special_tokens=True
+            )
+        else:
+            decoded["response_text"] = decoded["full_text"]
+
         return decoded
 
     def _strip_token_ids(self, trace: dict) -> dict:
@@ -379,42 +403,77 @@ class SamplesGenerator:
             trace_no_ids.pop(key, None)
         return trace_no_ids
 
-    def _write_step_trace(
-        self, step_idx: int, episode_traces: list, prompts_consumed: int, filtered_count: int, total_episodes: int = 0
-    ):
-        if not self.rollout_trace_run_dir or not episode_traces:
-            return
-        step_id = step_idx + 1
-        trace_path = os.path.join(self.rollout_trace_run_dir, f"step{step_id}.jsonl")
-        # Only save the first trace per step to avoid excessive disk usage.
-        engine_idx, trace = episode_traces[0]
-        record = {
-            "step": step_id,
-            "episode": 0,
-            "engine_idx": engine_idx,
-            "prompts_consumed": prompts_consumed,
-            "filtered_count": filtered_count,
-            "total_episodes": total_episodes,
-            "trace": self._strip_token_ids(trace),
-            "decoded": self._decode_trace(trace),
-        }
-        with open(trace_path, "w") as f:
-            f.write(json.dumps(self._to_jsonable(record), ensure_ascii=True) + "\n")
 
-    def _write_eval_trace(self, eval_idx: int, episode_trace: tuple, total_episodes: int):
-        if not self.rollout_trace_run_dir or episode_trace is None:
-            return
-        engine_idx, trace = episode_trace
-        trace_path = os.path.join(self.rollout_trace_run_dir, f"eval_{eval_idx}.json")
-        record = {
-            "eval": eval_idx,
-            "engine_idx": engine_idx,
-            "total_episodes": total_episodes,
-            "trace": self._strip_token_ids(trace),
-            "decoded": self._decode_trace(trace),
+    #### Prompt group trace methods (Phase 12) ####
+    def _build_prompt_group_record(self, responses, ds_idx, datasource, global_step):
+        """Build a serializable record of a prompt group with decoded outputs."""
+        prompt = responses[0].get("prompt", "")
+        label = responses[0].get("label", "")
+        samples = []
+        for r in responses:
+            decoded = self._decode_trace(r)
+            samples.append({
+                "reward": r.get("reward"),
+                "score": r.get("scores"),
+                "response_text": decoded.get("response_text", decoded.get("full_text", "")),
+            })
+        return {
+            "dataset_idx": ds_idx,
+            "datasource": datasource,
+            "global_step": global_step,
+            "prompt": prompt,
+            "label": label,
+            "samples": samples,
         }
-        with open(trace_path, "w") as f:
-            f.write(json.dumps(self._to_jsonable(record), ensure_ascii=True))
+
+    def _write_prompt_group_traces(self, step_idx, prompt_groups):
+        """Write prompt group traces in JSON and TXT formats (Phase 12)."""
+        if not prompt_groups:
+            return
+
+        # JSON format
+        json_path = os.path.join(self.rollout_trace_run_dir, f"step{step_idx}_groups.json")
+        try:
+            record = {"step": step_idx, "groups": prompt_groups}
+            with open(json_path, "w") as f:
+                json.dump(record, f, indent=2, ensure_ascii=False, default=str)
+        except Exception as e:
+            logger.warning(f"Failed to write prompt group JSON: {e}")
+
+
+    def save_easy_hard_collection(self):
+        """Write accumulated easy/hard examples to disk (Phase 12)."""
+        if not self._easy_hard_collection["easy"] and not self._easy_hard_collection["hard"]:
+            return
+
+        # JSON format
+        json_path = os.path.join(self.runs_dir, "easy_hard_prompts.json")
+        try:
+            with open(json_path, "w") as f:
+                json.dump(self._easy_hard_collection, f, indent=2, ensure_ascii=False, default=str)
+        except Exception as e:
+            logger.warning(f"Failed to write easy/hard JSON: {e}")
+
+        # TXT format
+        txt_path = os.path.join(self.runs_dir, "easy_hard_prompts.txt")
+        try:
+            with open(txt_path, "w") as f:
+                for category in ("easy", "hard"):
+                    for group in self._easy_hard_collection[category]:
+                        step = group.get("global_step", "?")
+                        ds_idx = group.get("dataset_idx", "?")
+                        ds_name = group.get("datasource", "?")
+                        f.write(f"[{category.upper()} @ step {step}] (dataset_idx={ds_idx}, datasource={ds_name})\n")
+                        f.write(f"PROMPT: {group.get('prompt', '')}\n")
+                        f.write(f"LABEL: {group.get('label', '')}\n\n")
+                        for si, sample in enumerate(group.get("samples", []), 1):
+                            reward = sample.get("reward", "?")
+                            f.write(f"--- Sample {si} (reward={reward}) ---\n")
+                            f.write(f"{sample.get('response_text', '')}\n\n")
+                        f.write("=====================================\n\n")
+        except Exception as e:
+            logger.warning(f"Failed to write easy/hard TXT: {e}")
+    #### end prompt group trace methods ####
 
     # ── vLLM stats collection ──────────────────────────────────────────
 
@@ -482,14 +541,18 @@ class SamplesGenerator:
             if exp.attention_mask is not None and exp.action_mask is not None:
                 total_prefill += exp.attention_mask.sum().item() - exp.action_mask.sum().item()
 
+        total_rollout = total_decode + total_prefill
+
         result = {
             "total_decode_tokens": int(total_decode),
             "total_prefill_tokens": int(total_prefill),
+            "total_rollout_tokens": int(total_rollout),
             "generation_wall_time_sec": round(wall_time, 2),
         }
         if wall_time > 0:
             result["decode_tokens_per_sec"] = round(total_decode / wall_time, 1)
             result["prefill_tokens_per_sec"] = round(total_prefill / wall_time, 1)
+            result["total_rollout_tokens_per_sec"] = round(total_rollout / wall_time, 1)
         return result
 
     def _collect_and_write_vllm_stats(
@@ -541,6 +604,8 @@ class SamplesGenerator:
             "vllm_prefill_tokens_per_sec": throughput.get("prefill_tokens_per_sec", 0),
             "vllm_total_decode_tokens": throughput.get("total_decode_tokens", 0),
             "vllm_total_prefill_tokens": throughput.get("total_prefill_tokens", 0),
+            "vllm_total_rollout_tokens": throughput.get("total_rollout_tokens", 0),
+            "vllm_total_rollout_tokens_per_sec": throughput.get("total_rollout_tokens_per_sec", 0),
         }
         if "kv_cache_usage_pct" in engine_stats:
             flat["vllm_kv_cache_usage_pct_mean"] = engine_stats["kv_cache_usage_pct"]["mean"]
@@ -621,19 +686,13 @@ class SamplesGenerator:
         if self.args.vllm_enable_sleep:
             batch_vllm_engine_call(self.vllm_engines, "wake_up")
 
-        experiences, prompts_consumed, exhausted = self._generate_vllm(
+        experiences, prompts_consumed, exhausted, _, _, _ = self._generate_vllm(
             dataloader_iter=self._eval_dataloader_iter,
             num_prompts=len(self.eval_dataloader),
             dynamic_filtering=False,
             log_step_trace=False,
             **generate_kwargs,
         )
-        self._write_eval_trace(
-            int(generate_kwargs.get("global_step", 0)),
-            getattr(self, "_last_episode_trace", None),
-            getattr(self, "_last_total_episodes", 0),
-        )
-
         # Collect vLLM stats for eval.
         global_step = int(generate_kwargs.get("global_step", 0))
         self._collect_and_write_vllm_stats(
@@ -658,7 +717,11 @@ class SamplesGenerator:
         return experiences
 
     def get_replay_indices(self) -> Tuple[set, set]:
-        """Return (hard_indices, kept_indices) accumulated during the episode."""
+        """Return (hard_indices, kept_indices) accumulated during the episode.
+
+        Note: kept_indices are tracked but excluded from the actual replay pool.
+        They are returned for logging/diagnostics only.
+        """
         return self._replay_hard_indices, self._replay_kept_indices
 
     #### Oversampling: missed indices getter ####
@@ -733,6 +796,11 @@ class SamplesGenerator:
             #### end oversampling ####
         }
 
+    @property
+    def step_knn_stats(self) -> dict:
+        """Per-step KNN reversal stats for W&B logging (knn/ section)."""
+        return getattr(self, "_step_knn_stats", {})
+
     @torch.no_grad()
     def generate_samples(self, **generate_kwargs) -> Tuple[List[Experience], Optional[float], int, bool]:
         """Produce one batch and indicate if the dataloader is exhausted."""
@@ -767,7 +835,7 @@ class SamplesGenerator:
             "oversample_ratio", getattr(self.args, "oversample_ratio", 1.0)
         )
         #### end oversampling ####
-        experiences, prompts_consumed, exhausted = self._generate_vllm(
+        experiences, prompts_consumed, exhausted, prompt_groups, easy_ex, hard_ex = self._generate_vllm(
             dataloader_iter=self._dataloader_iter,
             num_prompts=self.args.rollout_batch_size,
             dynamic_filtering=self.args.dynamic_filtering,
@@ -776,6 +844,15 @@ class SamplesGenerator:
             **generate_kwargs,
         )
         self._step_prompts_consumed = prompts_consumed
+
+        #### Write prompt group traces and collect easy/hard (Phase 12) ####
+        if prompt_groups and self.strategy.is_rank_0() and self._trace_step_idx % 5 == 0:
+            self._write_prompt_group_traces(self._trace_step_idx, prompt_groups)
+        if easy_ex:
+            self._easy_hard_collection["easy"].append(easy_ex)
+        if hard_ex:
+            self._easy_hard_collection["hard"].append(hard_ex)
+        #### end prompt group traces ####
 
         # Collect vLLM stats and write JSONL.
         global_step = int(generate_kwargs.get("global_step", trace_step_idx))
@@ -810,7 +887,7 @@ class SamplesGenerator:
 
     def _generate_vllm(
         self, dataloader_iter, num_prompts: int, dynamic_filtering, **generate_kwargs
-    ) -> Tuple[List[Experience], int, bool]:
+    ) -> Tuple[List[Experience], int, bool, list, Optional[dict], Optional[dict]]:
         """Generate a batch of Experiences with optional reward filtering."""
         #### Oversampling: compute oversampled dispatch count ####
         oversample_ratio = generate_kwargs.pop("oversample_ratio", getattr(self.args, "oversample_ratio", 1.0))
@@ -828,7 +905,7 @@ class SamplesGenerator:
 
         prompts_consumed = 0
         #### Oversampling: collect oversampled_count prompts, fill from missed_indices ####
-        dataset_indices, prompts, labels, exhausted = _collect_prompt_batch(dataloader_iter, oversampled_count)
+        dataset_indices, ds_datasources, prompts, labels, ds_knn_pseudo_labels, exhausted = _collect_prompt_batch(dataloader_iter, oversampled_count)
 
         # Fill-in: when dataloader exhausts, supplement from missed_indices
         if exhausted and len(prompts) < oversampled_count and self._missed_indices:
@@ -836,6 +913,8 @@ class SamplesGenerator:
             fill_indices = list(self._missed_indices)[:remaining_needed]
             for idx in fill_indices:
                 dataset_indices.append(idx)
+                ds_datasources.append(self._original_dataset.datasources[idx] if hasattr(self._original_dataset, "datasources") else "unknown")
+                ds_knn_pseudo_labels.append(self._original_dataset.knn_pseudo_labels[idx] if hasattr(self._original_dataset, "knn_pseudo_labels") else None)
                 prompts.append(self._original_dataset.prompts[idx])
                 labels.append(self._original_dataset.labels[idx])
             self._missed_indices -= set(fill_indices)
@@ -852,13 +931,13 @@ class SamplesGenerator:
                 self._step_missed_count += 1
                 self._episode_missed_count += 1
             self._last_generation_wall_time = 0.0
-            return [], len(prompts), True
+            return [], len(prompts), True, [], None, None
         #### end oversampling ####
 
         # Stop early if the prompt source is fully consumed and nothing collected.
         if exhausted and not prompts:
             self._last_generation_wall_time = 0.0
-            return [], prompts_consumed, exhausted
+            return [], prompts_consumed, exhausted, [], None, None
 
         smart_replay = getattr(self.args, "smart_replay", False)
 
@@ -868,6 +947,8 @@ class SamplesGenerator:
         ref_to_engine = {ref: engine_idx for ref, engine_idx in dispatches}
         # Map each ref → its dataset index for smart replay tracking.
         ref_to_dataset_idx = {ref: dataset_indices[i] for i, (ref, _) in enumerate(dispatches)}
+        ref_to_datasource = {ref: ds_datasources[i] for i, (ref, _) in enumerate(dispatches)} if ds_datasources else {}
+        ref_to_knn_pl = {ref: ds_knn_pseudo_labels[i] for i, (ref, _) in enumerate(dispatches)} if ds_knn_pseudo_labels else {}
         prompts_consumed += len(prompts)
 
         # Track how many outstanding requests each engine has.
@@ -883,11 +964,25 @@ class SamplesGenerator:
         total_episodes = 0
         exhausted_during_refill = False
 
+        #### Prompt group tracking (Phase 12) ####
+        step_prompt_groups = []
+        step_easy_example = None
+        step_hard_example = None
+        #### end prompt group tracking ####
+
+        #### KNN reversal tracking ####
+        knn_total = 0       # prompts with KNN pseudo-label
+        knn_reversed = 0    # model prediction != KNN pseudo-label
+        knn_correct_reversal = 0   # reversed AND model got the right answer
+        knn_incorrect_reversal = 0  # reversed AND model got the wrong answer
+        #### end KNN tracking ####
+
         while pending_refs:
             ready_refs, pending_refs = ray.wait(pending_refs, num_returns=1, timeout=10.0)
             for ref in ready_refs:
                 engine_idx = ref_to_engine.pop(ref)
                 ds_idx = ref_to_dataset_idx.pop(ref, None)
+                datasource = ref_to_datasource.pop(ref, None)
                 engine_pending[engine_idx] -= 1
 
 
@@ -918,10 +1013,27 @@ class SamplesGenerator:
                 # multi-turn mode (each resp contains full observation_tokens + log_probs).
                 if not episode_traces:
                     episode_traces.append((engine_idx, responses[0]))
+                #### KNN reversal tracking per prompt group ####
+                knn_pl = ref_to_knn_pl.pop(ref, None)
+                if knn_pl is not None and responses:
+                    knn_total += 1
+                    # Use majority reward to determine if model got it right
+                    rewards = [r.get("reward", 0) for r in responses]
+                    model_correct = sum(1 for r in rewards if r > 0) > len(rewards) / 2
+                    true_answer = responses[0].get("label", "")
+                    knn_agrees_with_truth = knn_pl in str(true_answer)
+                    reversed_knn = model_correct != knn_agrees_with_truth
+                    if reversed_knn:
+                        knn_reversed += 1
+                        if model_correct:
+                            knn_correct_reversal += 1
+                        else:
+                            knn_incorrect_reversal += 1
+                #### end KNN tracking ####
+
                 experiences = [
                     self._process_response_into_experience(response, **generate_kwargs) for response in responses
                 ]
-                del responses  # free raw vLLM response dicts before processing next batch
                 # Filter out None entries from failed/empty generations.
                 experiences = [e for e in experiences if e is not None]
                 if not experiences:
@@ -940,6 +1052,12 @@ class SamplesGenerator:
                         self._episode_easy_count += 1
                         if ds_idx is not None:
                             self._discarded_easy_indices.add(ds_idx)
+                        #### Capture easy example (Phase 12) ####
+                        if step_easy_example is None and responses:
+                            step_easy_example = self._build_prompt_group_record(
+                                responses, ds_idx, datasource, step_idx
+                            )
+                        #### end capture easy ####
                         if filtered_count % 10 == 0:
                             logger.info(
                                 "Dynamic filtering rejected group (too easy) "
@@ -956,6 +1074,12 @@ class SamplesGenerator:
                             self._discarded_hard_indices.add(ds_idx)
                         if smart_replay and ds_idx is not None:
                             self._replay_hard_indices.add(ds_idx)
+                        #### Capture hard example (Phase 12) ####
+                        if step_hard_example is None and responses:
+                            step_hard_example = self._build_prompt_group_record(
+                                responses, ds_idx, datasource, step_idx
+                            )
+                        #### end capture hard ####
                         if filtered_count % 10 == 0:
                             logger.info(
                                 "Dynamic filtering rejected group (too hard) "
@@ -979,8 +1103,15 @@ class SamplesGenerator:
                     pbar.set_postfix({"prompts_consumed": prompts_consumed})
                     pbar.update()
 
+                    #### Record prompt group (Phase 12, limit 5 per step) ####
+                    if len(step_prompt_groups) < 5 and responses:
+                        step_prompt_groups.append(
+                            self._build_prompt_group_record(responses, ds_idx, datasource, step_idx)
+                        )
+                    #### end record prompt group ####
+
                     #### Oversampling: early termination once enough accepted ####
-                    if accepted_prompt_groups >= num_prompts and oversample_ratio > 1.0:
+                    if accepted_prompt_groups >= num_prompts:
                         cancelled_refs = list(pending_refs)
                         for cancel_ref in cancelled_refs:
                             missed_idx = ref_to_dataset_idx.get(cancel_ref)
@@ -1016,7 +1147,7 @@ class SamplesGenerator:
                 else:
                     replace_ratio = getattr(self.args, "replace_discarded_prompts_ratio", 1.0)
                     num_replacements = max(1, math.ceil(replace_ratio))
-                    new_ds_indices, new_prompts, new_labels, exhausted = _collect_prompt_batch(
+                    new_ds_indices, new_ds_datasources, new_prompts, new_labels, new_knn_pls, exhausted = _collect_prompt_batch(
                         dataloader_iter, num_replacements
                     )
                     prompts_consumed += len(new_prompts)
@@ -1027,12 +1158,14 @@ class SamplesGenerator:
                         fill_indices = list(self._missed_indices)[:remaining]
                         for idx in fill_indices:
                             new_ds_indices.append(idx)
+                            new_ds_datasources.append(self._original_dataset.datasources[idx] if hasattr(self._original_dataset, "datasources") else "unknown")
                             new_prompts.append(self._original_dataset.prompts[idx])
                             new_labels.append(self._original_dataset.labels[idx])
                         self._missed_indices -= set(fill_indices)
                     elif exhausted and not new_prompts and self._missed_indices:
                         fallback_idx = self._missed_indices.pop()
                         new_ds_indices = [fallback_idx]
+                        new_ds_datasources = [self._original_dataset.datasources[fallback_idx] if hasattr(self._original_dataset, "datasources") else "unknown"]
                         new_prompts = [self._original_dataset.prompts[fallback_idx]]
                         new_labels = [self._original_dataset.labels[fallback_idx]]
                     #### end oversampling ####
@@ -1052,14 +1185,25 @@ class SamplesGenerator:
                             pending_refs.append(new_ref)
                             ref_to_engine[new_ref] = new_engine_idx
                             ref_to_dataset_idx[new_ref] = new_ds_indices[j]
+                            if new_ds_datasources:
+                                ref_to_datasource[new_ref] = new_ds_datasources[j] if j < len(new_ds_datasources) else "unknown"
                             engine_pending[new_engine_idx] += 1
 
-        self._last_episode_trace = episode_traces[0] if episode_traces else None
-        self._last_total_episodes = total_episodes
-        if generate_kwargs.get("log_step_trace", True):
-            self._write_step_trace(step_idx, episode_traces, prompts_consumed, filtered_count, total_episodes)
+                del responses  # free raw vLLM response dicts
 
         self._last_generation_wall_time = time.time() - generation_start_time
+
+        #### Store KNN stats for W&B logging ####
+        self._step_knn_stats = {
+            "knn_total": knn_total,
+            "knn_reversed": knn_reversed,
+            "knn_correct_reversal": knn_correct_reversal,
+            "knn_incorrect_reversal": knn_incorrect_reversal,
+            "knn_reversal_pct": (knn_reversed / knn_total * 100) if knn_total > 0 else None,
+            "knn_correct_reversal_pct": (knn_correct_reversal / knn_total * 100) if knn_total > 0 else None,
+            "knn_incorrect_reversal_pct": (knn_incorrect_reversal / knn_total * 100) if knn_total > 0 else None,
+        }
+        #### end KNN stats ####
 
         if smart_replay and not exhausted_during_refill:
             logger.info(
@@ -1077,10 +1221,10 @@ class SamplesGenerator:
                     f"= {len(self._replay_hard_indices) + len(self._replay_kept_indices)} total prompts"
                 )
             #### Oversampling: return partial results instead of [] ####
-            return accepted_experiences, prompts_consumed, True
+            return accepted_experiences, prompts_consumed, True, step_prompt_groups, step_easy_example, step_hard_example
             #### end oversampling ####
 
-        return accepted_experiences, prompts_consumed, exhausted
+        return accepted_experiences, prompts_consumed, exhausted, step_prompt_groups, step_easy_example, step_hard_example
 
     def _dispatch_prompts_to_vllm(self, prompts: List[str], labels: List[str], **generate_kwargs) -> List:
         """Send prompts to rollout executors and return Ray object refs."""
@@ -1535,6 +1679,17 @@ class RemoteExperienceMaker:
         rewards = torch.empty_like(raw_rewards)
         rewards[indices] = raw_rewards  # sorted
 
+        #### Compute prompt_tokens for prompt-level loss aggregation ####
+        # prompt_tokens[i] = total action tokens across all completions for sequence i's prompt.
+        # Computed in sorted order (prompt groups are contiguous), then remapped to original order.
+        if getattr(args, "loss_aggregation", "sample") == "prompt":
+            # Get per-sequence action token counts in original order, then sort
+            raw_action_counts = torch.cat(
+                [exp.action_mask.sum(dim=-1).float() for exp in experiences], dim=0
+            )
+            sorted_action_counts = torch.empty_like(raw_action_counts)
+            sorted_action_counts[indices] = raw_action_counts  # to sorted order
+
         # Check if we have variable group sizes (ERL mode)
         prompt_group_sizes = getattr(self, "_current_step_group_sizes", None)
         use_variable_groups = (
@@ -1596,6 +1751,27 @@ class RemoteExperienceMaker:
                 rewards = (rewards - rewards.mean(-1, keepdim=True)) / (rewards.std(-1, keepdim=True) + 1e-9)
 
             rewards = rewards.reshape(-1)[indices].split(exp_len)
+
+        #### Store prompt_tokens in experiences ####
+        if getattr(args, "loss_aggregation", "sample") == "prompt":
+            if use_variable_groups:
+                # Variable group sizes (ERL): group by prompt_group_sizes
+                pt_groups = torch.split(sorted_action_counts, prompt_group_sizes)
+                prompt_tokens_sorted = torch.cat(
+                    [g.sum().expand(len(g)) for g in pt_groups]
+                )
+            else:
+                # Fixed group sizes: reshape to (P, G)
+                G = args.n_samples_per_prompt
+                pt_grouped = sorted_action_counts.reshape(-1, G)
+                # Sum within each prompt group, broadcast back to (P, G)
+                prompt_tokens_sorted = pt_grouped.sum(dim=-1, keepdim=True).expand_as(pt_grouped).reshape(-1)
+
+            # Remap from sorted order back to original, then split per experience
+            prompt_tokens_orig = prompt_tokens_sorted[indices].split(exp_len)
+            for experience, pt in zip(experiences, prompt_tokens_orig):
+                experience.info["prompt_tokens"] = pt
+        #### end prompt_tokens ####
 
         # calculate return and advantages
         for experience, reward in zip(experiences, rewards):

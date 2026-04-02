@@ -36,14 +36,15 @@ def plot(entries: list[dict], output_path: str, use_raw: bool):
     if use_raw:
         key = "per_dataset_counts"
     else:
-        key = "per_dataset_usage_pct" if entries and entries[0].get("per_dataset_usage_pct") else "per_dataset_normalized"
+        key = "per_dataset_usage_pct"
     datasets = sorted({ds for entry in entries for ds in entry.get(key, {}).keys()})
     if not datasets:
         print("No datasets found in JSON entries.", file=sys.stderr)
         sys.exit(1)
 
     nrows = len(datasets)
-    fig, axes = plt.subplots(nrows, 1, figsize=(14, max(4, 3 * nrows)), squeeze=False)
+    fig, axes = plt.subplots(nrows, 1, figsize=(14, max(6, 4.5 * nrows)), squeeze=False)
+    fig.subplots_adjust(hspace=0.6)
 
     for row, ds in enumerate(datasets):
         ax = axes[row][0]
@@ -69,18 +70,17 @@ def plot(entries: list[dict], output_path: str, use_raw: bool):
             vmax = vmin + 1.0  # avoid degenerate range
 
         heatmap = ax.imshow(matrix, aspect="auto", cmap="viridis", vmin=vmin, vmax=vmax)
-        ax.set_title(f"{ds}  ({'raw counts' if use_raw else 'normalized (max=1)'})")
-        ax.set_xlabel("tool")
+        ax.set_title(f"{ds}  ({'raw counts' if use_raw else '%'})", pad=8)
         ax.set_ylabel("eval step")
         ax.set_xticks(range(len(tools)))
         ax.set_xticklabels(tools, rotation=45, ha="right", fontsize=8)
+        ax.set_xlabel("tool")
         y_labels = [str(entry["global_step"]) for entry in entries]
         ax.set_yticks(range(len(y_labels)))
         ax.set_yticklabels(y_labels, fontsize=8)
         fig.colorbar(heatmap, ax=ax, fraction=0.025, pad=0.02)
 
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=200)
+    fig.savefig(output_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved plot to {output_path}")
 

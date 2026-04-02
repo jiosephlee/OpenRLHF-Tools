@@ -1,0 +1,708 @@
+=== Group 1 (dataset_idx=4088, datasource=BBB_Martins_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|>
+
+# Tools
+
+## functions
+
+namespace functions {
+
+// Get a comprehensive molecular profile including identity (MW), drug-likeness (QED, Lipinski violations), key physicochemical properties (logP, TPSA, HBD, HBA, rotatable bonds, Fsp3, molar refractivity), complexity metrics (Bertz CT, stereocenters), topology indices (Hall-Kier, Kappa, Balaban J, IPC), pharmacophore feature counts (hydrophobic, aromatic, ionizable), and electronic properties (Gasteiger charges, EState indices, HOMO/LUMO gap).
+type get_molecule_profile = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Analyze functional groups in a molecule using AccFG. Returns named functional groups with fragment SMILES, attachment points, and atom IDs for structural reasoning. Use this to understand what chemical motifs are present.
+type analyze_functional_groups = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Analyze ring topology and aromaticity. Returns per-system descriptions with ring sizes and heteroatom content, ring type counts (aromatic/aliphatic/saturated/heterocyclic), aromaticity metrics, and flags for PAH, macrocycle, spiro, and bridgehead features.
+type analyze_ring_systems = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Assess ADME properties: pKa prediction (acidic/basic sites), ionization state classification at target pH, logD estimation, and aqueous solubility. These are causally linked: pKa → ionization → logD → permeability.
+type assess_adme_properties = (_: {
+// SMILES string of the molecule.
+smiles: string,
+// Target pH for ionization/logD estimation (default: 7.4).
+ph?: number
+}) => any;
+
+// Screen a molecule for toxicophores — structural motifs associated with specific toxicity mechanisms. Groups alerts into categories like 'Michael acceptor' (protein-reactive electrophile), 'alkylating agent' (DNA-reactive), 'PAH' (CYP-activated), etc. Each category includes a mechanistic explanation. Also screens against ToxAlerts endpoint-specific patterns covering skin sensitization, mutagenicity, carcinogenicity, reactive metabolite formation, electrophilic reactivity, chelation, and promiscuity. Returns pharmacophore feature counts (donor/acceptor/aromatic/hydrophobe). Use this to identify structural liabilities and understand their toxicological mechanisms.
+type screen_structural_alerts = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Find the most similar molecules from the training set using task-aware embeddings. Returns K nearest neighbors with their labels, key properties (MW, logP, TPSA), and functional groups, plus the closest molecule with the opposite label for contrastive SAR reasoning. Includes KNN accuracy metrics (global and local neighborhood). Use this for structure-activity analysis.
+type find_similar_molecules = (_: {
+// SMILES string of the query molecule.
+smiles: string,
+// Task name for task-aware retrieval (e.g., 'AMES', 'DILI').
+task: string,
+// Number of nearest neighbors to retrieve (default: 5).
+k?: number
+}) => any;
+
+// Remove salts and counterions from a SMILES string, keeping only the largest organic fragment. Use as a preprocessing step before other analyses when the input SMILES contains disconnected components separated by '.' that include inorganic ions (e.g., [Na+], Cl-, etc.).
+type remove_salts = (_: {
+// SMILES string (may contain salts).
+smiles: string
+}) => any;
+
+// Predict CYP450 metabolism: returns top 3 ranked metabolites with SMILES, reaction types, and priority scores for Phase 1 (oxidation, reduction, hydrolysis) and Phase 2 (glucuronidation, sulfation, GSH conjugation). Uses GLORYx (FAME3 SoM + reaction rules) when cached, otherwise SyGMa rule-based metabolite prediction as fallback. 
+type predict_metabolites = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+} // namespace functions<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: The blood-brain barrier (BBB) is formed by brain capillary endothelial cells connected by tight junctions, surrounded by pericytes and astrocyte end-feet. Unlike peripheral capillaries, the BBB has no fenestrations and minimal pinocytosis, so drug entry into the CNS requires either passive transcellular diffusion through the endothelial cell membranes or carrier-mediated transport. Efflux transporters — particularly P-glycoprotein (Pgp/ABCB1) and BCRP (ABCG2) — on the luminal side actively pump many compounds back into the blood, creating an additional barrier beyond simple membrane permeability.
+
+Molecular features favoring BBB penetration: moderate lipophilicity (logP 1-3) provides the driving force for passive diffusion across the endothelial lipid bilayer. Low polar surface area (TPSA < 70-80 Å²) is the strongest single predictor of BBB penetration — the tight junctions eliminate the paracellular route, so transcellular diffusion is the only passive pathway. Few hydrogen bond donors (HBD ≤ 1-2) — more restrictive than for intestinal absorption because the BBB endothelium is less permeable. Small to moderate molecular weight (MW < 450 Da). Low overall hydrogen bonding capacity. Most successful CNS drugs are small, moderately lipophilic, and have minimal polar surface area. Being a substrate of nutrient transporters (LAT1 for amino acid-like drugs, GLUT1 for glucose-like structures) can facilitate active uptake.
+
+Features associated with poor BBB penetration: high TPSA (> 90 Å²) strongly predicts exclusion from the CNS. Multiple hydrogen bond donors (HBD ≥ 3) — each additional donor roughly halves BBB permeability. Compounds that are P-glycoprotein substrates are actively effluxed from the brain — basic amines with MW > 400 and moderate lipophilicity are common Pgp substrates. Charged molecules at pH 7.4 (carboxylates, sulfonates, phosphates, quaternary amines) have very poor passive BBB penetration. High molecular weight (> 500 Da). Very high lipophilicity (logP > 5) can paradoxically reduce BBB penetration due to excessive plasma protein binding and poor aqueous solubility, which reduce the free fraction available for diffusion.
+Question: Given a drug SMILES string, predict whether it
+(A) does not cross the BBB (B) crosses the BBB
+Drug SMILES: O=S(=O)(c1ccc2cc[nH]c2c1)N1CCCC1CCN1CCC(Oc2cccc(Cl)c2)CC1
+Please think step by step and use the relevant tools in your analysis.
+
+Begin by examining the molecular structure; identify the core scaffold, substituents, and any reactive or pharmacologically relevant motifs. Use tools to gather quantitative data about the molecule's properties.
+
+Critically, perform structure-activity relationship (SAR) analysis: retrieve similar molecules with known labels and compare them to the query. If the accuracy of the neighborhood is low, focus on the contrastive example (the most similar molecule with the opposite label) and reason about which specific structural differences explain the divergent outcome and whether our task molecule has those structural differences. This comparative reasoning is often more informative than absolute property values alone.
+
+Integrate all lines of evidence — physicochemical properties, functional group analysis, structural alerts, metabolic liabilities, and SAR analogy — into a coherent argument. Use your internal chemistry knowledge as well. Weigh evidence for and against each label explicitly before committing to your prediction.
+
+Then put your final choice, (A) or (B), after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=1.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=0.0) ---
+
+
+--- Sample 4 (reward=1.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=0.0) ---
+
+
+--- Sample 7 (reward=1.0) ---
+
+
+--- Sample 8 (reward=0.0) ---
+
+
+--- Sample 9 (reward=1.0) ---
+
+
+--- Sample 10 (reward=0.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=0.0) ---
+
+
+--- Sample 13 (reward=0.0) ---
+
+
+--- Sample 14 (reward=0.0) ---
+
+
+--- Sample 15 (reward=0.0) ---
+
+
+--- Sample 16 (reward=1.0) ---
+
+
+=====================================
+
+=== Group 2 (dataset_idx=906, datasource=PAMPA_NCATS_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|>
+
+# Tools
+
+## functions
+
+namespace functions {
+
+// Get a comprehensive molecular profile including identity (MW), drug-likeness (QED, Lipinski violations), key physicochemical properties (logP, TPSA, HBD, HBA, rotatable bonds, Fsp3, molar refractivity), complexity metrics (Bertz CT, stereocenters), topology indices (Hall-Kier, Kappa, Balaban J, IPC), pharmacophore feature counts (hydrophobic, aromatic, ionizable), and electronic properties (Gasteiger charges, EState indices, HOMO/LUMO gap).
+type get_molecule_profile = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Analyze functional groups in a molecule using AccFG. Returns named functional groups with fragment SMILES, attachment points, and atom IDs for structural reasoning. Use this to understand what chemical motifs are present.
+type analyze_functional_groups = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Analyze ring topology and aromaticity. Returns per-system descriptions with ring sizes and heteroatom content, ring type counts (aromatic/aliphatic/saturated/heterocyclic), aromaticity metrics, and flags for PAH, macrocycle, spiro, and bridgehead features.
+type analyze_ring_systems = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Assess ADME properties: pKa prediction (acidic/basic sites), ionization state classification at target pH, logD estimation, and aqueous solubility. These are causally linked: pKa → ionization → logD → permeability.
+type assess_adme_properties = (_: {
+// SMILES string of the molecule.
+smiles: string,
+// Target pH for ionization/logD estimation (default: 7.4).
+ph?: number
+}) => any;
+
+// Screen a molecule for toxicophores — structural motifs associated with specific toxicity mechanisms. Groups alerts into categories like 'Michael acceptor' (protein-reactive electrophile), 'alkylating agent' (DNA-reactive), 'PAH' (CYP-activated), etc. Each category includes a mechanistic explanation. Also screens against ToxAlerts endpoint-specific patterns covering skin sensitization, mutagenicity, carcinogenicity, reactive metabolite formation, electrophilic reactivity, chelation, and promiscuity. Returns pharmacophore feature counts (donor/acceptor/aromatic/hydrophobe). Use this to identify structural liabilities and understand their toxicological mechanisms.
+type screen_structural_alerts = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Find the most similar molecules from the training set using task-aware embeddings. Returns K nearest neighbors with their labels, key properties (MW, logP, TPSA), and functional groups, plus the closest molecule with the opposite label for contrastive SAR reasoning. Includes KNN accuracy metrics (global and local neighborhood). Use this for structure-activity analysis.
+type find_similar_molecules = (_: {
+// SMILES string of the query molecule.
+smiles: string,
+// Task name for task-aware retrieval (e.g., 'AMES', 'DILI').
+task: string,
+// Number of nearest neighbors to retrieve (default: 5).
+k?: number
+}) => any;
+
+// Remove salts and counterions from a SMILES string, keeping only the largest organic fragment. Use as a preprocessing step before other analyses when the input SMILES contains disconnected components separated by '.' that include inorganic ions (e.g., [Na+], Cl-, etc.).
+type remove_salts = (_: {
+// SMILES string (may contain salts).
+smiles: string
+}) => any;
+
+// Predict CYP450 metabolism: returns top 3 ranked metabolites with SMILES, reaction types, and priority scores for Phase 1 (oxidation, reduction, hydrolysis) and Phase 2 (glucuronidation, sulfation, GSH conjugation). Uses GLORYx (FAME3 SoM + reaction rules) when cached, otherwise SyGMa rule-based metabolite prediction as fallback. 
+type predict_metabolites = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+} // namespace functions<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: The Parallel Artificial Membrane Permeability Assay (PAMPA) measures passive transcellular permeability by quantifying how much compound diffuses across an artificial lipid membrane (typically a phospholipid mixture on a filter support) from a donor to an acceptor compartment. Unlike Caco-2 cell assays, PAMPA has no active transporters, no efflux pumps, and no paracellular pathway — it isolates pure passive diffusion. The NCATS variant uses a standardized protocol across a large compound library.
+
+The rate of passive diffusion is governed by the drug's ability to partition from aqueous solution into the lipid bilayer, diffuse across it, and re-partition into the aqueous phase on the other side. This is primarily determined by the molecule's desolvation cost — how much energy is required to strip away the hydration shell of polar groups before entering the hydrophobic membrane interior.
+
+Molecular features favoring high PAMPA permeability: low polar surface area (TPSA < 80 Å² for high permeability, 80-120 Å² for moderate) is the single most predictive descriptor. Few hydrogen bond donors (HBD ≤ 2-3) — each donor adds roughly 10 Å² of TPSA and a strong water interaction that must be broken. Moderate lipophilicity (logP 1-4) provides the driving force for membrane partitioning. Molecular weight < 500 Da. Intramolecular hydrogen bonds can "mask" polar groups and improve permeability beyond what TPSA alone would predict — this is exploited in cyclic peptide drug design. Compact, low-flexibility conformations reduce the entropic cost of membrane insertion.
+
+Features associated with poor PAMPA permeability: high TPSA (>120 Å²) is the dominant negative predictor. Multiple hydrogen bond donors (HBD ≥ 4) strongly reduce permeability. Charged species at the assay pH (typically pH 7.4) — carboxylates, phosphates, quaternary amines — have very poor passive diffusion because the charge cannot be buried in the lipid interior. Very hydrophilic molecules (logP < 0) lack the driving force for membrane partitioning. High molecular weight (>600 Da) and many rotatable bonds (>10) also reduce permeability.
+Question: Given a drug SMILES string, predict whether it
+(A) is not permeable to cell membranes in a PAMPA assay (B) is permeable to cell membranes in a PAMPA assay
+Drug SMILES: CC1=NC=CC(=C1)C2=CC3=C(N=C2C4=CC=CC=C4)N=C(N3C)C(=O)NCCN(C)C
+Please think step by step and use the relevant tools in your analysis.
+
+Begin by examining the molecular structure; identify the core scaffold, substituents, and any reactive or pharmacologically relevant motifs. Use tools to gather quantitative data about the molecule's properties.
+
+Critically, perform structure-activity relationship (SAR) analysis: retrieve similar molecules with known labels and compare them to the query. If the accuracy of the neighborhood is low, focus on the contrastive example (the most similar molecule with the opposite label) and reason about which specific structural differences explain the divergent outcome and whether our task molecule has those structural differences. This comparative reasoning is often more informative than absolute property values alone.
+
+Integrate all lines of evidence — physicochemical properties, functional group analysis, structural alerts, metabolic liabilities, and SAR analogy — into a coherent argument. Use your internal chemistry knowledge as well. Weigh evidence for and against each label explicitly before committing to your prediction.
+
+Then put your final choice, (A) or (B), after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=1.0) ---
+
+
+--- Sample 2 (reward=0.0) ---
+
+
+--- Sample 3 (reward=1.0) ---
+
+
+--- Sample 4 (reward=1.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=1.0) ---
+
+
+--- Sample 8 (reward=1.0) ---
+
+
+--- Sample 9 (reward=1.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=0.0) ---
+
+
+--- Sample 12 (reward=1.0) ---
+
+
+--- Sample 13 (reward=1.0) ---
+
+
+--- Sample 14 (reward=1.0) ---
+
+
+--- Sample 15 (reward=1.0) ---
+
+
+--- Sample 16 (reward=1.0) ---
+
+
+=====================================
+
+=== Group 3 (dataset_idx=6085, datasource=SARSCoV2_3CLPro_Diamond_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|>
+
+# Tools
+
+## functions
+
+namespace functions {
+
+// Get a comprehensive molecular profile including identity (MW), drug-likeness (QED, Lipinski violations), key physicochemical properties (logP, TPSA, HBD, HBA, rotatable bonds, Fsp3, molar refractivity), complexity metrics (Bertz CT, stereocenters), topology indices (Hall-Kier, Kappa, Balaban J, IPC), pharmacophore feature counts (hydrophobic, aromatic, ionizable), and electronic properties (Gasteiger charges, EState indices, HOMO/LUMO gap).
+type get_molecule_profile = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Analyze functional groups in a molecule using AccFG. Returns named functional groups with fragment SMILES, attachment points, and atom IDs for structural reasoning. Use this to understand what chemical motifs are present.
+type analyze_functional_groups = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Analyze ring topology and aromaticity. Returns per-system descriptions with ring sizes and heteroatom content, ring type counts (aromatic/aliphatic/saturated/heterocyclic), aromaticity metrics, and flags for PAH, macrocycle, spiro, and bridgehead features.
+type analyze_ring_systems = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Assess ADME properties: pKa prediction (acidic/basic sites), ionization state classification at target pH, logD estimation, and aqueous solubility. These are causally linked: pKa → ionization → logD → permeability.
+type assess_adme_properties = (_: {
+// SMILES string of the molecule.
+smiles: string,
+// Target pH for ionization/logD estimation (default: 7.4).
+ph?: number
+}) => any;
+
+// Screen a molecule for toxicophores — structural motifs associated with specific toxicity mechanisms. Groups alerts into categories like 'Michael acceptor' (protein-reactive electrophile), 'alkylating agent' (DNA-reactive), 'PAH' (CYP-activated), etc. Each category includes a mechanistic explanation. Also screens against ToxAlerts endpoint-specific patterns covering skin sensitization, mutagenicity, carcinogenicity, reactive metabolite formation, electrophilic reactivity, chelation, and promiscuity. Returns pharmacophore feature counts (donor/acceptor/aromatic/hydrophobe). Use this to identify structural liabilities and understand their toxicological mechanisms.
+type screen_structural_alerts = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Find the most similar molecules from the training set using task-aware embeddings. Returns K nearest neighbors with their labels, key properties (MW, logP, TPSA), and functional groups, plus the closest molecule with the opposite label for contrastive SAR reasoning. Includes KNN accuracy metrics (global and local neighborhood). Use this for structure-activity analysis.
+type find_similar_molecules = (_: {
+// SMILES string of the query molecule.
+smiles: string,
+// Task name for task-aware retrieval (e.g., 'AMES', 'DILI').
+task: string,
+// Number of nearest neighbors to retrieve (default: 5).
+k?: number
+}) => any;
+
+// Remove salts and counterions from a SMILES string, keeping only the largest organic fragment. Use as a preprocessing step before other analyses when the input SMILES contains disconnected components separated by '.' that include inorganic ions (e.g., [Na+], Cl-, etc.).
+type remove_salts = (_: {
+// SMILES string (may contain salts).
+smiles: string
+}) => any;
+
+// Predict CYP450 metabolism: returns top 3 ranked metabolites with SMILES, reaction types, and priority scores for Phase 1 (oxidation, reduction, hydrolysis) and Phase 2 (glucuronidation, sulfation, GSH conjugation). Uses GLORYx (FAME3 SoM + reaction rules) when cached, otherwise SyGMa rule-based metabolite prediction as fallback. 
+type predict_metabolites = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+} // namespace functions<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: SARS-CoV-2 3CL protease (Mpro) is a cysteine protease essential for viral replication. It cleaves the viral polyprotein at 11 sites, making it a validated drug target. This dataset comes from a crystallographic fragment screen conducted at the Diamond Light Source, where fragments were soaked into Mpro crystals at high concentration (typically 50-200 mM) and binding was detected by electron density in difference maps. About 8% of screened fragments showed binding. High aqueous solubility is important for achieving sufficient soaking concentration — poorly soluble fragments may fail to produce detectable electron density even if they could bind.
+
+The active site lies in a groove between domains I and II. The catalytic dyad consists of Cys145 (nucleophile) and His41 (general base). The oxyanion hole is formed by backbone NHs of Gly143, Ser144, and Cys145 — these stabilize the tetrahedral intermediate during substrate cleavage and also form hydrogen bonds with fragment carbonyl or sulfonyl groups. Key subsites: S1 (His163, Glu166/Phe140 backbones — prefers small H-bond acceptors like lactams, pyridones, or pyrazoles), S2 (His41, Met49, Met165 — a hydrophobic pocket that accommodates medium-sized aromatics and aliphatic groups), S1' (shallow and solvent-exposed — tolerates diverse substituents), and S4 (Gln189, flexible and partially solvent-exposed). The combined S1+S2 pocket volume is roughly 300 Å³.
+
+About 40% of confirmed fragment hits bind covalently. Electrophilic warheads react with the Cys145 thiolate: chloroacetamides are the most common (SN2 displacement of chloride), followed by acrylamides (Michael addition) and vinyl sulfonamides. The remaining ~60% bind non-covalently through H-bond networks with the oxyanion hole and S1 pocket residues, plus hydrophobic packing against Met49 and Met165 in S2.
+
+Favorable molecular features for binding: an electrophilic warhead capable of reacting with Cys145, H-bond donor/acceptor pairs complementary to the oxyanion hole (e.g., amides, sulfonamides, heterocyclic NHs), compact size (MW < 300 Da for fragment-level crystallographic detection), high aqueous solubility (logS > -2), and some three-dimensional character to complement the binding groove shape. Unfavorable features: bulky groups that exceed the subsite volume, purely hydrophobic molecules lacking H-bond capacity, heavy halogens like iodine (whose strong anomalous X-ray scattering can complicate electron density interpretation and lead to false negatives), and highly flexible molecules with many rotatable bonds (entropic penalty for adopting a bound conformation).
+Question: Given a drug SMILES string, predict whether it
+(A) does not bind SARS-CoV-2 3CL protease (B) binds SARS-CoV-2 3CL protease
+Drug SMILES: COCC(=O)NCc1ccc(C)cc1
+Please think step by step and use the relevant tools in your analysis.
+
+Begin by examining the molecular structure; identify the core scaffold, substituents, and any reactive or pharmacologically relevant motifs. Use tools to gather quantitative data about the molecule's properties.
+
+Critically, perform structure-activity relationship (SAR) analysis: retrieve similar molecules with known labels and compare them to the query. If the accuracy of the neighborhood is low, focus on the contrastive example (the most similar molecule with the opposite label) and reason about which specific structural differences explain the divergent outcome and whether our task molecule has those structural differences. This comparative reasoning is often more informative than absolute property values alone.
+
+Integrate all lines of evidence — physicochemical properties, functional group analysis, structural alerts, metabolic liabilities, and SAR analogy — into a coherent argument. Use your internal chemistry knowledge as well. Weigh evidence for and against each label explicitly before committing to your prediction.
+
+Then put your final choice, (A) or (B), after "Answer:"<|end|><|start|>assistant
+LABEL: (A)
+
+--- Sample 1 (reward=0.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=0.0) ---
+
+
+--- Sample 4 (reward=1.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=0.0) ---
+
+
+--- Sample 7 (reward=1.0) ---
+
+
+--- Sample 8 (reward=0.0) ---
+
+
+--- Sample 9 (reward=1.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=1.0) ---
+
+
+--- Sample 13 (reward=1.0) ---
+
+
+--- Sample 14 (reward=1.0) ---
+
+
+--- Sample 15 (reward=0.0) ---
+
+
+--- Sample 16 (reward=0.0) ---
+
+
+=====================================
+
+=== Group 4 (dataset_idx=6322, datasource=SARSCoV2_3CLPro_Diamond_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|>
+
+# Tools
+
+## functions
+
+namespace functions {
+
+// Get a comprehensive molecular profile including identity (MW), drug-likeness (QED, Lipinski violations), key physicochemical properties (logP, TPSA, HBD, HBA, rotatable bonds, Fsp3, molar refractivity), complexity metrics (Bertz CT, stereocenters), topology indices (Hall-Kier, Kappa, Balaban J, IPC), pharmacophore feature counts (hydrophobic, aromatic, ionizable), and electronic properties (Gasteiger charges, EState indices, HOMO/LUMO gap).
+type get_molecule_profile = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Analyze functional groups in a molecule using AccFG. Returns named functional groups with fragment SMILES, attachment points, and atom IDs for structural reasoning. Use this to understand what chemical motifs are present.
+type analyze_functional_groups = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Analyze ring topology and aromaticity. Returns per-system descriptions with ring sizes and heteroatom content, ring type counts (aromatic/aliphatic/saturated/heterocyclic), aromaticity metrics, and flags for PAH, macrocycle, spiro, and bridgehead features.
+type analyze_ring_systems = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Assess ADME properties: pKa prediction (acidic/basic sites), ionization state classification at target pH, logD estimation, and aqueous solubility. These are causally linked: pKa → ionization → logD → permeability.
+type assess_adme_properties = (_: {
+// SMILES string of the molecule.
+smiles: string,
+// Target pH for ionization/logD estimation (default: 7.4).
+ph?: number
+}) => any;
+
+// Screen a molecule for toxicophores — structural motifs associated with specific toxicity mechanisms. Groups alerts into categories like 'Michael acceptor' (protein-reactive electrophile), 'alkylating agent' (DNA-reactive), 'PAH' (CYP-activated), etc. Each category includes a mechanistic explanation. Also screens against ToxAlerts endpoint-specific patterns covering skin sensitization, mutagenicity, carcinogenicity, reactive metabolite formation, electrophilic reactivity, chelation, and promiscuity. Returns pharmacophore feature counts (donor/acceptor/aromatic/hydrophobe). Use this to identify structural liabilities and understand their toxicological mechanisms.
+type screen_structural_alerts = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Find the most similar molecules from the training set using task-aware embeddings. Returns K nearest neighbors with their labels, key properties (MW, logP, TPSA), and functional groups, plus the closest molecule with the opposite label for contrastive SAR reasoning. Includes KNN accuracy metrics (global and local neighborhood). Use this for structure-activity analysis.
+type find_similar_molecules = (_: {
+// SMILES string of the query molecule.
+smiles: string,
+// Task name for task-aware retrieval (e.g., 'AMES', 'DILI').
+task: string,
+// Number of nearest neighbors to retrieve (default: 5).
+k?: number
+}) => any;
+
+// Remove salts and counterions from a SMILES string, keeping only the largest organic fragment. Use as a preprocessing step before other analyses when the input SMILES contains disconnected components separated by '.' that include inorganic ions (e.g., [Na+], Cl-, etc.).
+type remove_salts = (_: {
+// SMILES string (may contain salts).
+smiles: string
+}) => any;
+
+// Predict CYP450 metabolism: returns top 3 ranked metabolites with SMILES, reaction types, and priority scores for Phase 1 (oxidation, reduction, hydrolysis) and Phase 2 (glucuronidation, sulfation, GSH conjugation). Uses GLORYx (FAME3 SoM + reaction rules) when cached, otherwise SyGMa rule-based metabolite prediction as fallback. 
+type predict_metabolites = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+} // namespace functions<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: SARS-CoV-2 3CL protease (Mpro) is a cysteine protease essential for viral replication. It cleaves the viral polyprotein at 11 sites, making it a validated drug target. This dataset comes from a crystallographic fragment screen conducted at the Diamond Light Source, where fragments were soaked into Mpro crystals at high concentration (typically 50-200 mM) and binding was detected by electron density in difference maps. About 8% of screened fragments showed binding. High aqueous solubility is important for achieving sufficient soaking concentration — poorly soluble fragments may fail to produce detectable electron density even if they could bind.
+
+The active site lies in a groove between domains I and II. The catalytic dyad consists of Cys145 (nucleophile) and His41 (general base). The oxyanion hole is formed by backbone NHs of Gly143, Ser144, and Cys145 — these stabilize the tetrahedral intermediate during substrate cleavage and also form hydrogen bonds with fragment carbonyl or sulfonyl groups. Key subsites: S1 (His163, Glu166/Phe140 backbones — prefers small H-bond acceptors like lactams, pyridones, or pyrazoles), S2 (His41, Met49, Met165 — a hydrophobic pocket that accommodates medium-sized aromatics and aliphatic groups), S1' (shallow and solvent-exposed — tolerates diverse substituents), and S4 (Gln189, flexible and partially solvent-exposed). The combined S1+S2 pocket volume is roughly 300 Å³.
+
+About 40% of confirmed fragment hits bind covalently. Electrophilic warheads react with the Cys145 thiolate: chloroacetamides are the most common (SN2 displacement of chloride), followed by acrylamides (Michael addition) and vinyl sulfonamides. The remaining ~60% bind non-covalently through H-bond networks with the oxyanion hole and S1 pocket residues, plus hydrophobic packing against Met49 and Met165 in S2.
+
+Favorable molecular features for binding: an electrophilic warhead capable of reacting with Cys145, H-bond donor/acceptor pairs complementary to the oxyanion hole (e.g., amides, sulfonamides, heterocyclic NHs), compact size (MW < 300 Da for fragment-level crystallographic detection), high aqueous solubility (logS > -2), and some three-dimensional character to complement the binding groove shape. Unfavorable features: bulky groups that exceed the subsite volume, purely hydrophobic molecules lacking H-bond capacity, heavy halogens like iodine (whose strong anomalous X-ray scattering can complicate electron density interpretation and lead to false negatives), and highly flexible molecules with many rotatable bonds (entropic penalty for adopting a bound conformation).
+Question: Given a drug SMILES string, predict whether it
+(A) does not bind SARS-CoV-2 3CL protease (B) binds SARS-CoV-2 3CL protease
+Drug SMILES: Cc1cc(C(=O)NCC2CCOC2)on1
+Please think step by step and use the relevant tools in your analysis.
+
+Begin by examining the molecular structure; identify the core scaffold, substituents, and any reactive or pharmacologically relevant motifs. Use tools to gather quantitative data about the molecule's properties.
+
+Critically, perform structure-activity relationship (SAR) analysis: retrieve similar molecules with known labels and compare them to the query. If the accuracy of the neighborhood is low, focus on the contrastive example (the most similar molecule with the opposite label) and reason about which specific structural differences explain the divergent outcome and whether our task molecule has those structural differences. This comparative reasoning is often more informative than absolute property values alone.
+
+Integrate all lines of evidence — physicochemical properties, functional group analysis, structural alerts, metabolic liabilities, and SAR analogy — into a coherent argument. Use your internal chemistry knowledge as well. Weigh evidence for and against each label explicitly before committing to your prediction.
+
+Then put your final choice, (A) or (B), after "Answer:"<|end|><|start|>assistant
+LABEL: (A)
+
+--- Sample 1 (reward=1.0) ---
+
+
+--- Sample 2 (reward=0.0) ---
+
+
+--- Sample 3 (reward=0.0) ---
+
+
+--- Sample 4 (reward=0.0) ---
+
+
+--- Sample 5 (reward=0.0) ---
+
+
+--- Sample 6 (reward=0.0) ---
+
+
+--- Sample 7 (reward=0.0) ---
+
+
+--- Sample 8 (reward=0.0) ---
+
+
+--- Sample 9 (reward=0.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=0.0) ---
+
+
+--- Sample 13 (reward=0.0) ---
+
+
+--- Sample 14 (reward=0.0) ---
+
+
+--- Sample 15 (reward=1.0) ---
+
+
+--- Sample 16 (reward=1.0) ---
+
+
+=====================================
+
+=== Group 5 (dataset_idx=9783, datasource=Skin_Reaction_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|>
+
+# Tools
+
+## functions
+
+namespace functions {
+
+// Get a comprehensive molecular profile including identity (MW), drug-likeness (QED, Lipinski violations), key physicochemical properties (logP, TPSA, HBD, HBA, rotatable bonds, Fsp3, molar refractivity), complexity metrics (Bertz CT, stereocenters), topology indices (Hall-Kier, Kappa, Balaban J, IPC), pharmacophore feature counts (hydrophobic, aromatic, ionizable), and electronic properties (Gasteiger charges, EState indices, HOMO/LUMO gap).
+type get_molecule_profile = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Analyze functional groups in a molecule using AccFG. Returns named functional groups with fragment SMILES, attachment points, and atom IDs for structural reasoning. Use this to understand what chemical motifs are present.
+type analyze_functional_groups = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Analyze ring topology and aromaticity. Returns per-system descriptions with ring sizes and heteroatom content, ring type counts (aromatic/aliphatic/saturated/heterocyclic), aromaticity metrics, and flags for PAH, macrocycle, spiro, and bridgehead features.
+type analyze_ring_systems = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Assess ADME properties: pKa prediction (acidic/basic sites), ionization state classification at target pH, logD estimation, and aqueous solubility. These are causally linked: pKa → ionization → logD → permeability.
+type assess_adme_properties = (_: {
+// SMILES string of the molecule.
+smiles: string,
+// Target pH for ionization/logD estimation (default: 7.4).
+ph?: number
+}) => any;
+
+// Screen a molecule for toxicophores — structural motifs associated with specific toxicity mechanisms. Groups alerts into categories like 'Michael acceptor' (protein-reactive electrophile), 'alkylating agent' (DNA-reactive), 'PAH' (CYP-activated), etc. Each category includes a mechanistic explanation. Also screens against ToxAlerts endpoint-specific patterns covering skin sensitization, mutagenicity, carcinogenicity, reactive metabolite formation, electrophilic reactivity, chelation, and promiscuity. Returns pharmacophore feature counts (donor/acceptor/aromatic/hydrophobe). Use this to identify structural liabilities and understand their toxicological mechanisms.
+type screen_structural_alerts = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Find the most similar molecules from the training set using task-aware embeddings. Returns K nearest neighbors with their labels, key properties (MW, logP, TPSA), and functional groups, plus the closest molecule with the opposite label for contrastive SAR reasoning. Includes KNN accuracy metrics (global and local neighborhood). Use this for structure-activity analysis.
+type find_similar_molecules = (_: {
+// SMILES string of the query molecule.
+smiles: string,
+// Task name for task-aware retrieval (e.g., 'AMES', 'DILI').
+task: string,
+// Number of nearest neighbors to retrieve (default: 5).
+k?: number
+}) => any;
+
+// Remove salts and counterions from a SMILES string, keeping only the largest organic fragment. Use as a preprocessing step before other analyses when the input SMILES contains disconnected components separated by '.' that include inorganic ions (e.g., [Na+], Cl-, etc.).
+type remove_salts = (_: {
+// SMILES string (may contain salts).
+smiles: string
+}) => any;
+
+// Predict CYP450 metabolism: returns top 3 ranked metabolites with SMILES, reaction types, and priority scores for Phase 1 (oxidation, reduction, hydrolysis) and Phase 2 (glucuronidation, sulfation, GSH conjugation). Uses GLORYx (FAME3 SoM + reaction rules) when cached, otherwise SyGMa rule-based metabolite prediction as fallback. 
+type predict_metabolites = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+} // namespace functions<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: Skin sensitization (allergic contact dermatitis) is an immune-mediated adverse reaction triggered by repeated dermal exposure to a chemical. It proceeds through two phases: induction (the chemical penetrates the skin, reacts covalently with skin proteins to form hapten-protein conjugates, which are processed by dendritic cells and presented to T cells, priming the adaptive immune system) and elicitation (subsequent exposure triggers a T cell-mediated inflammatory response). The key molecular event is haptenation — covalent modification of skin proteins by the chemical or its metabolite.
+
+For a chemical to act as a skin sensitizer, it must: (1) penetrate the stratum corneum (the skin's outer barrier), (2) be electrophilic or become electrophilic after abiotic or enzymatic activation in the skin, and (3) react covalently with nucleophilic amino acid residues (primarily cysteine thiol and lysine amine) on skin proteins. The reaction mechanism determines the sensitization potency — strong electrophiles that react with both cysteine and lysine (e.g., acid anhydrides, isocyanates) tend to be stronger sensitizers than those reacting with only one nucleophile.
+
+Structural features associated with skin sensitization: Michael acceptors (α,β-unsaturated carbonyls, acrylates, methacrylates — react with cysteine via 1,4-addition). Acylating agents (acid anhydrides, acid chlorides, isocyanates, isothiocyanates — react with lysine amines). SN2 electrophiles (alkyl halides, epoxides, activated esters, sulfonates — react with cysteine). SNAr electrophiles (electron-poor aromatic rings with leaving groups — react with cysteine). Schiff base formers (aldehydes — react with lysine to form imines). Pro-haptens requiring metabolic activation: aromatic amines (oxidized to nitroso/hydroxylamine intermediates), phenols and catechols (oxidized to quinones), and thiols (oxidized to disulfides or sulfenic acids). Moderate lipophilicity (logP 1-4) favors skin penetration.
+
+Features arguing against skin sensitization: absence of electrophilic functional groups or their metabolic precursors. Fully saturated, non-reactive molecules (alkanes, ethers, simple alcohols). Very hydrophilic molecules (logP < -1) that cannot penetrate the stratum corneum. Very large molecules (MW > 500) that are too bulky for skin penetration. Steric shielding of potentially reactive centers. Carboxylic acids — the negative charge at physiological pH disfavors both skin penetration and nucleophilic substitution reactions.
+Question: Given a drug SMILES string, predict whether it
+(A) does not cause a skin reaction (B) causes a skin reaction
+Drug SMILES: CCCCCCCCCCCCCCCCCBr
+Please think step by step and use the relevant tools in your analysis.
+
+Begin by examining the molecular structure; identify the core scaffold, substituents, and any reactive or pharmacologically relevant motifs. Use tools to gather quantitative data about the molecule's properties.
+
+Critically, perform structure-activity relationship (SAR) analysis: retrieve similar molecules with known labels and compare them to the query. If the accuracy of the neighborhood is low, focus on the contrastive example (the most similar molecule with the opposite label) and reason about which specific structural differences explain the divergent outcome and whether our task molecule has those structural differences. This comparative reasoning is often more informative than absolute property values alone.
+
+Integrate all lines of evidence — physicochemical properties, functional group analysis, structural alerts, metabolic liabilities, and SAR analogy — into a coherent argument. Use your internal chemistry knowledge as well. Weigh evidence for and against each label explicitly before committing to your prediction.
+
+Then put your final choice, (A) or (B), after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=0.0) ---
+
+
+--- Sample 2 (reward=0.0) ---
+
+
+--- Sample 3 (reward=1.0) ---
+
+
+--- Sample 4 (reward=0.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=0.0) ---
+
+
+--- Sample 8 (reward=1.0) ---
+
+
+--- Sample 9 (reward=1.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=0.0) ---
+
+
+--- Sample 13 (reward=1.0) ---
+
+
+--- Sample 14 (reward=0.0) ---
+
+
+--- Sample 15 (reward=0.0) ---
+
+
+--- Sample 16 (reward=0.0) ---
+
+
+=====================================
+

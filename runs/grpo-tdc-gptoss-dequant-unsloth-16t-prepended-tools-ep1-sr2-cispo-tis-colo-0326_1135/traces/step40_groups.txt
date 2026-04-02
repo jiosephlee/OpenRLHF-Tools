@@ -1,0 +1,739 @@
+=== Group 1 (dataset_idx=5, datasource=Bioavailability_Ma_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: Oral bioavailability (F) is the fraction of an orally administered drug that reaches systemic circulation in unchanged form. It is determined by three sequential barriers: absorption from the gastrointestinal lumen across the intestinal epithelium, first-pass metabolism in the gut wall (primarily by CYP3A4), and first-pass metabolism in the liver (by CYP enzymes and conjugation). This dataset uses a binary threshold of F ≥ 20% vs F < 20%.
+
+Molecular features favoring high oral bioavailability: compliance with Lipinski's Rule of Five (MW ≤ 500, logP ≤ 5, HBD ≤ 5, HBA ≤ 10) — these are necessary but not sufficient conditions for oral absorption. Moderate lipophilicity (logP 1-3) balances membrane permeability with aqueous solubility. Low polar surface area (TPSA < 140 Å²) facilitates transcellular passive diffusion. Limited molecular flexibility (rotatable bonds ≤ 10) reduces the entropic penalty for adopting a membrane-permeable conformation. Adequate aqueous solubility ensures dissolution in GI fluids. Metabolic stability — resistance to CYP-mediated oxidation and Phase II conjugation — preserves the parent compound through first-pass metabolism.
+
+Features associated with poor bioavailability: high MW (>500 Da) and excessive hydrogen bonding capacity reduce membrane permeability. Very high lipophilicity (logP > 5) causes poor aqueous solubility despite good permeability. High TPSA (>140 Å²) strongly correlates with poor absorption. Many rotatable bonds (>10) reduce the probability of adopting a compact, membrane-permeable conformation. Susceptibility to efflux by P-glycoprotein (Pgp) at the intestinal epithelium reduces net absorption. Labile metabolic soft spots — unhindered aromatic rings, benzylic positions, N-dealkylation sites — lead to rapid first-pass metabolism. Compounds that are substrates of CYP3A4 (the dominant gut-wall and hepatic CYP) face extensive first-pass extraction.
+Question: Given a drug SMILES string, predict whether it
+(A) has oral bioavailability < 20% (B) has oral bioavailability ≥ 20%
+Drug SMILES: CC[N+](C)(C)Cc1ccccc1Br
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 243.17 Da
+- Heavy atoms: 13, Heteroatoms: 2
+- logP (Wildman-Crippen): 3.0500
+- TPSA: 0.00 Å²
+- H-bond donors: 0, H-bond acceptors: 0
+- Rotatable bonds: 3
+- Fraction sp3 carbons (Fsp3): 0.4545
+- Molar refractivity: 60.50
+- QED (drug-likeness, 0-1): 0.7156
+- Lipinski violations: 0
+- Bertz complexity: 281.17
+- Topology: HallKierAlpha=-0.3400, Kappa1=10.7390, Kappa2=4.2480, Kappa3=3.1250, BalabanJ=2.8000, IPC=716.5850
+- Amide bonds: 0
+- Stereocenters: 0
+- Pharmacophore features: 2 hydrophobic, 1 aromatic, 0 neg-ionizable, 1 pos-ionizable
+- Gasteiger charges: max=0.1050 (atom 5, C), min=-0.3249 (atom 2, N)
+- Charge polarization: 0.4300
+- EState indices: max=3.5680 (nucleophilic proxy), min=1.0300 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -5.1097 eV
+- LUMO energy: -4.8825 eV
+- HOMO-LUMO gap: 0.2273 eV
+- Dipole moment: 11.0512 Debye
+- Electrophilicity index (ω): 109.8365 eV
+- Total energy: -39.095139 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- ammonium: [N+] ([*][N+]([*])([*])[*])
+- Aryl bromide: Br ([*]Br)
+- benzene: c1ccccc1 ([*]c1ccccc1[*])
+
+[analyze_ring_systems]
+Ring Systems:
+- 1 system: 6 membered, aromatic, no heteroatoms
+- Ring counts: 1 total, 1 aromatic, 0 aliphatic, 0 saturated
+- Heterocycles: 0
+- Aromatic atoms: 6 / 13
+- Not detected: PAH, macrocycle, spiro, bridgehead
+
+[assess_adme_properties]
+pKa Prediction:
+  No acidic sites.
+  No basic sites.
+Ionization at pH 7.4: base, charge 1
+- Dominant form: CC[N+](C)(C)Cc1ccccc1Br
+- Ambiguous (pKa near pH): No
+
+LogD at pH 7.4: 3.05
+Solubility: logS = -2.33 log(mol/L)
+
+[screen_structural_alerts]
+Structural Alerts (6 categories):
+
+1. Nitroaromatic / nitro group
+Can be reduced to reactive nitroso/hydroxylamine intermediates that damage DNA.
+Matched alerts (4): quaternary_nitrogen_2 [C[N+](C)(C)C], I11 Benzylic quaternary Nitrogen [cC[N+]], quaternary nitrogen [C[N+](C)(C)C], benzylic_quaternary_nitrogen [cC[N+]]
+
+2. Polyhalogenated / perfluorinated
+Heavily halogenated compounds; may accumulate in tissue, disrupt membranes, or release toxic metabolites.
+Matched alerts (1): aryl bromide [ccBr]
+
+3. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (1): Quaternary ammonium cation [C[N+](C)(C)C]
+
+4. Non-genotoxic carcinogenicity
+Promotes cancer through non-DNA-reactive mechanisms (receptor activation, epigenetic changes, chronic inflammation).
+Matched alerts (1): Halogenated benzene [Brc1ccccc1]
+
+5. Reactive / unstable / toxic groups
+Generally reactive or unstable functional groups flagged across multiple toxicity endpoints.
+Matched alerts (3): Ammonium salts [C[N+](C)(C)C], Benzyl ammoniums [cC[N+]], Quaternary salts (including N-oxides) [[N+]]
+
+6. Acute aquatic toxicity
+Structural features associated with acute toxicity to aquatic organisms, indicating general ecotoxicity and bioactivity.
+Matched alerts (2): Aryl halide [cBr], Ammonium compounds [C[N+](C)(C)C]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: CC[N+](C)(C)Cc1ccccc1Br
+
+[predict_metabolites]
+Predicted Metabolites (GLORYx — FAME3 SoM + reaction rules, Phase 1 + Phase 2):
+
+  1. CC(O)[N+](C)(C)Cc1ccccc1Br
+     Reaction: aliphatic hydroxylation (Phase 1, score=0.636)
+  2. OCc1ccccc1Br
+     Reaction: N-dealkylation_(quarternary_N) (Phase 1, score=0.636)
+  3. C[NH+](C)Cc1ccccc1Br
+     Reaction: N-dealkylation_(quarternary_N) (Phase 1, score=0.636)
+
+[get_3d_properties]
+3D Polar Surface Area (ePSA):
+3D conformation based estimation of PSA: 278.78
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.5017, 0.7090) → intermediate
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=0.0) ---
+
+
+--- Sample 2 (reward=0.0) ---
+
+
+--- Sample 3 (reward=0.0) ---
+
+
+--- Sample 4 (reward=0.0) ---
+
+
+--- Sample 5 (reward=0.0) ---
+
+
+--- Sample 6 (reward=0.0) ---
+
+
+--- Sample 7 (reward=0.0) ---
+
+
+--- Sample 8 (reward=1.0) ---
+
+
+=====================================
+
+=== Group 2 (dataset_idx=66, datasource=Bioavailability_Ma_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: Oral bioavailability (F) is the fraction of an orally administered drug that reaches systemic circulation in unchanged form. It is determined by three sequential barriers: absorption from the gastrointestinal lumen across the intestinal epithelium, first-pass metabolism in the gut wall (primarily by CYP3A4), and first-pass metabolism in the liver (by CYP enzymes and conjugation). This dataset uses a binary threshold of F ≥ 20% vs F < 20%.
+
+Molecular features favoring high oral bioavailability: compliance with Lipinski's Rule of Five (MW ≤ 500, logP ≤ 5, HBD ≤ 5, HBA ≤ 10) — these are necessary but not sufficient conditions for oral absorption. Moderate lipophilicity (logP 1-3) balances membrane permeability with aqueous solubility. Low polar surface area (TPSA < 140 Å²) facilitates transcellular passive diffusion. Limited molecular flexibility (rotatable bonds ≤ 10) reduces the entropic penalty for adopting a membrane-permeable conformation. Adequate aqueous solubility ensures dissolution in GI fluids. Metabolic stability — resistance to CYP-mediated oxidation and Phase II conjugation — preserves the parent compound through first-pass metabolism.
+
+Features associated with poor bioavailability: high MW (>500 Da) and excessive hydrogen bonding capacity reduce membrane permeability. Very high lipophilicity (logP > 5) causes poor aqueous solubility despite good permeability. High TPSA (>140 Å²) strongly correlates with poor absorption. Many rotatable bonds (>10) reduce the probability of adopting a compact, membrane-permeable conformation. Susceptibility to efflux by P-glycoprotein (Pgp) at the intestinal epithelium reduces net absorption. Labile metabolic soft spots — unhindered aromatic rings, benzylic positions, N-dealkylation sites — lead to rapid first-pass metabolism. Compounds that are substrates of CYP3A4 (the dominant gut-wall and hepatic CYP) face extensive first-pass extraction.
+Question: Given a drug SMILES string, predict whether it
+(A) has oral bioavailability < 20% (B) has oral bioavailability ≥ 20%
+Drug SMILES: Nc1nc(=O)c2ncn(CCC(CO)CO)c2[nH]1
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 253.26 Da
+- Heavy atoms: 18, Heteroatoms: 8
+- logP (Wildman-Crippen): -1.3100
+- TPSA: 130.05 Å²
+- H-bond donors: 4, H-bond acceptors: 6
+- Rotatable bonds: 5
+- Fraction sp3 carbons (Fsp3): 0.5000
+- Molar refractivity: 64.84
+- QED (drug-likeness, 0-1): 0.5233
+- Lipinski violations: 0
+- Bertz complexity: 586.70
+- Topology: HallKierAlpha=-1.9300, Kappa1=12.5250, Kappa2=5.1490, Kappa3=2.3370, BalabanJ=2.2650, IPC=15234.6850
+- Amide bonds: 0
+- Stereocenters: 0
+- Pharmacophore features: 2 hydrophobic, 2 aromatic, 0 neg-ionizable, 1 pos-ionizable
+- Gasteiger charges: max=0.3021 (atom 3, C), min=-0.3960 (atom 13, O)
+- Charge polarization: 0.6981
+- EState indices: max=11.4960 (nucleophilic proxy), min=-0.4710 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -9.2951 eV
+- LUMO energy: -6.0469 eV
+- HOMO-LUMO gap: 3.2483 eV
+- Dipole moment: 17.1552 Debye
+- Electrophilicity index (ω): 18.1155 eV
+- Total energy: -55.903972 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- primary hydroxyl (x2): O ([*]O), O ([*]O)
+- guanine: Nc1nc(=O)c2ncnc2[nH]1 ([*]n1cnc2c(=O)nc(N)[nH]c21)
+
+[analyze_ring_systems]
+Ring Systems:
+- 1 system: fused (5+6 membered, aromatic, 4 N)
+- Ring counts: 2 total, 2 aromatic, 0 aliphatic, 0 saturated
+- Heterocycles: 2
+- Aromatic atoms: 9 / 18
+- Not detected: PAH, macrocycle, spiro, bridgehead
+
+[assess_adme_properties]
+pKa Prediction:
+  Acidic sites (4): atom 17 pKa = 8.09, atom 0 pKa = 11.97, atom 13 pKa = 13.62, atom 15 pKa = 13.62
+  Basic sites (4): atom 0 pKa = 5.41, atom 8 pKa = 3.24, atom 6 pKa = 2.94, atom 2 pKa = 2.72
+Ionization at pH 7.4: neutral, charge 0
+- Dominant form: Nc1nc(=O)c2ncn(CCC(CO)CO)c2[nH]1
+- Ambiguous (pKa near pH): Yes
+- Charge class distribution: neutral: 1, acid: 1
+
+LogD at pH 7.4: -1.39
+Solubility: logS = -2.60 log(mol/L)
+
+[screen_structural_alerts]
+Structural Alerts (3 categories):
+
+1. Aniline / aromatic amine
+Aromatic amines can be metabolically activated (N-hydroxylation) to reactive species that bind DNA.
+Matched alerts (1): aniline [nc(N)[nH]]
+
+2. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (2): Aromatic primary and secondary amines [cN], Aromatic amines [cN]
+
+3. Genotoxic carcinogenicity / mutagenicity
+DNA-reactive motifs that cause mutations via direct genotoxic mechanisms.
+Matched alerts (5): Aromatic amine (general) [cN], Aromatic amine (specific) [cN], Primary aromatic amine, hydroxyl amine and its derived esters or amine generating group [cN], Primary and secondary aromatic amines [c], Aromatic amines [cN]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: Nc1nc(=O)c2ncn(CCC(CO)CO)c2[nH]1
+
+[predict_metabolites]
+Predicted Metabolites (SyGMa — Phase 1 + Phase 2):
+
+  1. CC(=O)Nc1nc(=O)c2ncn(CCC(CO)CO)c2[nH]1
+     Pathway: N-acetylation_(aniline) (score=0.2710)
+  2. Nc1nc(=O)c2ncn(CCC(CO)C(=O)O)c2[nH]1
+     Pathway: primary_alcohol_oxidation_(aliphatic) (score=0.1990)
+  3. Nc1nc(=O)c2[nH]c(=O)n(CCC(CO)CO)c2[nH]1
+     Pathway: aromatic_oxidation_(nitrogen_containing_5ring) (score=0.1090)
+
+Summary: 71 metabolites predicted (showing top 3: 2 Phase 1, 1 Phase 2)
+
+[get_3d_properties]
+3D Polar Surface Area (ePSA):
+3D conformation based estimation of PSA: 299.10
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.2589, 0.7673) → disc-like
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=1.0) ---
+
+
+--- Sample 2 (reward=0.0) ---
+
+
+--- Sample 3 (reward=1.0) ---
+
+
+--- Sample 4 (reward=1.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=1.0) ---
+
+
+--- Sample 8 (reward=1.0) ---
+
+
+=====================================
+
+=== Group 3 (dataset_idx=57, datasource=Bioavailability_Ma_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: Oral bioavailability (F) is the fraction of an orally administered drug that reaches systemic circulation in unchanged form. It is determined by three sequential barriers: absorption from the gastrointestinal lumen across the intestinal epithelium, first-pass metabolism in the gut wall (primarily by CYP3A4), and first-pass metabolism in the liver (by CYP enzymes and conjugation). This dataset uses a binary threshold of F ≥ 20% vs F < 20%.
+
+Molecular features favoring high oral bioavailability: compliance with Lipinski's Rule of Five (MW ≤ 500, logP ≤ 5, HBD ≤ 5, HBA ≤ 10) — these are necessary but not sufficient conditions for oral absorption. Moderate lipophilicity (logP 1-3) balances membrane permeability with aqueous solubility. Low polar surface area (TPSA < 140 Å²) facilitates transcellular passive diffusion. Limited molecular flexibility (rotatable bonds ≤ 10) reduces the entropic penalty for adopting a membrane-permeable conformation. Adequate aqueous solubility ensures dissolution in GI fluids. Metabolic stability — resistance to CYP-mediated oxidation and Phase II conjugation — preserves the parent compound through first-pass metabolism.
+
+Features associated with poor bioavailability: high MW (>500 Da) and excessive hydrogen bonding capacity reduce membrane permeability. Very high lipophilicity (logP > 5) causes poor aqueous solubility despite good permeability. High TPSA (>140 Å²) strongly correlates with poor absorption. Many rotatable bonds (>10) reduce the probability of adopting a compact, membrane-permeable conformation. Susceptibility to efflux by P-glycoprotein (Pgp) at the intestinal epithelium reduces net absorption. Labile metabolic soft spots — unhindered aromatic rings, benzylic positions, N-dealkylation sites — lead to rapid first-pass metabolism. Compounds that are substrates of CYP3A4 (the dominant gut-wall and hepatic CYP) face extensive first-pass extraction.
+Question: Given a drug SMILES string, predict whether it
+(A) has oral bioavailability < 20% (B) has oral bioavailability ≥ 20%
+Drug SMILES: CCCc1nc2c(C)cc(-c3nc4ccccc4n3C)cc2n1Cc1ccc(-c2ccccc2C(=O)O)cc1
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 514.63 Da
+- Heavy atoms: 39, Heteroatoms: 6
+- logP (Wildman-Crippen): 7.2600
+- TPSA: 72.94 Å²
+- H-bond donors: 1, H-bond acceptors: 3
+- Rotatable bonds: 7
+- Fraction sp3 carbons (Fsp3): 0.1818
+- Molar refractivity: 156.11
+- QED (drug-likeness, 0-1): 0.2432
+- Lipinski violations: 2 (MW > 500, logP > 5)
+- Bertz complexity: 1844.14
+- Topology: HallKierAlpha=-4.7100, Kappa1=24.6170, Kappa2=9.8740, Kappa3=4.3770, BalabanJ=1.4220, IPC=1139775407.9030
+- Amide bonds: 0
+- Stereocenters: 0
+- Pharmacophore features: 8 hydrophobic, 6 aromatic, 1 neg-ionizable, 2 pos-ionizable
+- Gasteiger charges: max=0.3358 (atom 34, C), min=-0.4776 (atom 36, O)
+- Charge polarization: 0.8134
+- EState indices: max=11.7100 (nucleophilic proxy), min=-0.9210 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -9.9280 eV
+- LUMO energy: -7.3841 eV
+- HOMO-LUMO gap: 2.5439 eV
+- Dipole moment: 3.9269 Debye
+- Electrophilicity index (ω): 29.4531 eV
+- Total energy: -105.869196 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- carboxylic acid: C(=O)O ([*]C(=O)O)
+- benzene (x2): c1ccccc1 ([*]c1ccc([*])cc1), c1ccccc1 ([*]c1ccccc1[*])
+- benzimidazole (x2): c1nc2ccccc2n1 ([*]c1nc2c([*])cc([*])cc2n1[*]), c1nc2ccccc2n1 ([*]c1nc2ccccc2n1[*])
+
+[analyze_ring_systems]
+Ring Systems:
+- 4 systems:
+  - fused (5+6 membered, aromatic, 2 N)
+  - fused (5+6 membered, aromatic, 2 N)
+  - 6 membered, aromatic, no heteroatoms
+  - 6 membered, aromatic, no heteroatoms
+- Ring counts: 6 total, 6 aromatic, 0 aliphatic, 0 saturated
+- Heterocycles: 2
+- Aromatic atoms: 30 / 39
+- Not detected: PAH, macrocycle, spiro, bridgehead
+
+[assess_adme_properties]
+pKa Prediction:
+  Acidic sites (1): atom 36 pKa = 3.79
+  Basic sites (4): atom 4 pKa = 5.76, atom 11 pKa = 5.40, atom 18 pKa = 3.71, atom 22 pKa = 3.24
+Ionization at pH 7.4: acid, charge -1
+- Dominant form: CCCc1nc2c(C)cc(-c3nc4ccccc4n3C)cc2n1Cc1ccc(-c2ccccc2C(=O)[O-])cc1
+- Ambiguous (pKa near pH): No
+
+LogD at pH 7.4: 3.64
+Solubility: logS = -3.82 log(mol/L)
+
+[screen_structural_alerts]
+Structural Alerts (4 categories):
+
+1. Genotoxic carcinogenicity / mutagenicity
+DNA-reactive motifs that cause mutations via direct genotoxic mechanisms.
+Matched alerts (3): Polycyclic aromatic system (general) [c], Polycyclic aromatic system (specific) [c], Heterocyclic polycyclic aromatic hydrocarbons [c]
+
+2. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (1): Benzo-fused five-membered heterocycles [Cc1nc2ccccc2n1]
+
+3. Reactive metabolite formation (idiosyncratic toxicity)
+Can form reactive metabolites via CYP metabolism that covalently modify liver proteins, triggering immune-mediated hepatotoxicity.
+Matched alerts (1): Carboxylic acids [cC(=O)O]
+
+4. Non-genotoxic carcinogenicity
+Promotes cancer through non-DNA-reactive mechanisms (receptor activation, epigenetic changes, chronic inflammation).
+Matched alerts (1): Heterocyclic Polycyclic Aromatic Hydrocarbons [c]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: CCCc1nc2c(C)cc(-c3nc4ccccc4n3C)cc2n1Cc1ccc(-c2ccccc2C(=O)O)cc1
+
+[predict_metabolites]
+Predicted Metabolites (GLORYx — FAME3 SoM + reaction rules, Phase 1 + Phase 2):
+
+  1. CCCc1nc2c(C)cc(-c3nc4ccccc4n3C)cc2n1Cc1ccc(-c2ccccc2C(=O)OC2OC(C(=O)O)C(O)C(O)C2O)cc1
+     Reaction: O-glucuronidation_(aromatic_carboxyl) (Phase 2, score=0.956)
+  2. CCCc1nc2c(C)cc(-c3nc4cc(O)ccc4n3C)cc2n1Cc1ccc(-c2ccccc2C(=O)O)cc1
+     Reaction: aromatic_hydroxylation_(para_to_nitrogen) (Phase 1, score=0.378)
+  3. CCCc1nc2c(C)cc(-c3nc4cccc(O)c4n3C)cc2n1Cc1ccc(-c2ccccc2C(=O)O)cc1
+     Reaction: aromatic_hydroxylation_(ortho_to_nitrogen) (Phase 1, score=0.378)
+
+[get_3d_properties]
+3D Polar Surface Area (ePSA):
+3D conformation based estimation of PSA: 653.47
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.3186, 0.7989) → intermediate
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=0.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=1.0) ---
+
+
+--- Sample 4 (reward=0.0) ---
+
+
+--- Sample 5 (reward=0.0) ---
+
+
+--- Sample 6 (reward=0.0) ---
+
+
+--- Sample 7 (reward=0.0) ---
+
+
+--- Sample 8 (reward=0.0) ---
+
+
+=====================================
+
+=== Group 4 (dataset_idx=17, datasource=Bioavailability_Ma_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: Oral bioavailability (F) is the fraction of an orally administered drug that reaches systemic circulation in unchanged form. It is determined by three sequential barriers: absorption from the gastrointestinal lumen across the intestinal epithelium, first-pass metabolism in the gut wall (primarily by CYP3A4), and first-pass metabolism in the liver (by CYP enzymes and conjugation). This dataset uses a binary threshold of F ≥ 20% vs F < 20%.
+
+Molecular features favoring high oral bioavailability: compliance with Lipinski's Rule of Five (MW ≤ 500, logP ≤ 5, HBD ≤ 5, HBA ≤ 10) — these are necessary but not sufficient conditions for oral absorption. Moderate lipophilicity (logP 1-3) balances membrane permeability with aqueous solubility. Low polar surface area (TPSA < 140 Å²) facilitates transcellular passive diffusion. Limited molecular flexibility (rotatable bonds ≤ 10) reduces the entropic penalty for adopting a membrane-permeable conformation. Adequate aqueous solubility ensures dissolution in GI fluids. Metabolic stability — resistance to CYP-mediated oxidation and Phase II conjugation — preserves the parent compound through first-pass metabolism.
+
+Features associated with poor bioavailability: high MW (>500 Da) and excessive hydrogen bonding capacity reduce membrane permeability. Very high lipophilicity (logP > 5) causes poor aqueous solubility despite good permeability. High TPSA (>140 Å²) strongly correlates with poor absorption. Many rotatable bonds (>10) reduce the probability of adopting a compact, membrane-permeable conformation. Susceptibility to efflux by P-glycoprotein (Pgp) at the intestinal epithelium reduces net absorption. Labile metabolic soft spots — unhindered aromatic rings, benzylic positions, N-dealkylation sites — lead to rapid first-pass metabolism. Compounds that are substrates of CYP3A4 (the dominant gut-wall and hepatic CYP) face extensive first-pass extraction.
+Question: Given a drug SMILES string, predict whether it
+(A) has oral bioavailability < 20% (B) has oral bioavailability ≥ 20%
+Drug SMILES: NC[C@H](O)c1ccc(O)c(O)c1
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 169.18 Da
+- Heavy atoms: 12, Heteroatoms: 4
+- logP (Wildman-Crippen): 0.0900
+- TPSA: 86.71 Å²
+- H-bond donors: 4, H-bond acceptors: 4
+- Rotatable bonds: 2
+- Fraction sp3 carbons (Fsp3): 0.2500
+- Molar refractivity: 43.79
+- QED (drug-likeness, 0-1): 0.4724
+- Lipinski violations: 0
+- Bertz complexity: 275.01
+- Topology: HallKierAlpha=-1.2600, Kappa1=8.8330, Kappa2=3.4240, Kappa3=1.6640, BalabanJ=2.9630, IPC=497.7480
+- Amide bonds: 0
+- Stereocenters: 1
+- Pharmacophore features: 1 hydrophobic, 1 aromatic, 0 neg-ionizable, 1 pos-ionizable
+- Gasteiger charges: max=0.1573 (atom 9, C), min=-0.5043 (atom 8, O)
+- Charge polarization: 0.6615
+- EState indices: max=9.2270 (nucleophilic proxy), min=-0.7950 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -10.0145 eV
+- LUMO energy: -6.4069 eV
+- HOMO-LUMO gap: 3.6076 eV
+- Dipole moment: 3.4122 Debye
+- Electrophilicity index (ω): 18.6870 eV
+- Total energy: -37.828440 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- secondary hydroxyl: O ([*]O)
+- primary aliphatic amine: N ([*]N)
+- phenol (x2): O ([*]O), O ([*]O)
+- benzene: c1ccccc1 ([*]c1ccc([*])c([*])c1)
+
+[analyze_ring_systems]
+Ring Systems:
+- 1 system: 6 membered, aromatic, no heteroatoms
+- Ring counts: 1 total, 1 aromatic, 0 aliphatic, 0 saturated
+- Heterocycles: 0
+- Aromatic atoms: 6 / 12
+- Not detected: PAH, macrocycle, spiro, bridgehead
+
+[assess_adme_properties]
+pKa Prediction:
+  Acidic sites (3): atom 10 pKa = 9.55, atom 8 pKa = 9.65, atom 3 pKa = 11.41
+  Basic sites (1): atom 0 pKa = 8.08
+Ionization at pH 7.4: zwitterion, charge 0
+- Dominant form: [NH3+]C[C@H](O)c1ccc([O-])c(O)c1
+- Ambiguous (pKa near pH): Yes
+- Charge class distribution: zwitterion: 3, acid: 3, neutral: 1, base: 1
+
+LogD at pH 7.4: -0.67
+Solubility: logS = -0.17 log(mol/L)
+
+[screen_structural_alerts]
+Structural Alerts (6 categories):
+
+1. Polyphenol / catechol
+Redox-active; auto-oxidizes to quinones and generates ROS.
+Matched alerts (2): catechol_A(92) [Oc1ccccc1O], catechol [Oc1ccccc1O]
+
+2. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (6): Catechols [Oc1ccccc1O], Di- or polyhydroxy aromatic compounds and their precursors [c], 1,2-Dihydroxy aromatic compounds [OccO], Primary alkyl amines [CN], Ortho-disubstituted benzenes [Oc1ccccc1O], Ortho-substituted phenols, primary and secondary amines [Oc1ccccc1O]
+
+3. Electrophilic agents
+Electrophilic centers that can react with biological nucleophiles (protein thiols, DNA bases).
+Matched alerts (2): Hydroquinones [c], Aliphatic amines [CCN]
+
+4. Reactive metabolite formation (idiosyncratic toxicity)
+Can form reactive metabolites via CYP metabolism that covalently modify liver proteins, triggering immune-mediated hepatotoxicity.
+Matched alerts (1): Ortho- or parahydroquinones [c]
+
+5. Reactive / unstable / toxic groups
+Generally reactive or unstable functional groups flagged across multiple toxicity endpoints.
+Matched alerts (3): Hydroquinone [Oc1ccccc1O], Catechols [Oc1ccccc1O], Simple anilines and phenols [c]
+
+6. Chelating agents
+Can sequester metal ions essential for enzyme function; may interfere with ion channels.
+Matched alerts (1): G8 [Oc1ccccc1O]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: NC[C@H](O)c1ccc(O)c(O)c1
+
+[predict_metabolites]
+Predicted Metabolites (GLORYx — FAME3 SoM + reaction rules, Phase 1 + Phase 2):
+
+  1. CC(=O)NC[C@H](O)c1ccc(O)c(O)c1
+     Reaction: N-acetylation_(aliphatic_NH2) (Phase 2, score=0.976)
+  2. COc1cc([C@@H](O)CN)ccc1O
+     Reaction: methylation_(aromatic_OH) (Phase 2, score=0.764)
+  3. NC[C@H](O)c1ccc(OS(=O)(=O)O)c(O)c1
+     Reaction: sulfation_(aromatic_hydroxyl) (Phase 2, score=0.756)
+
+[get_3d_properties]
+3D Polar Surface Area (ePSA):
+3D conformation based estimation of PSA: 224.00
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.1953, 0.9113) → disc-like
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (A)
+
+--- Sample 1 (reward=1.0) ---
+
+
+--- Sample 2 (reward=0.0) ---
+
+
+--- Sample 3 (reward=0.0) ---
+
+
+--- Sample 4 (reward=0.0) ---
+
+
+--- Sample 5 (reward=0.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=0.0) ---
+
+
+--- Sample 8 (reward=1.0) ---
+
+
+=====================================
+
+=== Group 5 (dataset_idx=62, datasource=Bioavailability_Ma_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: Oral bioavailability (F) is the fraction of an orally administered drug that reaches systemic circulation in unchanged form. It is determined by three sequential barriers: absorption from the gastrointestinal lumen across the intestinal epithelium, first-pass metabolism in the gut wall (primarily by CYP3A4), and first-pass metabolism in the liver (by CYP enzymes and conjugation). This dataset uses a binary threshold of F ≥ 20% vs F < 20%.
+
+Molecular features favoring high oral bioavailability: compliance with Lipinski's Rule of Five (MW ≤ 500, logP ≤ 5, HBD ≤ 5, HBA ≤ 10) — these are necessary but not sufficient conditions for oral absorption. Moderate lipophilicity (logP 1-3) balances membrane permeability with aqueous solubility. Low polar surface area (TPSA < 140 Å²) facilitates transcellular passive diffusion. Limited molecular flexibility (rotatable bonds ≤ 10) reduces the entropic penalty for adopting a membrane-permeable conformation. Adequate aqueous solubility ensures dissolution in GI fluids. Metabolic stability — resistance to CYP-mediated oxidation and Phase II conjugation — preserves the parent compound through first-pass metabolism.
+
+Features associated with poor bioavailability: high MW (>500 Da) and excessive hydrogen bonding capacity reduce membrane permeability. Very high lipophilicity (logP > 5) causes poor aqueous solubility despite good permeability. High TPSA (>140 Å²) strongly correlates with poor absorption. Many rotatable bonds (>10) reduce the probability of adopting a compact, membrane-permeable conformation. Susceptibility to efflux by P-glycoprotein (Pgp) at the intestinal epithelium reduces net absorption. Labile metabolic soft spots — unhindered aromatic rings, benzylic positions, N-dealkylation sites — lead to rapid first-pass metabolism. Compounds that are substrates of CYP3A4 (the dominant gut-wall and hepatic CYP) face extensive first-pass extraction.
+Question: Given a drug SMILES string, predict whether it
+(A) has oral bioavailability < 20% (B) has oral bioavailability ≥ 20%
+Drug SMILES: CC[C@H]1OC(=O)[C@H](C)[C@@H](O[C@H]2C[C@@](C)(OC)[C@@H](O)[C@H](C)O2)[C@H](C)[C@@H](O[C@@H]2O[C@H](C)C[C@H](N(C)C)[C@H]2O)[C@](C)(OC)C[C@@H](C)C(=O)[C@H](C)[C@@H](O)[C@]1(C)O
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 747.96 Da
+- Heavy atoms: 52, Heteroatoms: 14
+- logP (Wildman-Crippen): 2.4400
+- TPSA: 182.91 Å²
+- H-bond donors: 4, H-bond acceptors: 14
+- Rotatable bonds: 8
+- Fraction sp3 carbons (Fsp3): 0.9474
+- Molar refractivity: 191.05
+- QED (drug-likeness, 0-1): 0.2658
+- Lipinski violations: 2 (MW > 500, HBA > 10)
+- Bertz complexity: 1187.58
+- Topology: HallKierAlpha=-1.3000, Kappa1=45.0920, Kappa2=17.6590, Kappa3=9.3780, BalabanJ=2.2220, IPC=47935039872.7690
+- Amide bonds: 0
+- Stereocenters: 18
+- Pharmacophore features: 5 hydrophobic, 0 aromatic, 0 neg-ionizable, 1 pos-ionizable
+- Gasteiger charges: max=0.3112 (atom 4, C), min=-0.4589 (atom 3, O)
+- Charge polarization: 0.7701
+- EState indices: max=14.1740 (nucleophilic proxy), min=-1.9650 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -9.7882 eV
+- LUMO energy: -7.1659 eV
+- HOMO-LUMO gap: 2.6223 eV
+- Dipole moment: 2.6699 Debye
+- Electrophilicity index (ω): 27.4034 eV
+- Total energy: -172.372175 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- secondary hydroxyl (x2): O ([*]O), O ([*]O)
+- dialkyl ether (x2): O ([*]O[*]), O ([*]O[*])
+- tertiary aliphatic amine: N ([*]N([*])[*])
+- 1,2-diol: C(O)CO ([*][C@@]([*])(O)[C@@H]([*])O)
+- ketone: C=O ([*]C([*])=O)
+- acetal (x2): COCOC ([*][C@H]([*])O[C@@H]([*])O[C@H]([*])[*]), COCOC ([*][C@H]([*])O[C@@H]([*])O[C@H]([*])[*])
+- lactone: OC=O ([*]OC([*])=O)
+- tetrahydropyran (x2): C1CCCCO1 ([*][C@H]1C[C@@]([*])([*])[C@@H]([*])[C@H]([*])O1), C1OCCCC1 ([*][C@@H]1O[C@H]([*])C[C@H]([*])[C@H]1[*])
+
+[analyze_ring_systems]
+Ring Systems:
+- 3 systems:
+  - 14 membered, non-aromatic, 1 O
+  - 6 membered, non-aromatic, 1 O
+  - 6 membered, non-aromatic, 1 O
+- Ring counts: 3 total, 0 aromatic, 3 aliphatic, 3 saturated
+- Heterocycles: 3
+- Aromatic atoms: 0 / 52
+- Macrocycles: 1 (largest ring: 14-membered)
+- Not detected: PAH, spiro, bridgehead
+
+[assess_adme_properties]
+pKa Prediction:
+  Acidic sites (4): atom 35 pKa = 12.96, atom 48 pKa = 13.06, atom 51 pKa = 13.14, atom 17 pKa = 13.42
+  Basic sites (1): atom 31 pKa = 7.73
+Ionization at pH 7.4: neutral, charge 0
+- Dominant form: CC[C@H]1OC(=O)[C@H](C)[C@@H](O[C@H]2C[C@@](C)(OC)[C@@H](O)[C@H](C)O2)[C@H](C)[C@@H](O[C@@H]2O[C@H](C)C[C@H](N(C)C)[C@H]2O)[C@](C)(OC)C[C@@H](C)C(=O)[C@H](C)[C@@H](O)[C@]1(C)O
+- Ambiguous (pKa near pH): Yes
+- Charge class distribution: base: 1, neutral: 1
+
+LogD at pH 7.4: 1.95
+Solubility: logS = -1.29 log(mol/L)
+
+[screen_structural_alerts]
+Structural Alerts (5 categories):
+
+1. Reactive / unstable group
+Miscellaneous reactive or unstable functional groups flagged by medicinal chemistry filters.
+Matched alerts (1): Non-Hydrogen_atoms [C]
+
+2. Ester / phenol ester / carbonate
+Esters can be hydrolyzed to release active metabolites; phenol esters and carbonates may indicate prodrug instability.
+Matched alerts (2): acetal [C[C@H](OC)OC], Ester [COC(=O)C]
+
+3. Aldehyde / reactive carbonyl
+Reactive carbonyl that forms Schiff bases with lysine residues; includes alpha-dicarbonyls and reactive ketone variants.
+Matched alerts (1): Ketone [CC(=O)C]
+
+4. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (2): Ketones [CC(=O)C], Aldehydes and precursors [C]
+
+5. Reactive / unstable / toxic groups
+Generally reactive or unstable functional groups flagged across multiple toxicity endpoints.
+Matched alerts (5): α-hydroxy substituted carbonyls [O=CCCO], Acetal [C[C@H](OC)O], Carboxylic acid esters [CCOC(=O)C], Ketones [CC(=O)C], Macrocycles [C]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: CC[C@H]1OC(=O)[C@H](C)[C@@H](O[C@H]2C[C@@](C)(OC)[C@@H](O)[C@H](C)O2)[C@H](C)[C@@H](O[C@@H]2O[C@H](C)C[C@H](N(C)C)[C@H]2O)[C@](C)(OC)C[C@@H](C)C(=O)[C@H](C)[C@@H](O)[C@]1(C)O
+
+[predict_metabolites]
+Predicted Metabolites (GLORYx — FAME3 SoM + reaction rules, Phase 1 + Phase 2):
+
+  1. CC[C@H]1OC(=O)[C@H](C)[C@@H](O[C@H]2C[C@@](C)(OC)[C@@H](O)[C@H](C)O2)[C@H](C)[C@@H](O[C@@H]2O[C@H](C)C[C@H](N(C)C)[C@H]2OS(=O)(=O)O)[C@](C)(OC)C[C@@H](C)C(=O)[C@H](C)[C@@H](O)[C@]1(C)O
+     Reaction: sulfation_(aliphatic_hydroxyl) (Phase 2, score=0.880)
+  2. CC[C@H]1OC(=O)[C@H](C)[C@@H](O[C@H]2C[C@@](C)(OC)[C@@H](O)[C@H](C)O2)[C@H](C)[C@@H](O[C@@H]2O[C@H](C)C[C@H](N(C)C)[C@H]2O)[C@](C)(OC)C[C@@H](C)C(=O)[C@H](C)[C@@H](O)[C@]1(C)OC1OC(C(=O)O)C(O)C(O)C1O
+     Reaction: O-glucuronidation_(aliphatic_hydroxyl) (Phase 2, score=0.551)
+  3. CC[C@H]1OC(=O)[C@H](C)[C@@H](O[C@H]2C[C@@](C)(OC)[C@@H](OS(=O)(=O)O)[C@H](C)O2)[C@H](C)[C@@H](O[C@@H]2O[C@H](C)C[C@H](N(C)C)[C@H]2O)[C@](C)(OC)C[C@@H](C)C(=O)[C@H](C)[C@@H](O)[C@]1(C)O
+     Reaction: sulfation_(aliphatic_hydroxyl) (Phase 2, score=0.523)
+
+[get_3d_properties]
+3D Polar Surface Area (ePSA):
+3D conformation based estimation of PSA: 986.51
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.3429, 0.8148) → intermediate
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=1.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=1.0) ---
+
+
+--- Sample 4 (reward=1.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=0.0) ---
+
+
+--- Sample 8 (reward=1.0) ---
+
+
+=====================================
+

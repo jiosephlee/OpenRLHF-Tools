@@ -86,32 +86,41 @@ class PolicyLoss(nn.Module):
         clip_eps_low: float = 0.2,
         clip_eps_high: float = 0.2,
         dual_clip: float = None,
-        token_level_loss: bool = True,
         policy_loss_type: str = "ppo",
+        loss_type: str = "ppo",
+        loss_aggregation: str = "sample",
         enable_vllm_is_correction: bool = False,
         vllm_is_truncated_threshold: list = None,
         vllm_is_correction_type: str = "tis",
+        sapo_temperature_pos: float = 20.0,
+        sapo_temperature_neg: float = 20.0,
     ) -> None:
         super().__init__()
         self.clip_eps_low = clip_eps_low
         self.clip_eps_high = clip_eps_high
-        #### token_level_loss: bool ####
-        # False = per-sequence mean then batch mean (grpo/ppo)
-        # True  = flat token mean within rank (dapo/bnpo)
-        # Cross-rank normalization is handled by the replay buffer's loss_scale,
-        # not here.  This avoids per-microbatch all-reduce which is incompatible
-        # with gradient accumulation across microbatches.
-        self.token_level_loss = token_level_loss
-        #### end token_level_loss ####
         self.dual_clip = dual_clip
         self.policy_loss_type = policy_loss_type
+        self.loss_type = loss_type
+        #### loss_aggregation ####
+        # Determines how per-token losses are reduced to a scalar.
+        # This function always returns a **sum** (not a mean).  The replay
+        # buffer's loss_scale handles global normalization (÷ N_global,
+        # P_global, or T_global) so that the accumulated gradient across
+        # microbatches and ranks is correct.
+        #
+        # "sample": Σ_i [ (Σ_t loss_it * mask_it) / T_i ]
+        #           Each sequence contributes its per-token mean.
+        # "prompt": Σ_i [ (Σ_t loss_it * mask_it) / T_p_i ]
+        #           Each sequence's tokens are weighted by the prompt group total.
+        # "token":  Σ_i Σ_t loss_it * mask_it
+        #           Raw token-level sum; every token contributes equally.
+        self.loss_aggregation = loss_aggregation
+        #### end loss_aggregation ####
         self.enable_vllm_is_correction = enable_vllm_is_correction
         self.vllm_is_truncated_threshold = vllm_is_truncated_threshold
         self.vllm_is_correction_type = vllm_is_correction_type
-
-        # GSPO requires sequence-level loss
-        if policy_loss_type == "gspo":
-            self.token_level_loss = False
+        self.sapo_temperature_pos = sapo_temperature_pos
+        self.sapo_temperature_neg = sapo_temperature_neg
 
         # Dual-clip PPO: https://arxiv.org/pdf/1912.09729
         if dual_clip is not None:
@@ -129,6 +138,7 @@ class PolicyLoss(nn.Module):
         advantages: torch.Tensor,
         action_mask: Optional[torch.Tensor] = None,
         rollout_log_probs: Optional[torch.Tensor] = None,
+        prompt_tokens: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if self.policy_loss_type == "ppo":
             log_ratio = log_probs - old_log_probs
@@ -144,22 +154,37 @@ class PolicyLoss(nn.Module):
         else:
             raise ValueError(f"Invalid policy loss type: {self.policy_loss_type}")
 
-        surr1 = ratio * advantages
-        surr2 = ratio.clamp(1 - self.clip_eps_low, 1 + self.clip_eps_high) * advantages
-
-        if self.dual_clip is None:
-            # Standard PPO
-            loss = -torch.min(surr1, surr2)
+        if self.loss_type == "cispo":
+            # CISPO (ScaleRL Eq.4): sg(min(ρ, ε_max)) * Â * log π
+            # Uses π_train / π_old as the IS ratio.  Off-policy correction
+            # (π_old / π_gen) is handled by the separate vLLM IS block below,
+            # same as all other loss types.  The two factors compose to give
+            # the paper's ρ = π_train / π_gen, each clipped independently.
+            cispo_ratio = ratio  # π_train / π_old
+            clamped_ratio = torch.clamp(cispo_ratio, max=1 + self.clip_eps_high).detach()
+            loss = -clamped_ratio * advantages * log_probs
+        elif self.loss_type == "sapo":
+            # SAPO: soft sigmoid-based clipping (gradient flows through ratio)
+            temperatures = torch.where(
+                advantages > 0, self.sapo_temperature_pos, self.sapo_temperature_neg
+            )
+            soft_coef = torch.sigmoid(temperatures * (ratio - 1)) * 4 / temperatures
+            loss = -soft_coef * advantages
         else:
-            # Standard PPO clipping
-            clip1 = torch.min(surr1, surr2)
-            # Dual-clip: additional lower bound for negative advantages
-            clip2 = torch.max(clip1, self.dual_clip * advantages)
-            # Apply dual-clip: use clip2 for negative advantages, clip1 for positive advantages
-            loss = -torch.where(advantages < 0, clip2, clip1)
+            # Standard PPO/GRPO/DAPO/BNPO/DR_GRPO clip
+            surr1 = ratio * advantages
+            surr2 = ratio.clamp(1 - self.clip_eps_low, 1 + self.clip_eps_high) * advantages
+
+            if self.dual_clip is None:
+                loss = -torch.min(surr1, surr2)
+            else:
+                clip1 = torch.min(surr1, surr2)
+                clip2 = torch.max(clip1, self.dual_clip * advantages)
+                loss = -torch.where(advantages < 0, clip2, clip1)
 
         # Your Efficient RL Framework Secretly Brings You Off-Policy RL Training: https://fengyao.notion.site/off-policy-rl
         vllm_kl = None
+        policy_log_ratio = log_ratio  # preserve new_policy vs old_policy ratio for ppo_kl
         if self.enable_vllm_is_correction and self.policy_loss_type == "ppo":
             low_threshold, high_threshold = self.vllm_is_truncated_threshold
             log_ratio = old_log_probs - rollout_log_probs
@@ -183,31 +208,49 @@ class PolicyLoss(nn.Module):
                 loss = vllm_is * loss
             vllm_kl = masked_mean(rollout_log_probs - old_log_probs, action_mask, dim=None)
 
-        #### token_level_loss reduction ####
-        if not self.token_level_loss:
-            # grpo/ppo: per-sequence mean, then batch mean
-            loss = masked_mean(loss, action_mask, dim=-1).mean()
+        #### loss reduction — always returns a SUM, not a mean ####
+        # Global normalization (÷ N/P/T_global) is handled by the replay
+        # buffer's loss_scale, not here.
+        per_seq_token_sum = (loss * action_mask).sum(dim=-1)  # (B,)
+        seq_token_counts = action_mask.sum(dim=-1).clamp(min=1)  # (B,)
+
+        if self.loss_aggregation == "prompt" and prompt_tokens is not None:
+            # Prompt-level: weight each sequence by 1/T_p (prompt group total tokens)
+            loss = (per_seq_token_sum / prompt_tokens.clamp(min=1)).sum()
+        elif self.loss_aggregation == "token":
+            # Token-level: raw sum of all token losses
+            loss = per_seq_token_sum.sum()
         else:
-            # dapo/bnpo: flat token mean within this rank
-            loss = masked_mean(loss, action_mask, dim=None)
-        #### end token_level_loss reduction ####
-        clip_ratio = masked_mean(torch.lt(surr2, surr1).float(), action_mask, dim=None)
-        ppo_kl = masked_mean(-log_ratio.detach(), action_mask, dim=None)
+            # Sample-level (default): weight each sequence by 1/T_i (its own token count)
+            loss = (per_seq_token_sum / seq_token_counts).sum()
+        #### end loss reduction ####
+
+        if self.loss_type == "cispo":
+            # CISPO clip metric: fraction of tokens where π_train/π_old ratio exceeded upper bound
+            clip_ratio = masked_mean(
+                (cispo_ratio > 1 + self.clip_eps_high).float(), action_mask, dim=None
+            )
+        elif self.loss_type == "sapo":
+            # SAPO has no hard clip; report fraction where ratio deviates > eps_high
+            clip_ratio = masked_mean(
+                (ratio > 1 + self.clip_eps_high).float(), action_mask, dim=None
+            )
+        else:
+            clip_ratio = masked_mean(torch.lt(surr2, surr1).float(), action_mask, dim=None)
+
+        ppo_kl = masked_mean(-policy_log_ratio.detach(), action_mask, dim=None)
         return loss, clip_ratio, ppo_kl, vllm_kl
 
 
 #### Liger fused GRPO loss wrapper ####
 class LigerPolicyLoss(nn.Module):
     """
-    Fused lm_head + GRPO loss via liger-kernel (>= 0.7.0).
+    Fused GRPO loss via liger-kernel's Triton backend (>= 0.7.0).
 
-    Two backends are supported:
-      - 'chunked': Fuses the lm_head projection with loss, processing
-        chunk_size sequences at a time. Never materializes [B,T,V] logits.
-        Accepts hidden_states + lm_head weight directly.
-      - 'triton': Fused Triton kernels for log-softmax + loss + backward.
-        Still materializes [B,L+1,V] logits on the forward, but avoids
-        storing the log-softmax tensor by recomputing from saved LSE.
+    Uses reduce=False to get per-token losses from the fused Triton kernel,
+    then applies our own sum-based reduction (matching PolicyLoss's contract).
+    The Triton kernel avoids storing the log-softmax tensor by recomputing
+    from saved LSE, but still materializes [B,L+1,V] logits on the forward.
 
     Supports the same vLLM off-policy correction methods as PolicyLoss
     (TIS, ICEPOP, seq-mask-tis) by computing the IS ratio externally and
@@ -224,59 +267,39 @@ class LigerPolicyLoss(nn.Module):
         beta: float = 0.0,
         temperature: float = 1.0,
         loss_type: str = "grpo",
-        backend: str = "chunked",
-        chunk_size: int = 1,
+        loss_aggregation: str = "sample",
         enable_vllm_is_correction: bool = False,
         vllm_is_truncated_threshold: list = None,
         vllm_is_correction_type: str = "tis",
+        sapo_temperature_pos: float = 20.0,
+        sapo_temperature_neg: float = 20.0,
     ) -> None:
         super().__init__()
         self.beta = beta
         self.temperature = temperature
         self.loss_type = loss_type
-        self.backend = backend
+        self.loss_aggregation = loss_aggregation
         self.use_ref_model = beta > 0
+        self._sapo_temperature_pos = sapo_temperature_pos
+        self._sapo_temperature_neg = sapo_temperature_neg
         self.enable_vllm_is_correction = enable_vllm_is_correction
         self.vllm_is_truncated_threshold = vllm_is_truncated_threshold
         self.vllm_is_correction_type = vllm_is_correction_type
+        self._eps_low = clip_eps_low
+        self._eps_high = clip_eps_high
 
         if enable_vllm_is_correction and vllm_is_correction_type not in {"tis", "icepop", "seq-mask-tis"}:
             raise ValueError(
                 f"Invalid vllm_is_correction_type: {vllm_is_correction_type}, must be one of tis/icepop/seq-mask-tis"
             )
 
-        if backend == "triton":
-            from liger_kernel.transformers.grpo_loss import triton_grpo_loss
+        from liger_kernel.transformers.grpo_loss import triton_grpo_loss
 
-            self._triton_grpo_loss = triton_grpo_loss
-            logger.info(
-                f"[Liger GRPO] Initialized Triton backend "
-                f"(beta={beta}, eps=[{clip_eps_low}, {clip_eps_high}], loss_type={loss_type})"
-            )
-        elif backend == "chunked":
-            from liger_kernel.chunked_loss import LigerFusedLinearGRPOLoss
-
-            self._chunked_grpo_loss = LigerFusedLinearGRPOLoss(
-                beta=beta,
-                epsilon_low=clip_eps_low,
-                epsilon_high=clip_eps_high,
-                temperature=temperature,
-                use_ref_model=beta > 0,
-                loss_type=loss_type,
-                chunk_size=chunk_size,
-                compiled=True,
-            )
-            logger.info(
-                f"[Liger GRPO] Initialized chunked backend "
-                f"(beta={beta}, eps=[{clip_eps_low}, {clip_eps_high}], "
-                f"loss_type={loss_type}, chunk_size={chunk_size})"
-            )
-        else:
-            raise ValueError(f"Unknown Liger GRPO backend: {backend!r}. Use 'triton' or 'chunked'.")
-
-        # Store clipping params for the triton path
-        self._eps_low = clip_eps_low
-        self._eps_high = clip_eps_high
+        self._triton_grpo_loss = triton_grpo_loss
+        logger.info(
+            f"[Liger GRPO] Initialized Triton backend "
+            f"(beta={beta}, eps=[{clip_eps_low}, {clip_eps_high}], loss_type={loss_type})"
+        )
 
     def _compute_vllm_is_ratio(
         self,
@@ -298,20 +321,16 @@ class LigerPolicyLoss(nn.Module):
         log_ratio = old_log_probs - rollout_log_probs
 
         if self.vllm_is_correction_type == "icepop":
-            # ICEPOP: token-level filtering (set coefficients outside the interval to 0)
             vllm_is = torch.exp(log_ratio).detach()
             mask = (vllm_is >= low_threshold) & (vllm_is <= high_threshold)
             vllm_is_ratio = vllm_is * mask
         elif self.vllm_is_correction_type == "seq-mask-tis":
-            # seq-mask-tis: sequence-level geometric mean for filtering,
-            # correction coefficients use TIS (token-level clamp)
             seq_log_ratio = masked_mean(log_ratio, action_mask, dim=-1)
             seq_is = torch.exp(seq_log_ratio)
             seq_mask = (seq_is >= low_threshold) & (seq_is <= high_threshold)
             vllm_is = torch.exp(log_ratio).detach()
             vllm_is_ratio = seq_mask.unsqueeze(-1) * vllm_is
         else:
-            # TIS: token-level clamp with low and high thresholds
             vllm_is_ratio = torch.exp(log_ratio).clamp(min=low_threshold, max=high_threshold).detach()
 
         vllm_kl = masked_mean(rollout_log_probs - old_log_probs, action_mask, dim=None)
@@ -327,10 +346,11 @@ class LigerPolicyLoss(nn.Module):
         old_log_probs: Optional[torch.Tensor] = None,
         ref_log_probs: Optional[torch.Tensor] = None,
         rollout_log_probs: Optional[torch.Tensor] = None,
+        prompt_tokens: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """
         Args:
-            hidden_states: Backbone output, shape [B, L, D] (chunked) or [B, L+1, D] (triton).
+            hidden_states: Backbone output, shape [B, L+1, D].
             lm_head: The model's lm_head linear layer.
             completion_ids: Token IDs for the completion/action region, shape [B, L].
             action_mask: Mask for valid action tokens, shape [B, L].
@@ -338,6 +358,7 @@ class LigerPolicyLoss(nn.Module):
             old_log_probs: Log probs from the rollout policy, shape [B, L].
             ref_log_probs: Log probs from the reference model, shape [B, L] (None if beta=0).
             rollout_log_probs: Log probs from vLLM rollout (for IS correction), shape [B, L].
+            prompt_tokens: Total action tokens per prompt group, shape [B] (for prompt-level agg).
 
         Returns:
             (loss, clip_ratio, ppo_kl, vllm_kl) — same format as PolicyLoss.forward().
@@ -349,54 +370,50 @@ class LigerPolicyLoss(nn.Module):
             old_log_probs, rollout_log_probs, action_mask
         )
 
-        if self.backend == "triton":
-            # Triton path: compute logits, then fused kernel handles
-            # log-softmax + loss + backward without storing log-softmax.
-            logits = F.linear(
-                hidden_states, lm_head.weight, getattr(lm_head, "bias", None)
-            ).contiguous()  # (B, L+1, V) — must be contiguous for Triton kernel
+        # Triton path: use reduce=False to get per-token losses, then
+        # apply our own sum-based reduction (matching PolicyLoss contract).
+        logits = F.linear(
+            hidden_states, lm_head.weight, getattr(lm_head, "bias", None)
+        ).contiguous()  # (B, L+1, V) — must be contiguous for Triton kernel
 
-            loss, metrics = self._triton_grpo_loss(
-                logits=logits,
-                old_logp=old_log_probs,
-                ref_logp=ref_lp,
-                completion_ids=completion_ids.contiguous(),
-                advantages=advantages.contiguous(),
-                completion_mask=action_mask.contiguous(),
-                temperature=self.temperature,
-                beta=self.beta,
-                eps_low=self._eps_low,
-                eps_high=self._eps_high,
-                loss_type=self.loss_type,
-                reduce=True,
-                vllm_is_ratio=vllm_is_ratio,
-            )
+        triton_kwargs = dict(
+            logits=logits,
+            old_logp=old_log_probs,
+            ref_logp=ref_lp,
+            completion_ids=completion_ids.contiguous(),
+            advantages=advantages.contiguous(),
+            completion_mask=action_mask.contiguous(),
+            temperature=self.temperature,
+            beta=self.beta,
+            eps_low=self._eps_low,
+            eps_high=self._eps_high,
+            loss_type=self.loss_type,
+            reduce=False,
+            vllm_is_ratio=vllm_is_ratio,
+        )
+        if self.loss_type == "sapo":
+            triton_kwargs["sapo_temperature_pos"] = self._sapo_temperature_pos
+            triton_kwargs["sapo_temperature_neg"] = self._sapo_temperature_neg
+        per_token_loss, per_token_kl, is_clipped = self._triton_grpo_loss(**triton_kwargs)
+
+        #### loss reduction — same as PolicyLoss: always returns a SUM ####
+        per_seq_token_sum = (per_token_loss * action_mask).sum(dim=-1)
+        seq_token_counts = action_mask.sum(dim=-1).clamp(min=1)
+        if self.loss_aggregation == "prompt" and prompt_tokens is not None:
+            loss = (per_seq_token_sum / prompt_tokens.clamp(min=1)).sum()
+        elif self.loss_aggregation == "token":
+            loss = per_seq_token_sum.sum()
         else:
-            # Chunked path: fuses lm_head projection with loss,
-            # never materializes the full [B,T,V] logits tensor.
-            loss, metrics = self._chunked_grpo_loss(
-                _input=hidden_states,
-                lin_weight=lm_head.weight,
-                selected_token_ids=completion_ids,
-                attention_mask=action_mask,
-                advantages=advantages,
-                bias=getattr(lm_head, "bias", None),
-                old_per_token_logps=old_log_probs,
-                ref_per_token_logps=ref_lp,
-                vllm_is_ratio=vllm_is_ratio,
-            )
+            loss = (per_seq_token_sum / seq_token_counts).sum()
+        #### end loss reduction ####
 
-        # Unpack metrics: [kl, clip_ratio] if beta>0, else [clip_ratio]
-        clip_ratio = metrics[-1]
+        clip_ratio = masked_mean(is_clipped.float(), action_mask, dim=None)
 
         #### Compute ppo_kl from hidden states (approx KL between new and old policy) ####
         # The Liger kernel computes new log probs internally but doesn't expose them.
         # Recompute per-sequence in no_grad to avoid materializing full (B,L,V) logits.
         with torch.no_grad():
-            if self.backend == "triton":
-                hs_for_lp = hidden_states[:, :-1, :]  # (B, L, D)
-            else:
-                hs_for_lp = hidden_states  # already (B, L, D)
+            hs_for_lp = hidden_states[:, :-1, :]  # (B, L, D)
             per_seq_lp = []
             for b in range(hs_for_lp.shape[0]):
                 logits_b = F.linear(hs_for_lp[b], lm_head.weight, getattr(lm_head, "bias", None))

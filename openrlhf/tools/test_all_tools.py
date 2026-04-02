@@ -58,7 +58,7 @@ def main():
         remove_salts,
         evaluate_arithmetic,
         get_electronic_properties,
-        predict_metabolism_sites,
+        predict_metabolites,
         CONSOLIDATED_TOOLS,
         get_function_by_name,
     )
@@ -85,7 +85,7 @@ def main():
     run_test("8. remove_salts", remove_salts, SALT_SMILES)
     run_test("9. evaluate_arithmetic", evaluate_arithmetic, "2 + 3 * 4")
     run_test("10. get_electronic_properties", get_electronic_properties, ASPIRIN)
-    run_test("11. predict_metabolism_sites", predict_metabolism_sites, ASPIRIN)
+    run_test("11. predict_metabolites", predict_metabolites, ASPIRIN)
 
     # Summary
     section("SUMMARY")

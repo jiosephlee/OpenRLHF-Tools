@@ -4,19 +4,17 @@
       "type": "function",
       "function": {
         "name": "get_molecule_profile",
-        "description": "Get a comprehensive molecular profile including identity (MW, formula), drug-likeness (QED, Lipinski violations), key physicochemical properties (logP, TPSA, HBD, HBA, rotatable bonds, Fsp3, molar refractivity), charge information, and complexity metrics (Bertz CT, stereocenters).",
+        "description": "Compute physicochemical profile: MW, logP, TPSA, HBD/HBA, rotatable bonds, Fsp3, QED, Lipinski violations, complexity, topology indices, pharmacophore counts, and electronic properties.",
         "parameters": {
           "type": "object",
           "properties": {
             "smiles": {
-              "type": "string",
-              "description": "SMILES string of the molecule."
+              "type": "string"
             }
           },
           "required": [
             "smiles"
-          ],
-          "additionalProperties": false
+          ]
         }
       }
     },
@@ -24,19 +22,17 @@
       "type": "function",
       "function": {
         "name": "analyze_functional_groups",
-        "description": "Analyze functional groups in a molecule using AccFG. Returns named functional groups with fragment SMILES, attachment points, and atom IDs for structural reasoning. Use this to understand what chemical motifs are present.",
+        "description": "Identify functional groups and chemical motifs with fragment SMILES and attachment points.",
         "parameters": {
           "type": "object",
           "properties": {
             "smiles": {
-              "type": "string",
-              "description": "SMILES string of the molecule."
+              "type": "string"
             }
           },
           "required": [
             "smiles"
-          ],
-          "additionalProperties": false
+          ]
         }
       }
     },
@@ -44,19 +40,17 @@
       "type": "function",
       "function": {
         "name": "analyze_ring_systems",
-        "description": "Analyze ring topology, aromaticity, and topological shape indices. Includes fused ring system analysis, PAH detection (≥3 fused aromatic rings), macrocycle detection, ring type breakdown (aromatic/aliphatic/saturated/heterocyclic), aromaticity metrics, and topology indices (Hall-Kier, Kappa, Balaban J).",
+        "description": "Analyze ring topology: sizes, heteroatom content, aromaticity, and flags for PAH, macrocycle, spiro, and bridgehead features.",
         "parameters": {
           "type": "object",
           "properties": {
             "smiles": {
-              "type": "string",
-              "description": "SMILES string of the molecule."
+              "type": "string"
             }
           },
           "required": [
             "smiles"
-          ],
-          "additionalProperties": false
+          ]
         }
       }
     },
@@ -64,92 +58,39 @@
       "type": "function",
       "function": {
         "name": "assess_adme_properties",
-        "description": "Assess ADME properties: pKa prediction (acidic/basic sites), ionization state classification at target pH, logD estimation, and aqueous solubility. These are causally linked: pKa → ionization → logD → permeability.",
+        "description": "Predict pKa, ionization state, logD, and solubility (pKa → ionization → logD → permeability).",
         "parameters": {
           "type": "object",
           "properties": {
             "smiles": {
-              "type": "string",
-              "description": "SMILES string of the molecule."
+              "type": "string"
             },
             "ph": {
               "type": "number",
-              "description": "Target pH for ionization/logD estimation (default: 7.4)."
+              "description": "Target pH (default: 7.4)."
             }
           },
           "required": [
             "smiles"
-          ],
-          "additionalProperties": false
+          ]
         }
       }
     },
     {
       "type": "function",
       "function": {
-        "name": "get_3d_properties",
-        "description": "Compute 3D conformational properties from a multi-conformer ensemble. Returns Boltzmann-weighted exposed polar surface area (ePSA), polar fraction, and 3D shape descriptors (PMI ratios for rod/disc/sphere classification, radius of gyration, asphericity, eccentricity, spherocity). Computationally expensive (~seconds). Use only when 3D surface/shape information is specifically needed beyond 2D TPSA.",
+        "name": "screen_structural_alerts",
+        "description": "Screen for toxicophores and structural alerts with mechanistic categories (e.g. Michael acceptors, alkylating agents, PAH). Includes ToxAlerts endpoint patterns and pharmacophore feature counts.",
         "parameters": {
           "type": "object",
           "properties": {
             "smiles": {
-              "type": "string",
-              "description": "SMILES string of the molecule."
+              "type": "string"
             }
           },
           "required": [
             "smiles"
-          ],
-          "additionalProperties": false
-        }
-      }
-    },
-    {
-      "type": "function",
-      "function": {
-        "name": "screen_safety",
-        "description": "Screen a molecule for safety concerns: structural alerts (PAINS, Brenk, NIH, ZINC, ChEMBL filters) and pharmacophore features (donor/acceptor/aromatic/hydrophobe with atom IDs). Use get_electronic_properties for charge/EState analysis.",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "smiles": {
-              "type": "string",
-              "description": "SMILES string of the molecule."
-            }
-          },
-          "required": [
-            "smiles"
-          ],
-          "additionalProperties": false
-        }
-      }
-    },
-    {
-      "type": "function",
-      "function": {
-        "name": "find_similar_molecules",
-        "description": "Find the most similar molecules from the training set using task-aware embeddings. Returns K nearest neighbors with their labels, cached molecular properties, and shared scaffolds (MCS), plus the closest molecule with the opposite label for contrastive SAR reasoning. Use this for structure-activity analysis.",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "smiles": {
-              "type": "string",
-              "description": "SMILES string of the query molecule."
-            },
-            "task": {
-              "type": "string",
-              "description": "Task name for task-aware retrieval (e.g., 'AMES', 'DILI')."
-            },
-            "k": {
-              "type": "integer",
-              "description": "Number of nearest neighbors to retrieve (default: 5)."
-            }
-          },
-          "required": [
-            "smiles",
-            "task"
-          ],
-          "additionalProperties": false
+          ]
         }
       }
     },
@@ -157,88 +98,1385 @@
       "type": "function",
       "function": {
         "name": "remove_salts",
-        "description": "Remove salts and counterions from a SMILES string, keeping only the largest organic fragment. Use as a preprocessing step before other analyses when the input SMILES contains disconnected components separated by '.' that include inorganic ions (e.g., [Na+], Cl-, etc.).",
+        "description": "Strip salts and counterions, keeping the largest organic fragment. Use when SMILES contains '.' separators.",
         "parameters": {
           "type": "object",
           "properties": {
             "smiles": {
-              "type": "string",
-              "description": "SMILES string (may contain salts)."
+              "type": "string"
             }
           },
           "required": [
             "smiles"
-          ],
-          "additionalProperties": false
+          ]
         }
       }
     },
     {
       "type": "function",
       "function": {
-        "name": "evaluate_arithmetic",
-        "description": "Evaluate a simple arithmetic expression. Supports basic math operations (+, -, *, /) and functions: exp, log, sqrt, sin, cos, round.",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "expression": {
-              "type": "string",
-              "description": "The arithmetic expression to evaluate."
-            }
-          },
-          "required": [
-            "expression"
-          ],
-          "additionalProperties": false
-        }
-      }
-    },
-    {
-      "type": "function",
-      "function": {
-        "name": "get_electronic_properties",
-        "description": "Compute electronic properties: HOMO/LUMO energies and gap, dipole moment, electrophilicity index. Uses GFN2-xTB semi-empirical quantum chemistry if available, otherwise falls back to RDKit Gasteiger charges. HOMO-LUMO gap indicates reactivity (small gap → more reactive → potential mutagenicity). Dipole moment correlates with solubility and membrane permeability.",
+        "name": "predict_metabolites",
+        "description": "Predict top CYP450 metabolites (Phase 1 and Phase 2) with reaction types and priority scores.",
         "parameters": {
           "type": "object",
           "properties": {
             "smiles": {
-              "type": "string",
-              "description": "SMILES string of the molecule."
+              "type": "string"
             }
           },
           "required": [
             "smiles"
-          ],
-          "additionalProperties": false
+          ]
+        }
+      }
+    }
+  ],
+  "CYP2C9_Substrate_CarbonMangels": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_molecule_profile",
+        "description": "Compute physicochemical profile: MW, logP, TPSA, HBD/HBA, rotatable bonds, Fsp3, QED, Lipinski violations, complexity, topology indices, pharmacophore counts, and electronic properties.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
         }
       }
     },
     {
       "type": "function",
       "function": {
-        "name": "predict_metabolism_sites",
-        "description": "Predict which atoms in a molecule are most likely to be oxidized by cytochrome P450 enzymes. Uses FAME3R (generic Phase 1 & 2 SoM) or RDKit SMARTS heuristics as fallback. Use for: (1) CYP inhibition tasks — SoM reasoning about enzyme-substrate interactions; (2) DILI — identifying reactive metabolite formation sites; (3) AMES — metabolic activation of pro-mutagens.",
+        "name": "analyze_functional_groups",
+        "description": "Identify functional groups and chemical motifs with fragment SMILES and attachment points.",
         "parameters": {
           "type": "object",
           "properties": {
             "smiles": {
-              "type": "string",
-              "description": "SMILES string of the molecule."
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_ring_systems",
+        "description": "Analyze ring topology: sizes, heteroatom content, aromaticity, and flags for PAH, macrocycle, spiro, and bridgehead features.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "assess_adme_properties",
+        "description": "Predict pKa, ionization state, logD, and solubility (pKa → ionization → logD → permeability).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
             },
-            "engine": {
-              "type": "string",
-              "description": "Prediction backend: 'auto' (default), 'fame3r', or 'rdkit'.",
-              "enum": [
-                "auto",
-                "fame3r",
-                "rdkit"
-              ]
+            "ph": {
+              "type": "number",
+              "description": "Target pH (default: 7.4)."
             }
           },
           "required": [
             "smiles"
-          ],
-          "additionalProperties": false
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "screen_structural_alerts",
+        "description": "Screen for toxicophores and structural alerts with mechanistic categories (e.g. Michael acceptors, alkylating agents, PAH). Includes ToxAlerts endpoint patterns and pharmacophore feature counts.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "remove_salts",
+        "description": "Strip salts and counterions, keeping the largest organic fragment. Use when SMILES contains '.' separators.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "predict_metabolites",
+        "description": "Predict top CYP450 metabolites (Phase 1 and Phase 2) with reaction types and priority scores.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_3d_properties",
+        "description": "Compute 3D conformer properties: exposed polar surface area (ePSA) and shape (PMI rod/disc/sphere).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    }
+  ],
+  "HIA_Hou": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_molecule_profile",
+        "description": "Compute physicochemical profile: MW, logP, TPSA, HBD/HBA, rotatable bonds, Fsp3, QED, Lipinski violations, complexity, topology indices, pharmacophore counts, and electronic properties.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_functional_groups",
+        "description": "Identify functional groups and chemical motifs with fragment SMILES and attachment points.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_ring_systems",
+        "description": "Analyze ring topology: sizes, heteroatom content, aromaticity, and flags for PAH, macrocycle, spiro, and bridgehead features.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "assess_adme_properties",
+        "description": "Predict pKa, ionization state, logD, and solubility (pKa → ionization → logD → permeability).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            },
+            "ph": {
+              "type": "number",
+              "description": "Target pH (default: 7.4)."
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "screen_structural_alerts",
+        "description": "Screen for toxicophores and structural alerts with mechanistic categories (e.g. Michael acceptors, alkylating agents, PAH). Includes ToxAlerts endpoint patterns and pharmacophore feature counts.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "remove_salts",
+        "description": "Strip salts and counterions, keeping the largest organic fragment. Use when SMILES contains '.' separators.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "predict_metabolites",
+        "description": "Predict top CYP450 metabolites (Phase 1 and Phase 2) with reaction types and priority scores.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_3d_properties",
+        "description": "Compute 3D conformer properties: exposed polar surface area (ePSA) and shape (PMI rod/disc/sphere).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    }
+  ],
+  "BBB_Martins": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_molecule_profile",
+        "description": "Compute physicochemical profile: MW, logP, TPSA, HBD/HBA, rotatable bonds, Fsp3, QED, Lipinski violations, complexity, topology indices, pharmacophore counts, and electronic properties.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_functional_groups",
+        "description": "Identify functional groups and chemical motifs with fragment SMILES and attachment points.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_ring_systems",
+        "description": "Analyze ring topology: sizes, heteroatom content, aromaticity, and flags for PAH, macrocycle, spiro, and bridgehead features.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "assess_adme_properties",
+        "description": "Predict pKa, ionization state, logD, and solubility (pKa → ionization → logD → permeability).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            },
+            "ph": {
+              "type": "number",
+              "description": "Target pH (default: 7.4)."
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "screen_structural_alerts",
+        "description": "Screen for toxicophores and structural alerts with mechanistic categories (e.g. Michael acceptors, alkylating agents, PAH). Includes ToxAlerts endpoint patterns and pharmacophore feature counts.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "remove_salts",
+        "description": "Strip salts and counterions, keeping the largest organic fragment. Use when SMILES contains '.' separators.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "predict_metabolites",
+        "description": "Predict top CYP450 metabolites (Phase 1 and Phase 2) with reaction types and priority scores.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_3d_properties",
+        "description": "Compute 3D conformer properties: exposed polar surface area (ePSA) and shape (PMI rod/disc/sphere).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    }
+  ],
+  "CYP3A4_Substrate_CarbonMangels": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_molecule_profile",
+        "description": "Compute physicochemical profile: MW, logP, TPSA, HBD/HBA, rotatable bonds, Fsp3, QED, Lipinski violations, complexity, topology indices, pharmacophore counts, and electronic properties.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_functional_groups",
+        "description": "Identify functional groups and chemical motifs with fragment SMILES and attachment points.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_ring_systems",
+        "description": "Analyze ring topology: sizes, heteroatom content, aromaticity, and flags for PAH, macrocycle, spiro, and bridgehead features.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "assess_adme_properties",
+        "description": "Predict pKa, ionization state, logD, and solubility (pKa → ionization → logD → permeability).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            },
+            "ph": {
+              "type": "number",
+              "description": "Target pH (default: 7.4)."
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "screen_structural_alerts",
+        "description": "Screen for toxicophores and structural alerts with mechanistic categories (e.g. Michael acceptors, alkylating agents, PAH). Includes ToxAlerts endpoint patterns and pharmacophore feature counts.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "remove_salts",
+        "description": "Strip salts and counterions, keeping the largest organic fragment. Use when SMILES contains '.' separators.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "predict_metabolites",
+        "description": "Predict top CYP450 metabolites (Phase 1 and Phase 2) with reaction types and priority scores.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_3d_properties",
+        "description": "Compute 3D conformer properties: exposed polar surface area (ePSA) and shape (PMI rod/disc/sphere).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    }
+  ],
+  "CYP2D6_Substrate_CarbonMangels": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_molecule_profile",
+        "description": "Compute physicochemical profile: MW, logP, TPSA, HBD/HBA, rotatable bonds, Fsp3, QED, Lipinski violations, complexity, topology indices, pharmacophore counts, and electronic properties.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_functional_groups",
+        "description": "Identify functional groups and chemical motifs with fragment SMILES and attachment points.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_ring_systems",
+        "description": "Analyze ring topology: sizes, heteroatom content, aromaticity, and flags for PAH, macrocycle, spiro, and bridgehead features.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "assess_adme_properties",
+        "description": "Predict pKa, ionization state, logD, and solubility (pKa → ionization → logD → permeability).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            },
+            "ph": {
+              "type": "number",
+              "description": "Target pH (default: 7.4)."
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "screen_structural_alerts",
+        "description": "Screen for toxicophores and structural alerts with mechanistic categories (e.g. Michael acceptors, alkylating agents, PAH). Includes ToxAlerts endpoint patterns and pharmacophore feature counts.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "remove_salts",
+        "description": "Strip salts and counterions, keeping the largest organic fragment. Use when SMILES contains '.' separators.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "predict_metabolites",
+        "description": "Predict top CYP450 metabolites (Phase 1 and Phase 2) with reaction types and priority scores.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_3d_properties",
+        "description": "Compute 3D conformer properties: exposed polar surface area (ePSA) and shape (PMI rod/disc/sphere).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    }
+  ],
+  "SARSCoV2_3CLPro_Diamond": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_molecule_profile",
+        "description": "Compute physicochemical profile: MW, logP, TPSA, HBD/HBA, rotatable bonds, Fsp3, QED, Lipinski violations, complexity, topology indices, pharmacophore counts, and electronic properties.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_functional_groups",
+        "description": "Identify functional groups and chemical motifs with fragment SMILES and attachment points.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_ring_systems",
+        "description": "Analyze ring topology: sizes, heteroatom content, aromaticity, and flags for PAH, macrocycle, spiro, and bridgehead features.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "assess_adme_properties",
+        "description": "Predict pKa, ionization state, logD, and solubility (pKa → ionization → logD → permeability).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            },
+            "ph": {
+              "type": "number",
+              "description": "Target pH (default: 7.4)."
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "screen_structural_alerts",
+        "description": "Screen for toxicophores and structural alerts with mechanistic categories (e.g. Michael acceptors, alkylating agents, PAH). Includes ToxAlerts endpoint patterns and pharmacophore feature counts.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "remove_salts",
+        "description": "Strip salts and counterions, keeping the largest organic fragment. Use when SMILES contains '.' separators.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "predict_metabolites",
+        "description": "Predict top CYP450 metabolites (Phase 1 and Phase 2) with reaction types and priority scores.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_3d_properties",
+        "description": "Compute 3D conformer properties: exposed polar surface area (ePSA) and shape (PMI rod/disc/sphere).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    }
+  ],
+  "PAMPA_NCATS": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_molecule_profile",
+        "description": "Compute physicochemical profile: MW, logP, TPSA, HBD/HBA, rotatable bonds, Fsp3, QED, Lipinski violations, complexity, topology indices, pharmacophore counts, and electronic properties.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_functional_groups",
+        "description": "Identify functional groups and chemical motifs with fragment SMILES and attachment points.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_ring_systems",
+        "description": "Analyze ring topology: sizes, heteroatom content, aromaticity, and flags for PAH, macrocycle, spiro, and bridgehead features.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "assess_adme_properties",
+        "description": "Predict pKa, ionization state, logD, and solubility (pKa → ionization → logD → permeability).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            },
+            "ph": {
+              "type": "number",
+              "description": "Target pH (default: 7.4)."
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "screen_structural_alerts",
+        "description": "Screen for toxicophores and structural alerts with mechanistic categories (e.g. Michael acceptors, alkylating agents, PAH). Includes ToxAlerts endpoint patterns and pharmacophore feature counts.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "remove_salts",
+        "description": "Strip salts and counterions, keeping the largest organic fragment. Use when SMILES contains '.' separators.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "predict_metabolites",
+        "description": "Predict top CYP450 metabolites (Phase 1 and Phase 2) with reaction types and priority scores.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_3d_properties",
+        "description": "Compute 3D conformer properties: exposed polar surface area (ePSA) and shape (PMI rod/disc/sphere).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    }
+  ],
+  "Bioavailability_Ma": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_molecule_profile",
+        "description": "Compute physicochemical profile: MW, logP, TPSA, HBD/HBA, rotatable bonds, Fsp3, QED, Lipinski violations, complexity, topology indices, pharmacophore counts, and electronic properties.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_functional_groups",
+        "description": "Identify functional groups and chemical motifs with fragment SMILES and attachment points.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_ring_systems",
+        "description": "Analyze ring topology: sizes, heteroatom content, aromaticity, and flags for PAH, macrocycle, spiro, and bridgehead features.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "assess_adme_properties",
+        "description": "Predict pKa, ionization state, logD, and solubility (pKa → ionization → logD → permeability).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            },
+            "ph": {
+              "type": "number",
+              "description": "Target pH (default: 7.4)."
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "screen_structural_alerts",
+        "description": "Screen for toxicophores and structural alerts with mechanistic categories (e.g. Michael acceptors, alkylating agents, PAH). Includes ToxAlerts endpoint patterns and pharmacophore feature counts.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "remove_salts",
+        "description": "Strip salts and counterions, keeping the largest organic fragment. Use when SMILES contains '.' separators.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "predict_metabolites",
+        "description": "Predict top CYP450 metabolites (Phase 1 and Phase 2) with reaction types and priority scores.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_3d_properties",
+        "description": "Compute 3D conformer properties: exposed polar surface area (ePSA) and shape (PMI rod/disc/sphere).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    }
+  ],
+  "Pgp_Broccatelli": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_molecule_profile",
+        "description": "Compute physicochemical profile: MW, logP, TPSA, HBD/HBA, rotatable bonds, Fsp3, QED, Lipinski violations, complexity, topology indices, pharmacophore counts, and electronic properties.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_functional_groups",
+        "description": "Identify functional groups and chemical motifs with fragment SMILES and attachment points.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_ring_systems",
+        "description": "Analyze ring topology: sizes, heteroatom content, aromaticity, and flags for PAH, macrocycle, spiro, and bridgehead features.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "assess_adme_properties",
+        "description": "Predict pKa, ionization state, logD, and solubility (pKa → ionization → logD → permeability).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            },
+            "ph": {
+              "type": "number",
+              "description": "Target pH (default: 7.4)."
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "screen_structural_alerts",
+        "description": "Screen for toxicophores and structural alerts with mechanistic categories (e.g. Michael acceptors, alkylating agents, PAH). Includes ToxAlerts endpoint patterns and pharmacophore feature counts.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "remove_salts",
+        "description": "Strip salts and counterions, keeping the largest organic fragment. Use when SMILES contains '.' separators.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "predict_metabolites",
+        "description": "Predict top CYP450 metabolites (Phase 1 and Phase 2) with reaction types and priority scores.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_3d_properties",
+        "description": "Compute 3D conformer properties: exposed polar surface area (ePSA) and shape (PMI rod/disc/sphere).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles"
+          ]
         }
       }
     }

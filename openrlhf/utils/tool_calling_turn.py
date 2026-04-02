@@ -242,13 +242,13 @@ class ToolCallingTurn(AgentInstanceBase):
                 format_reward = 0
             elif parse_method == "primary":
                 # Best case: harmony token-ID parser succeeded on first try
-                format_reward = 0.0015
+                format_reward = 0.05
             elif parse_method == "fallback":
                 # Harmony succeeded after prepending assistant header — neutral
-                format_reward = 0
+                format_reward = 0.05
             elif parse_method == "regex":
                 # Had to fall back to regex — mild penalty
-                format_reward = -0.0015
+                format_reward = 0.05
             else:
                 raise ValueError(f"Unknown parse method: {parse_method}")
             extra_logs["format_reward"] = format_reward
@@ -267,7 +267,7 @@ class ToolCallingTurn(AgentInstanceBase):
         # Apply an explicit penalty to discourage malformed harmony headers.
         parse_failed = action.get("parse_failed", False)
         if parse_failed:
-            parse_penalty = -0.0025 if self._enable_tool_calling_rewards else 0
+            parse_penalty = -0.025 if self._enable_tool_calling_rewards else 0
             base_logs["format_reward"] = parse_penalty
             return {
                 "environment_feedback": "",
@@ -385,8 +385,8 @@ class ToolCallingTurn(AgentInstanceBase):
 # Executor (required name for vllm_engine._load_agent_executor)
 # ---------------------------------------------------------------------------
 class AgentExecutor(MultiTurnAgentExecutor):
-    def __init__(self, reward_fn=None, length_penalty_max_length: int = 0, enable_tool_calling_rewards: bool = True, **kwargs):
-        super().__init__(ToolCallingTurn, reward_fn=reward_fn, length_penalty_max_length=length_penalty_max_length, enable_tool_calling_rewards=enable_tool_calling_rewards, **kwargs)
+    def __init__(self, reward_fn=None, length_penalty_start: int = 0, enable_tool_calling_rewards: bool = True, **kwargs):
+        super().__init__(ToolCallingTurn, reward_fn=reward_fn, length_penalty_start=length_penalty_start, enable_tool_calling_rewards=enable_tool_calling_rewards, **kwargs)
 
 
 __all__ = ["ToolCallingTurn", "AgentExecutor"]

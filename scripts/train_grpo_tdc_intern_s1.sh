@@ -51,7 +51,10 @@
 #   EXTRA_ARGS="..."                     # Additional CLI flags
 #
 
+eval "$(conda shell.bash hook)"
+conda activate "${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/open_rlhf_intern}"
 set -euo pipefail
+export DS_SKIP_CUDA_CHECK=1
 
 module load cuda/13.1.0
 
@@ -69,7 +72,7 @@ MODE="${MODE:-colocated}"
 EFFECTIVE_ROLLOUT_BATCH_SIZE="${EFFECTIVE_ROLLOUT_BATCH_SIZE:-8}"
 EFFECTIVE_MINI_GRADIENT_STEPS="${EFFECTIVE_MINI_GRADIENT_STEPS:-2}"
 ASYNC_ADVANTAGE="${ASYNC_ADVANTAGE:-4}"
-TOOL_VERSION="${TOOL_VERSION:-v4}"
+TOOL_VERSION="${TOOL_VERSION:-v6}"
 SMART_REPLAY="${SMART_REPLAY:-0}"
 MAX_REPLAY_ROUNDS="${MAX_REPLAY_ROUNDS:-1}"
 
@@ -83,7 +86,7 @@ TIS="${TIS:-0}"
 TIS_TYPE="${TIS_TYPE:-tis}"
 TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
 QAT="${QAT:-}"
-KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-}"
+KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-fp8}"
 REDUCE_OPTIMIZER="${REDUCE_OPTIMIZER:-adam_offload}"
 MAX_EPOCHS="${MAX_EPOCHS:-1}"
 USE_LORA="${USE_LORA:-0}"
@@ -93,7 +96,7 @@ VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-256}"
 VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE="${VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE:-}"
-LENGTH_PENALTY_MAX_LENGTH="${LENGTH_PENALTY_MAX_LENGTH:-0}"
+LENGTH_PENALTY_START="${LENGTH_PENALTY_START:-0}"
 
 export TORCH_DYNAMO_CACHE_SIZE_LIMIT=1024
 export TORCH_DYNAMO_RECOMPILE_LIMIT=1024
@@ -113,7 +116,7 @@ if [ "$MODE" = "colocated" ]; then
     ACTOR_GPUS="${ACTOR_GPUS:-$NUM_GPUS}"
     VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
     ROLLOUT_BATCH_SIZE=$(( EFFECTIVE_ROLLOUT_BATCH_SIZE * ASYNC_ADVANTAGE ))
-    MINI_GRADIENT_STEPS=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
+    MINI_GRADIENT_STEPS=$(( EFFECTIVE_MINI_GRADIENT_STEPS))
     VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.83}"
     VLLM_SYNC_BACKEND=nccl
     EVAL_STEPS="${EVAL_STEPS:-$COLO_EVAL_STEPS}"
@@ -165,7 +168,7 @@ fi
 
 ### WARMUP LOGIC ###
 WARMUP_STEPS=10
-WARM_STEPS_MULTIPLIER=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
+WARM_STEPS_MULTIPLIER=$(( MINI_GRADIENT_STEPS ))
 
 ### MULTI-TASK ###
 TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
@@ -417,10 +420,7 @@ fi
 OPTIONAL_FLAGS+=" --oversample_ratio $OVERSAMPLE_RATIO"
 
 if [ "$LIGER_GRPO_LOSS" = "1" ]; then
-    OPTIONAL_FLAGS+=" --use_liger_grpo_loss --liger_grpo_backend $LIGER_GRPO_BACKEND"
-    if [ "$LIGER_GRPO_BACKEND" = "chunked" ]; then
-        OPTIONAL_FLAGS+=" --liger_chunk_size $LIGER_CHUNK_SIZE"
-    fi
+    OPTIONAL_FLAGS+=" --use_liger_grpo_loss"
 fi
 if [ "$TIS" = "1" ]; then
     OPTIONAL_FLAGS+=" --enable_vllm_is_correction --vllm_is_correction_type $TIS_TYPE --vllm_is_truncated_threshold $TIS_THRESHOLDS"
@@ -434,8 +434,8 @@ fi
 if [ -n "$VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE" ]; then
     OPTIONAL_FLAGS+=" --vllm_cudagraph_max_capture_size $VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE"
 fi
-if [ "$LENGTH_PENALTY_MAX_LENGTH" -gt 0 ]; then
-    OPTIONAL_FLAGS+=" --length_penalty_max_length $LENGTH_PENALTY_MAX_LENGTH"
+if [ "$LENGTH_PENALTY_START" -gt 0 ]; then
+    OPTIONAL_FLAGS+=" --length_penalty_start $LENGTH_PENALTY_START"
 fi
 if [ "$USE_LORA" = "1" ]; then
     OPTIONAL_FLAGS+=" --lora_rank $LORA_RANK --lora_alpha $LORA_ALPHA"

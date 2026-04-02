@@ -416,6 +416,7 @@ class Actor(nn.Module):
             pass
         return model.lm_head
 
+
     def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs={"use_reentrant": False}):
         self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
 

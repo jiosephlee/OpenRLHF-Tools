@@ -138,6 +138,41 @@ class BasePPOTrainer(ABC):
         self.wandb_logger = WandbLogger(self.args) if self.args.use_wandb else None
         self.tensorboard_logger = TensorboardLogger(self.args) if self.args.use_tensorboard else None
 
+    def _get_response_text(self, seq, action_mask=None) -> str:
+        """Helper to decode a sequence and strip the prompt and special/pad tokens.
+
+        If *action_mask* is provided (shape ``(S-1,)`` aligned with ``seq[1:]``),
+        the first action token position is used to split prompt from response —
+        much more reliable than hunting for protocol-specific string markers.
+        """
+        pad_id = self.tokenizer.pad_token_id
+        eos_id = self.tokenizer.eos_token_id
+        end_idx = len(seq)
+        while end_idx > 0 and seq[end_idx - 1].item() in (pad_id, eos_id, 0):
+            end_idx -= 1
+
+        # ── Fast path: use action_mask to locate response start ──
+        if action_mask is not None:
+            ones = torch.where(action_mask)[0]
+            if len(ones) > 0:
+                # action_mask[k] corresponds to seq[k+1]
+                resp_start = ones[0].item() + 1
+                return self.tokenizer.decode(seq[resp_start:end_idx], skip_special_tokens=True)
+
+        # ── Fallback: string-marker splitting ──
+        protocol = os.environ.get("OPENRLHF_CHAT_PROTOCOL", "")
+        if protocol == "gpt_oss":
+            _split_marker = "<|start|>assistant"
+        elif protocol in ("intern_s1", "qwen3"):
+            _split_marker = "<|im_start|>assistant"
+        else:
+            _split_marker = None
+
+        full_text = self.tokenizer.decode(seq[:end_idx], skip_special_tokens=False)
+        if _split_marker and _split_marker in full_text:
+            return full_text[full_text.index(_split_marker):]
+        return self.tokenizer.decode(seq[:end_idx], skip_special_tokens=True)
+
     def fit(self, global_step: int = 0) -> None:
         raise NotImplementedError("fit method is not implemented")
 
@@ -309,10 +344,17 @@ class BasePPOTrainer(ABC):
 
         # First collect all prompts and labels
         prompt_to_datasource = {}  # Dictionary to store mapping between prompts and their data sources
-        for _indices, datasources, prompts, labels in self.eval_dataloader:
-            # Create mapping for each prompt to its corresponding data source
-            for prompt, datasource in zip(prompts, datasources):
+        prompt_to_knn_pl = {}      # prompt -> KNN pseudo-label (or None)
+        for batch in self.eval_dataloader:
+            # Support both 4-tuple (legacy) and 5-tuple (with knn_pseudo_labels)
+            if len(batch) == 5:
+                _indices, datasources, prompts, labels, knn_pls = batch
+            else:
+                _indices, datasources, prompts, labels = batch
+                knn_pls = [None] * len(prompts)
+            for prompt, datasource, knn_pl in zip(prompts, datasources, knn_pls):
                 prompt_to_datasource[prompt] = datasource
+                prompt_to_knn_pl[prompt] = knn_pl
 
         # Generate samples and calculate rewards
         samples_list = self.samples_generator.generate_eval_samples(global_step=global_step, **generate_kwargs)
@@ -325,10 +367,14 @@ class BasePPOTrainer(ABC):
 
         # Get rewards from samples, such as agent rewards or remote reward models
         rewards_list = []
+        scores_list = []
         for samples in samples_list:
             rewards_list.append(samples.rewards)
-        # Reshape rewards to (num_prompts, n_samples_per_prompt)
+            # scores is the pure correctness signal (0/1), without format bonuses
+            scores_list.append(samples.scores.item() if samples.scores is not None else samples.rewards)
+        # Reshape to (num_prompts, n_samples_per_prompt)
         rewards = torch.tensor(rewards_list).reshape(-1, n_samples_per_prompt)
+        scores = torch.tensor(scores_list).reshape(-1, n_samples_per_prompt)
 
         # Collect local statistics for each data source
         global_metrics = {}  # {datasource: {"pass{n_samples_per_prompt}": 0, "pass1": 0, "count": 0}}
@@ -342,14 +388,26 @@ class BasePPOTrainer(ABC):
             if datasource not in global_metrics:
                 global_metrics[datasource] = {f"pass{n_samples_per_prompt}": 0, "pass1": 0, "count": 0}
 
-            # Get rewards for this chunk
-            chunk_rewards = rewards[i]
+            # Use scores (pure correctness 0/1) for accuracy, not rewards (which include format bonuses)
+            chunk_scores = scores[i]
 
             # Calculate pass@k and pass@1
             if n_samples_per_prompt > 1:
-                global_metrics[datasource][f"pass{n_samples_per_prompt}"] += chunk_rewards.max().float().item()
-            global_metrics[datasource]["pass1"] += chunk_rewards.mean().float().item()
+                global_metrics[datasource][f"pass{n_samples_per_prompt}"] += chunk_scores.max().float().item()
+            global_metrics[datasource]["pass1"] += chunk_scores.mean().float().item()
             global_metrics[datasource]["count"] += 1
+
+        # Collect response lengths for correct/incorrect samples.
+        correct_lengths = []
+        incorrect_lengths = []
+        for i in range(num_prompts):
+            for j in range(n_samples_per_prompt):
+                exp = samples_list[i * n_samples_per_prompt + j]
+                resp_len = int(exp.action_mask.sum().item()) if exp.action_mask is not None else 0
+                if scores[i][j].item() > 0:
+                    correct_lengths.append(resp_len)
+                else:
+                    incorrect_lengths.append(resp_len)
 
         # Calculate global averages
         logs = {}
@@ -367,15 +425,26 @@ class BasePPOTrainer(ABC):
                 passk_values = [logs[f"eval_{ds}_pass{n_samples_per_prompt}"] for ds in global_metrics]
                 logs[f"eval_avg_pass{n_samples_per_prompt}"] = sum(passk_values) / len(passk_values)
 
+        # Log response length metrics (correct vs incorrect).
+        if correct_lengths:
+            logs["eval_avg_length_correct"] = sum(correct_lengths) / len(correct_lengths)
+        if incorrect_lengths:
+            logs["eval_avg_length_incorrect"] = sum(incorrect_lengths) / len(incorrect_lengths)
+
         # TDC-only macro-F1 (per task/datasource + average)
         if is_tdc_eval:
             labels_by_datasource = defaultdict(list)
             preds_by_datasource = defaultdict(list)
             for prompt, label, sample in zip(all_prompts, all_labels, samples_list):
                 datasource = prompt_to_datasource[prompt]
-                text = self.tokenizer.decode(sample.sequences[0], skip_special_tokens=False)
+                text = self._get_response_text(sample.sequences[0])
+                try:
+                    pred = _extract_tdc_binary_choice(text)
+                except ValueError:
+                    pred = "UNPARSEABLE"
+                    logger.warning(f"[eval] Unparseable prediction for {datasource}: {text[:200]!r}")
                 labels_by_datasource[datasource].append(_extract_tdc_binary_choice(label))
-                preds_by_datasource[datasource].append(_extract_tdc_binary_choice(text))
+                preds_by_datasource[datasource].append(pred)
 
             macro_f1_values = []
             for datasource in labels_by_datasource:
@@ -398,11 +467,92 @@ class BasePPOTrainer(ABC):
         )
         self._write_eval_metrics(global_step, global_metrics, logs, n_samples_per_prompt)
 
+        #### KNN eval metrics ####
+        knn_eval_total = 0
+        knn_eval_reversed = 0
+        knn_eval_correct_reversal = 0
+        knn_eval_incorrect_reversal = 0
+        for i in range(num_prompts):
+            original_prompt = all_prompts[i * n_samples_per_prompt]
+            knn_pl = prompt_to_knn_pl.get(original_prompt)
+            if knn_pl is None:
+                continue
+            knn_eval_total += 1
+            true_answer = all_labels[i * n_samples_per_prompt]
+            chunk_scores = scores[i]
+            model_correct = chunk_scores.max().item() > 0
+            knn_agrees_with_truth = knn_pl in str(true_answer)
+            reversed_knn = model_correct != knn_agrees_with_truth
+            if reversed_knn:
+                knn_eval_reversed += 1
+                if model_correct:
+                    knn_eval_correct_reversal += 1
+                else:
+                    knn_eval_incorrect_reversal += 1
+        if knn_eval_total > 0:
+            logs["knn_eval_reversal_pct"] = knn_eval_reversed / knn_eval_total * 100
+            logs["knn_eval_correct_reversal_pct"] = knn_eval_correct_reversal / knn_eval_total * 100
+            logs["knn_eval_incorrect_reversal_pct"] = knn_eval_incorrect_reversal / knn_eval_total * 100
+            logs["knn_eval_total"] = knn_eval_total
+        #### end KNN eval metrics ####
+
         # Log to wandb/tensorboard
         if self.wandb_logger:
             self.wandb_logger.log_eval(global_step, logs)
         if self.tensorboard_logger:
             self.tensorboard_logger.log_eval(global_step, logs)
+
+        #### Eval sample saving (Phase 12) ####
+        try:
+            eval_traces_dir = getattr(self.samples_generator, "eval_traces_dir", None)
+            if eval_traces_dir and self.strategy.is_rank_0():
+                correct_samples = {}  # datasource -> sample dict
+                wrong_samples = {}    # datasource -> sample dict
+
+                for i in range(num_prompts):
+                    original_prompt = all_prompts[i * n_samples_per_prompt]
+                    datasource = prompt_to_datasource.get(original_prompt, "unknown")
+                    chunk_scores = scores[i]
+                    chunk_rewards = rewards[i]
+
+                    best_idx = chunk_scores.argmax().item()
+                    worst_idx = chunk_scores.argmin().item()
+
+                    # Correct sample: highest score > 0, one per datasource
+                    if chunk_scores[best_idx].item() > 0 and datasource not in correct_samples:
+                        exp = samples_list[i * n_samples_per_prompt + best_idx]
+                        correct_samples[datasource] = {
+                            "prompt": original_prompt,
+                            "response": self._get_response_text(exp.sequences[0], exp.action_mask[0] if exp.action_mask is not None else None),
+                            "reward": chunk_rewards[best_idx].item(),
+                        }
+
+                    # Wrong sample: prefer truly wrong (score <= 0), otherwise keep lowest-score
+                    worst_score = chunk_scores[worst_idx].item()
+                    if datasource not in wrong_samples or (
+                        worst_score <= 0 and wrong_samples[datasource].get("score", 1) > 0
+                    ):
+                        exp = samples_list[i * n_samples_per_prompt + worst_idx]
+                        wrong_samples[datasource] = {
+                            "prompt": original_prompt,
+                            "response": self._get_response_text(exp.sequences[0], exp.action_mask[0] if exp.action_mask is not None else None),
+                            "reward": chunk_rewards[worst_idx].item(),
+                            "score": worst_score,
+                        }
+
+                eval_trace = {"global_step": global_step, "datasources": {}}
+                for ds in set(list(correct_samples) + list(wrong_samples)):
+                    eval_trace["datasources"][ds] = {
+                        "correct": correct_samples.get(ds),
+                        "wrong": wrong_samples.get(ds),
+                    }
+
+                trace_path = os.path.join(eval_traces_dir, f"eval_step_{global_step}.json")
+                with open(trace_path, "w") as f:
+                    json.dump(eval_trace, f, indent=2, ensure_ascii=False, default=str)
+        except Exception as e:
+            logger.warning(f"Failed to save eval traces: {e}")
+        #### end eval sample saving ####
 
         end_time = time.time()
         duration = end_time - start_time
@@ -482,6 +632,19 @@ class BasePPOTrainer(ABC):
         backward_start_time = time.time()
         ppo_status = self.ppo_train(global_step)
         time_backward_pass = time.time() - backward_start_time
+
+        # Compute policy training throughput (mirrors nemo-rl's policy_training_tokens_per_sec_per_gpu).
+        # total_trained_tokens is a raw sum (not averaged) injected by ppo_actor.ppo_train().
+        # We pop it here so it doesn't flow into W&B as a raw float average.
+        total_trained_tokens = ppo_status.pop("total_trained_tokens", None)
+        train_time = time_backward_pass
+        num_training_gpus = self.args.actor_num_nodes * self.args.actor_num_gpus_per_node
+        if total_trained_tokens and train_time > 0:
+            status["policy/total_trained_tokens"] = total_trained_tokens
+            status["policy/training_tokens_per_sec_per_gpu"] = round(
+                total_trained_tokens / train_time / num_training_gpus, 1
+            )
+
         status.update(ppo_status)
         status["time/backward_pass"] = time_backward_pass
 
@@ -604,18 +767,33 @@ class BasePPOTrainer(ABC):
             rewards = torch.empty_like(raw_rewards)
             rewards[indices] = raw_rewards
 
-            # Also collect sequences, prompts, labels in the same sorted order.
-            # Pad sequences to the same length before concatenating (shards may differ).
+            # Also collect sequences, action_masks, prompts, labels in the same sorted order.
+            # Pad sequences and action_masks to the same length before concatenating (shards may differ).
             max_seq_len = max(exp.sequences.size(1) for exp in experiences)
             padded = []
+            padded_masks = []
             for exp in experiences:
                 seq = exp.sequences
                 if seq.size(1) < max_seq_len:
                     seq = torch.nn.functional.pad(seq, (0, max_seq_len - seq.size(1)), value=self.tokenizer.pad_token_id or 0)
                 padded.append(seq)
+                if exp.action_mask is not None:
+                    am = exp.action_mask
+                    # action_mask is (B, S-1); pad to max_seq_len - 1
+                    target_len = max_seq_len - 1
+                    if am.size(1) < target_len:
+                        am = torch.nn.functional.pad(am, (0, target_len - am.size(1)), value=0)
+                    padded_masks.append(am)
             all_sequences = torch.cat(padded, dim=0)
             sequences = torch.empty_like(all_sequences)
             sequences[indices] = all_sequences
+
+            # Sort action_masks into prompt order (if available).
+            action_masks = None
+            if padded_masks and len(padded_masks) == len(padded):
+                all_action_masks = torch.cat(padded_masks, dim=0)
+                action_masks = torch.empty_like(all_action_masks)
+                action_masks[indices] = all_action_masks
 
             all_prompts = sum([exp.prompts for exp in experiences], [])
             all_labels = sum([exp.labels for exp in experiences], [])
@@ -651,26 +829,28 @@ class BasePPOTrainer(ABC):
             if not found:
                 return
 
-            _decode_fn = self.tokenizer.decode if _TRANSFORMERS_V5 else lambda seq: self.tokenizer.batch_decode([seq], skip_special_tokens=True)[0]
-
             for gtype, gi in found.items():
                 start = gi * n_samples
                 end = start + n_samples
                 group_rewards = rewards[start:end].tolist()
+                group_prompt = sorted_prompts[start] if start < len(sorted_prompts) else ""
+                group_label = sorted_labels[start] if start < len(sorted_labels) else ""
                 samples = []
                 for si in range(start, end):
-                    decoded = _decode_fn(sequences[si], skip_special_tokens=True) if _TRANSFORMERS_V5 else self.tokenizer.decode(sequences[si], skip_special_tokens=True)
+                    seq = sequences[si]
+                    am = action_masks[si] if action_masks is not None else None
+                    response_text = self._get_response_text(seq, am)
                     samples.append({
                         "reward": group_rewards[si - start],
-                        "decoded_text": decoded,
-                        "prompt": sorted_prompts[si] if si < len(sorted_prompts) else "",
-                        "label": sorted_labels[si] if si < len(sorted_labels) else "",
+                        "response_text": response_text,
                     })
 
                 record = {
                     "step": global_step,
                     "type": gtype,
                     "group_rewards": group_rewards,
+                    "prompt": group_prompt,
+                    "label": group_label,
                     "samples": samples,
                 }
                 trace_path = os.path.join(trace_dir, f"group_trace_step{global_step}_{gtype}.json")
@@ -813,7 +993,11 @@ class PPOTrainer(BasePPOTrainer):
 
     #### Oversampling: LeftOverPrompts phase ####
     def _run_leftover_phase(self, episode: int, global_step: int, total_consumed_prompts: int) -> int:
-        """Dispatch remaining missed_indices without oversampling."""
+        """Dispatch remaining missed_indices in two passes.
+
+        Phase 1: mild oversampling (default 1.5×) with dynamic filtering still active.
+        Phase 2: no oversampling (1.0×) to sweep up whatever Phase 1 left behind.
+        """
         missed_indices = self.samples_generator.get_missed_indices()
         if len(missed_indices) < self.args.rollout_batch_size:
             if missed_indices:
@@ -823,9 +1007,46 @@ class PPOTrainer(BasePPOTrainer):
                 )
             return global_step
 
-        logger.info(f"[LeftOverPrompts] Processing {len(missed_indices)} missed indices")
+        saved_dataloader = self.samples_generator.prompts_dataloader
 
-        # Create Subset dataloader from missed_indices.
+        # --- Phase 1: mild oversampling ---
+        leftover_oversample = getattr(self.args, "leftover_oversample_ratio", 1.5)
+        logger.info(
+            f"[LeftOverPrompts] Phase 1: processing {len(missed_indices)} missed indices "
+            f"(oversample_ratio={leftover_oversample})"
+        )
+        global_step = self._run_leftover_pass(
+            episode, global_step, total_consumed_prompts,
+            missed_indices, oversample_ratio=leftover_oversample, phase_tag="leftover-p1",
+        )
+
+        # --- Phase 2: no oversampling, sweep remaining ---
+        missed_indices = self.samples_generator.get_missed_indices()
+        if len(missed_indices) >= self.args.rollout_batch_size:
+            logger.info(
+                f"[LeftOverPrompts] Phase 2: processing {len(missed_indices)} remaining missed indices "
+                f"(oversample_ratio=1.0)"
+            )
+            global_step = self._run_leftover_pass(
+                episode, global_step, total_consumed_prompts,
+                missed_indices, oversample_ratio=1.0, phase_tag="leftover-p2",
+            )
+        elif missed_indices:
+            logger.info(
+                f"[LeftOverPrompts] Phase 2: {len(missed_indices)} remaining "
+                f"(< batch_size={self.args.rollout_batch_size}), deferring to smart replay"
+            )
+
+        # Restore original dataloader.
+        self.samples_generator.prompts_dataloader = saved_dataloader
+        # Any new missed_indices from this phase stay for smart replay.
+        return global_step
+
+    def _run_leftover_pass(
+        self, episode: int, global_step: int, total_consumed_prompts: int,
+        missed_indices: set, oversample_ratio: float, phase_tag: str,
+    ) -> int:
+        """Run a single leftover pass over the given missed indices."""
         original_dataset = self.samples_generator._original_dataset
         subset = Subset(original_dataset, list(missed_indices))
         leftover_dataloader = DataLoader(
@@ -833,7 +1054,6 @@ class PPOTrainer(BasePPOTrainer):
         )
 
         # Temporarily swap dataloader; clear consumed missed indices.
-        saved_dataloader = self.samples_generator.prompts_dataloader
         self.samples_generator.prompts_dataloader = leftover_dataloader
         self.samples_generator._missed_indices = set()
 
@@ -842,7 +1062,7 @@ class PPOTrainer(BasePPOTrainer):
             rollout_samples, filter_pass_rate, prompts_consumed, is_exhausted = (
                 self.samples_generator.generate_samples(
                     global_step=global_step, log_step_trace=log_step_trace,
-                    oversample_ratio=1.0,  # NO oversampling in leftover phase
+                    oversample_ratio=oversample_ratio,
                     _skip_clear_replay=True,  # preserve replay indices
                     **self.generate_kwargs,
                 )
@@ -853,7 +1073,7 @@ class PPOTrainer(BasePPOTrainer):
                 if rollout_samples:
                     status, global_step = self.train_step(rollout_samples, global_step)
                     log_status = {k: v for k, v in status.items() if k not in ["generated_samples"]}
-                    logger.info(f"✨ Global step {global_step} [leftover-partial]: {log_status}")
+                    logger.info(f"✨ Global step {global_step} [{phase_tag}-partial]: {log_status}")
                     client_states = {
                         "episode": episode,
                         "global_step": global_step,
@@ -868,10 +1088,10 @@ class PPOTrainer(BasePPOTrainer):
             status, global_step = self.train_step(rollout_samples, global_step)
             if self.args.dynamic_filtering:
                 status["dynamic_filtering_pass_rate"] = filter_pass_rate
-            status["leftover/phase"] = 1
+            status[f"leftover/phase"] = 1 if "p1" in phase_tag else 2
 
             log_status = {k: v for k, v in status.items() if k not in ["generated_samples"]}
-            logger.info(f"✨ Global step {global_step} [leftover]: {log_status}")
+            logger.info(f"✨ Global step {global_step} [{phase_tag}]: {log_status}")
 
             client_states = {
                 "episode": episode,
@@ -896,9 +1116,6 @@ class PPOTrainer(BasePPOTrainer):
             self._empty_all_model_caches()
             self.samples_generator.flush_timeseries_to_disk(global_step=global_step)
 
-        # Restore original dataloader.
-        self.samples_generator.prompts_dataloader = saved_dataloader
-        # Any new missed_indices from this phase stay for smart replay.
         return global_step
     #### end oversampling ####
 
@@ -907,7 +1124,7 @@ class PPOTrainer(BasePPOTrainer):
         hard_indices, kept_indices = self.samples_generator.get_replay_indices()
         #### Oversampling: include missed indices in replay pool ####
         missed_indices = self.samples_generator.get_missed_indices()
-        replay_indices = list(hard_indices | kept_indices | missed_indices)
+        replay_indices = list(hard_indices | missed_indices)
         #### end oversampling ####
         max_replay_rounds = getattr(self.args, "max_replay_rounds", 2)
         original_dataloader = self.samples_generator.prompts_dataloader
@@ -922,7 +1139,7 @@ class PPOTrainer(BasePPOTrainer):
 
             logger.info(
                 f"[SmartReplay] Episode {episode + 1}, round {replay_round + 1}/{max_replay_rounds}: "
-                f"replaying {len(replay_indices)} prompts (hard={len(hard_indices)}, kept={len(kept_indices)})"
+                f"replaying {len(replay_indices)} prompts (hard={len(hard_indices)}, kept={len(kept_indices)} tracked)"
             )
 
             # Build a dataloader over the replay subset.
@@ -1004,7 +1221,8 @@ class PPOTrainer(BasePPOTrainer):
                 self._round_counter += 1
 
             #### Oversampling: run leftover phase after each replay round ####
-            global_step = self._run_leftover_phase(episode, global_step, total_consumed_prompts)
+            if getattr(self.args, "oversample_ratio", 1.0) > 1.0:
+                global_step = self._run_leftover_phase(episode, global_step, total_consumed_prompts)
             #### end oversampling ####
 
             # Eval at end of replay round (skip if last step already ran eval).
@@ -1019,12 +1237,12 @@ class PPOTrainer(BasePPOTrainer):
             hard_indices, kept_indices = self.samples_generator.get_replay_indices()
             #### Oversampling: include missed indices in next replay round ####
             missed_indices = self.samples_generator.get_missed_indices()
-            replay_indices = list(hard_indices | kept_indices | missed_indices)
+            replay_indices = list(hard_indices | missed_indices)
             #### end oversampling ####
             logger.info(
                 f"[SmartReplay] Round {replay_round + 1} done. "
-                f"{len(replay_indices)} non-easy prompts remain "
-                f"(hard={len(hard_indices)}, kept={len(kept_indices)}, missed={len(missed_indices)})."
+                f"{len(replay_indices)} replay prompts remain "
+                f"(hard={len(hard_indices)}, kept={len(kept_indices)} tracked, missed={len(missed_indices)})."
             )
 
         # Restore original dataloader.
@@ -1042,7 +1260,8 @@ class PPOTrainer(BasePPOTrainer):
 
         # Collect all samples (iterate the full dataloader once)
         all_samples = []
-        for _indices, datasources, prompts, _labels in self.prompts_dataloader:
+        for batch in self.prompts_dataloader:
+            _indices, datasources, prompts = batch[0], batch[1], batch[2]
             for ds, prompt in zip(datasources, prompts):
                 all_samples.append((ds, prompt))
 
@@ -1405,6 +1624,14 @@ class PPOTrainer(BasePPOTrainer):
                     status["oversample/missed_pct"] = self.samples_generator.step_missed_pct
                 #### end oversampling ####
 
+                #### KNN reversal metrics ####
+                knn_stats = self.samples_generator.step_knn_stats
+                if knn_stats.get("knn_total", 0) > 0:
+                    for k, v in knn_stats.items():
+                        if v is not None:
+                            status[k] = v
+                #### end KNN metrics ####
+
                 # Merge vLLM stats into status for W&B logging.
                 vllm_stats = getattr(self.samples_generator, "last_vllm_stats", {})
                 
@@ -1491,6 +1718,10 @@ class PPOTrainer(BasePPOTrainer):
             # --- Save discarded prompts for offline analysis ---
             self.samples_generator.save_discarded_indices(episode)
 
+            #### Flush easy/hard collection (Phase 12) ####
+            self.samples_generator.save_easy_hard_collection()
+            #### end flush easy/hard ####
+
             #### Oversampling: LeftOverPrompts phase after main episode, before smart replay ####
             if getattr(self.args, "oversample_ratio", 1.0) > 1.0:
                 global_step = self._run_leftover_phase(episode, global_step, total_consumed_prompts)
@@ -1532,6 +1763,10 @@ class PPOTrainer(BasePPOTrainer):
         # Write run summary and timeseries plot.
         self._write_run_summary(global_step)
         self._write_scheduler_timeseries_plot()
+
+        #### Final flush easy/hard collection (Phase 12) ####
+        self.samples_generator.save_easy_hard_collection()
+        #### end final flush easy/hard ####
 
         # Close trackers
         self._write_final_tool_usage_plot()

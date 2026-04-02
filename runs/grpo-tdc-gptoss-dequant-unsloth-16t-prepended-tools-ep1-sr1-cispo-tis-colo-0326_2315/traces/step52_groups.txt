@@ -1,0 +1,839 @@
+=== Group 1 (dataset_idx=523, datasource=HIA_Hou_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: Human intestinal absorption (HIA) measures the fraction of an orally administered drug absorbed from the gastrointestinal tract into the portal circulation. This is the first barrier to oral bioavailability — a drug must cross the intestinal epithelium before it encounters hepatic first-pass metabolism. Absorption occurs primarily via passive transcellular diffusion through the lipid bilayer of enterocytes, though carrier-mediated uptake (e.g., PEPT1 for peptide-like drugs, OATP for anionic compounds) and paracellular transport (for very small, hydrophilic molecules) also contribute.
+
+Molecular features favoring high intestinal absorption: moderate lipophilicity (logP 1-4) enables passive diffusion across the enterocyte membrane. Low polar surface area (TPSA < 120 Å²) is one of the strongest predictors — the desolvation cost of burying polar groups in the lipid bilayer is the primary barrier to transcellular transport. Limited hydrogen bond donors (HBD ≤ 3-4) are more important than acceptors because donors form stronger interactions with water that must be broken during membrane partitioning. Molecular weight below 500 Da and moderate flexibility (rotatable bonds ≤ 10) favor absorption. Adequate aqueous solubility in GI fluids (pH 1-7.4) ensures the drug is dissolved and available for absorption.
+
+Features associated with poor absorption: high TPSA (>140 Å²) is the strongest negative predictor. Zwitterionic or multiply charged species at intestinal pH have poor membrane permeability. Very polar, highly hydrophilic molecules (logP < -1) cannot partition into the lipid bilayer. Large, rigid molecules with MW > 600 Da have difficulty crossing the membrane. Compounds subject to active efflux by P-glycoprotein (Pgp/ABCB1) or BCRP (ABCG2) at the apical enterocyte membrane experience reduced net absorption — Pgp substrates are pumped back into the lumen after partial absorption. Acid-labile compounds may degrade in gastric pH before reaching the absorptive surface of the small intestine.
+Question: Given a drug SMILES string, predict whether it
+(A) cannot be absorbed (B) can be absorbed
+Drug SMILES: Cc1cccc(Nc2ccccc2C(=O)O)c1C
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 241.29 Da
+- Heavy atoms: 18, Heteroatoms: 3
+- logP (Wildman-Crippen): 3.7500
+- TPSA: 49.33 Å²
+- H-bond donors: 2, H-bond acceptors: 2
+- Rotatable bonds: 3
+- Fraction sp3 carbons (Fsp3): 0.1333
+- Molar refractivity: 72.60
+- QED (drug-likeness, 0-1): 0.8601
+- Lipinski violations: 0
+- Bertz complexity: 590.80
+- Topology: HallKierAlpha=-2.2900, Kappa1=12.1740, Kappa2=4.9180, Kappa3=2.3480, BalabanJ=2.4020, IPC=12394.3100
+- Amide bonds: 0
+- Stereocenters: 0
+- Pharmacophore features: 3 hydrophobic, 2 aromatic, 1 neg-ionizable, 0 pos-ionizable
+- Gasteiger charges: max=0.3373 (atom 13, C), min=-0.4776 (atom 15, O)
+- Charge polarization: 0.8149
+- EState indices: max=11.1240 (nucleophilic proxy), min=-0.9270 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -9.6282 eV
+- LUMO energy: -7.3758 eV
+- HOMO-LUMO gap: 2.2524 eV
+- Dipole moment: 0.4443 Debye
+- Electrophilicity index (ω): 32.0925 eV
+- Total energy: -50.838824 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- secondary aromatic amine: N ([*]N[*])
+- carboxylic acid: C(=O)O ([*]C(=O)O)
+- benzene (x2): c1ccccc1 (*c1cccc([*])c1[*]), c1ccccc1 ([*]c1ccccc1[*])
+
+[analyze_ring_systems]
+Ring Systems:
+- 2 systems:
+  - 6 membered, aromatic, no heteroatoms
+  - 6 membered, aromatic, no heteroatoms
+- Ring counts: 2 total, 2 aromatic, 0 aliphatic, 0 saturated
+- Heterocycles: 0
+- Aromatic atoms: 12 / 18
+- Not detected: PAH, macrocycle, spiro, bridgehead
+
+[assess_adme_properties]
+pKa Prediction:
+  Acidic sites (2): atom 15 pKa = 3.63, atom 6 pKa = 13.85
+  Basic sites (1): atom 6 pKa = 4.36
+Ionization at pH 7.4: acid, charge -1
+- Dominant form: Cc1cccc(Nc2ccccc2C(=O)[O-])c1C
+- Ambiguous (pKa near pH): No
+
+LogD at pH 7.4: -0.02
+Solubility: logS = -4.01 log(mol/L)
+
+[screen_structural_alerts]
+Structural Alerts (2 categories):
+
+1. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (2): Aromatic primary and secondary amines [cN], Aromatic amines [cN]
+
+2. Reactive metabolite formation (idiosyncratic toxicity)
+Can form reactive metabolites via CYP metabolism that covalently modify liver proteins, triggering immune-mediated hepatotoxicity.
+Matched alerts (1): Carboxylic acids [cC(=O)O]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: Cc1cccc(Nc2ccccc2C(=O)O)c1C
+
+[predict_metabolites]
+Predicted Metabolites (SyGMa — Phase 1 + Phase 2):
+
+  1. Cc1cccc(Nc2ccccc2C(=O)OC2OC(C(=O)O)C(O)C(O)C2O)c1C
+     Pathway: O-glucuronidation_(aromatic_carboxyl) (score=0.3110)
+  2. Cc1c(CO)cccc1Nc1ccccc1C(=O)O
+     Pathway: benzylic_hydroxylation_(c-CH3) (score=0.1530)
+  3. Cc1cccc(Nc2ccccc2C(=O)O)c1CO
+     Pathway: benzylic_hydroxylation_(c-CH3) (score=0.1530)
+
+Summary: 71 metabolites predicted (showing top 3: 2 Phase 1, 1 Phase 2)
+
+[get_3d_properties]
+3D Polar Surface Area (ePSA):
+3D conformation based estimation of PSA: 310.23
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.2581, 0.8209) → disc-like
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=0.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=1.0) ---
+
+
+--- Sample 4 (reward=1.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=1.0) ---
+
+
+--- Sample 8 (reward=1.0) ---
+
+
+--- Sample 9 (reward=1.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=1.0) ---
+
+
+--- Sample 13 (reward=1.0) ---
+
+
+--- Sample 14 (reward=1.0) ---
+
+
+--- Sample 15 (reward=1.0) ---
+
+
+--- Sample 16 (reward=1.0) ---
+
+
+=====================================
+
+=== Group 2 (dataset_idx=586, datasource=HIA_Hou_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: Human intestinal absorption (HIA) measures the fraction of an orally administered drug absorbed from the gastrointestinal tract into the portal circulation. This is the first barrier to oral bioavailability — a drug must cross the intestinal epithelium before it encounters hepatic first-pass metabolism. Absorption occurs primarily via passive transcellular diffusion through the lipid bilayer of enterocytes, though carrier-mediated uptake (e.g., PEPT1 for peptide-like drugs, OATP for anionic compounds) and paracellular transport (for very small, hydrophilic molecules) also contribute.
+
+Molecular features favoring high intestinal absorption: moderate lipophilicity (logP 1-4) enables passive diffusion across the enterocyte membrane. Low polar surface area (TPSA < 120 Å²) is one of the strongest predictors — the desolvation cost of burying polar groups in the lipid bilayer is the primary barrier to transcellular transport. Limited hydrogen bond donors (HBD ≤ 3-4) are more important than acceptors because donors form stronger interactions with water that must be broken during membrane partitioning. Molecular weight below 500 Da and moderate flexibility (rotatable bonds ≤ 10) favor absorption. Adequate aqueous solubility in GI fluids (pH 1-7.4) ensures the drug is dissolved and available for absorption.
+
+Features associated with poor absorption: high TPSA (>140 Å²) is the strongest negative predictor. Zwitterionic or multiply charged species at intestinal pH have poor membrane permeability. Very polar, highly hydrophilic molecules (logP < -1) cannot partition into the lipid bilayer. Large, rigid molecules with MW > 600 Da have difficulty crossing the membrane. Compounds subject to active efflux by P-glycoprotein (Pgp/ABCB1) or BCRP (ABCG2) at the apical enterocyte membrane experience reduced net absorption — Pgp substrates are pumped back into the lumen after partial absorption. Acid-labile compounds may degrade in gastric pH before reaching the absorptive surface of the small intestine.
+Question: Given a drug SMILES string, predict whether it
+(A) cannot be absorbed (B) can be absorbed
+Drug SMILES: O=C1NS(=O)(=O)c2ccccc21
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 183.19 Da
+- Heavy atoms: 12, Heteroatoms: 5
+- logP (Wildman-Crippen): 0.1200
+- TPSA: 63.24 Å²
+- H-bond donors: 1, H-bond acceptors: 3
+- Rotatable bonds: 0
+- Fraction sp3 carbons (Fsp3): 0.0000
+- Molar refractivity: 41.09
+- QED (drug-likeness, 0-1): 0.6209
+- Lipinski violations: 0
+- Bertz complexity: 449.47
+- Topology: HallKierAlpha=-1.3600, Kappa1=7.2980, Kappa2=2.0710, Kappa3=0.8310, BalabanJ=2.8280, IPC=658.1910
+- Amide bonds: 1
+- Stereocenters: 0
+- Pharmacophore features: 2 hydrophobic, 1 aromatic, 0 neg-ionizable, 0 pos-ionizable
+- Gasteiger charges: max=0.2659 (atom 1, C), min=-0.2682 (atom 0, O)
+- Charge polarization: 0.5341
+- EState indices: max=11.1310 (nucleophilic proxy), min=-3.5540 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -11.7923 eV
+- LUMO energy: -8.4654 eV
+- HOMO-LUMO gap: 3.3268 eV
+- Dipole moment: 4.1695 Debye
+- Electrophilicity index (ω): 30.8384 eV
+- Total energy: -35.888370 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- lactam: O=CN ([*]NC([*])=O)
+- sulfonamide: NS(=O)=O ([*]NS([*])(=O)=O)
+- benzene: c1ccccc1 ([*]c1ccccc1[*])
+
+[analyze_ring_systems]
+Ring Systems:
+- 1 system: fused (5+6 membered, 1 aromatic, 1 N, 1 S)
+- Ring counts: 2 total, 1 aromatic, 1 aliphatic, 0 saturated
+- Heterocycles: 1
+- Aromatic atoms: 6 / 12
+- Not detected: PAH, macrocycle, spiro, bridgehead
+
+[assess_adme_properties]
+pKa Prediction:
+  Acidic sites (1): atom 2 pKa = 1.79
+  Basic sites (1): atom 2 pKa = 3.37
+Ionization at pH 7.4: acid, charge -1
+- Dominant form: O=C1[N-]S(=O)(=O)c2ccccc21
+- Ambiguous (pKa near pH): No
+
+LogD at pH 7.4: -5.49
+Solubility: logS = -1.38 log(mol/L)
+
+[screen_structural_alerts]
+Structural Alerts (1 categories):
+
+1. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (1): Acylating agents [O=C1ccSN1]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: O=C1NS(=O)(=O)c2ccccc21
+
+[predict_metabolites]
+Predicted Metabolites (SyGMa — Phase 1 + Phase 2):
+
+  1. NS(=O)(=O)c1ccccc1C(=O)O
+     Pathway: hydrolysis_(heteroatom_bonded_amide) (score=0.1890)
+  2. O=C1NS(=O)(=O)c2cc(O)ccc21
+     Pathway: aromatic_hydroxylation_(para_to_carbon) (score=0.0610)
+  3. NS(=O)(=O)c1ccccc1C(=O)OC1OC(C(=O)O)C(O)C(O)C1O
+     Pathway: hydrolysis_(heteroatom_bonded_amide) -> O-glucuronidation_(aromatic_carboxyl) (score=0.0588)
+
+Summary: 16 metabolites predicted (showing top 3: 2 Phase 1, 1 Phase 2)
+
+[get_3d_properties]
+3D Polar Surface Area (ePSA):
+3D conformation based estimation of PSA: 184.95
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.4541, 0.6676) → intermediate
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=1.0) ---
+
+
+--- Sample 2 (reward=0.0) ---
+
+
+--- Sample 3 (reward=1.0) ---
+
+
+--- Sample 4 (reward=0.0) ---
+
+
+--- Sample 5 (reward=0.0) ---
+
+
+--- Sample 6 (reward=0.0) ---
+
+
+--- Sample 7 (reward=0.0) ---
+
+
+--- Sample 8 (reward=1.0) ---
+
+
+--- Sample 9 (reward=0.0) ---
+
+
+--- Sample 10 (reward=0.0) ---
+
+
+--- Sample 11 (reward=0.0) ---
+
+
+--- Sample 12 (reward=0.0) ---
+
+
+--- Sample 13 (reward=0.0) ---
+
+
+--- Sample 14 (reward=0.0) ---
+
+
+--- Sample 15 (reward=0.0) ---
+
+
+--- Sample 16 (reward=0.0) ---
+
+
+=====================================
+
+=== Group 3 (dataset_idx=599, datasource=HIA_Hou_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: Human intestinal absorption (HIA) measures the fraction of an orally administered drug absorbed from the gastrointestinal tract into the portal circulation. This is the first barrier to oral bioavailability — a drug must cross the intestinal epithelium before it encounters hepatic first-pass metabolism. Absorption occurs primarily via passive transcellular diffusion through the lipid bilayer of enterocytes, though carrier-mediated uptake (e.g., PEPT1 for peptide-like drugs, OATP for anionic compounds) and paracellular transport (for very small, hydrophilic molecules) also contribute.
+
+Molecular features favoring high intestinal absorption: moderate lipophilicity (logP 1-4) enables passive diffusion across the enterocyte membrane. Low polar surface area (TPSA < 120 Å²) is one of the strongest predictors — the desolvation cost of burying polar groups in the lipid bilayer is the primary barrier to transcellular transport. Limited hydrogen bond donors (HBD ≤ 3-4) are more important than acceptors because donors form stronger interactions with water that must be broken during membrane partitioning. Molecular weight below 500 Da and moderate flexibility (rotatable bonds ≤ 10) favor absorption. Adequate aqueous solubility in GI fluids (pH 1-7.4) ensures the drug is dissolved and available for absorption.
+
+Features associated with poor absorption: high TPSA (>140 Å²) is the strongest negative predictor. Zwitterionic or multiply charged species at intestinal pH have poor membrane permeability. Very polar, highly hydrophilic molecules (logP < -1) cannot partition into the lipid bilayer. Large, rigid molecules with MW > 600 Da have difficulty crossing the membrane. Compounds subject to active efflux by P-glycoprotein (Pgp/ABCB1) or BCRP (ABCG2) at the apical enterocyte membrane experience reduced net absorption — Pgp substrates are pumped back into the lumen after partial absorption. Acid-labile compounds may degrade in gastric pH before reaching the absorptive surface of the small intestine.
+Question: Given a drug SMILES string, predict whether it
+(A) cannot be absorbed (B) can be absorbed
+Drug SMILES: COc1ccc2cc([C@H](C)C(=O)O)ccc2c1
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 230.26 Da
+- Heavy atoms: 17, Heteroatoms: 3
+- logP (Wildman-Crippen): 3.0400
+- TPSA: 46.53 Å²
+- H-bond donors: 1, H-bond acceptors: 2
+- Rotatable bonds: 3
+- Fraction sp3 carbons (Fsp3): 0.2143
+- Molar refractivity: 66.55
+- QED (drug-likeness, 0-1): 0.8811
+- Lipinski violations: 0
+- Bertz complexity: 560.40
+- Topology: HallKierAlpha=-2.0300, Kappa1=11.4550, Kappa2=4.4540, Kappa3=2.2280, BalabanJ=2.4790, IPC=7938.5210
+- Amide bonds: 0
+- Stereocenters: 1
+- Pharmacophore features: 4 hydrophobic, 2 aromatic, 1 neg-ionizable, 0 pos-ionizable
+- Gasteiger charges: max=0.3102 (atom 10, C), min=-0.4967 (atom 1, O)
+- Charge polarization: 0.8069
+- EState indices: max=10.9160 (nucleophilic proxy), min=-0.8080 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -9.9738 eV
+- LUMO energy: -7.1298 eV
+- HOMO-LUMO gap: 2.8440 eV
+- Dipole moment: 1.0893 Debye
+- Electrophilicity index (ω): 25.7149 eV
+- Total energy: -49.325082 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- alkyl aryl ether: O (*O[*])
+- carboxylic acid: C(=O)O ([*]C(=O)O)
+- benzene (x2): c1ccccc1 ([*]c1ccc([*])c([*])c1), c1ccccc1 ([*]c1cc([*])ccc1[*])
+
+[analyze_ring_systems]
+Ring Systems:
+- 1 system: fused (6+6 membered, aromatic, no heteroatoms)
+- Ring counts: 2 total, 2 aromatic, 0 aliphatic, 0 saturated
+- Heterocycles: 0
+- Aromatic atoms: 10 / 17
+- Not detected: PAH, macrocycle, spiro, bridgehead
+
+[assess_adme_properties]
+pKa Prediction:
+  Acidic sites (1): atom 12 pKa = 4.42
+  No basic sites.
+Ionization at pH 7.4: acid, charge -1
+- Dominant form: COc1ccc2cc([C@H](C)C(=O)[O-])ccc2c1
+- Ambiguous (pKa near pH): No
+
+LogD at pH 7.4: 0.06
+Solubility: logS = -3.29 log(mol/L)
+
+[screen_structural_alerts]
+Structural Alerts (3 categories):
+
+1. Genotoxic carcinogenicity / mutagenicity
+DNA-reactive motifs that cause mutations via direct genotoxic mechanisms.
+Matched alerts (1): Polycyclic aromatic hydrocarbons [c1ccc2ccccc2c1]
+
+2. Electrophilic agents
+Electrophilic centers that can react with biological nucleophiles (protein thiols, DNA bases).
+Matched alerts (1): Poly aromatic hydrocarbons [c1ccc2ccccc2c1]
+
+3. Reactive metabolite formation (idiosyncratic toxicity)
+Can form reactive metabolites via CYP metabolism that covalently modify liver proteins, triggering immune-mediated hepatotoxicity.
+Matched alerts (1): Carboxylic acids [CC(=O)O]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: COc1ccc2cc([C@H](C)C(=O)O)ccc2c1
+
+[predict_metabolites]
+Predicted Metabolites (GLORYx — FAME3 SoM + reaction rules, Phase 1 + Phase 2):
+
+  1. COc1ccc2cc([C@H](C)C(=O)OC3OC(C(=O)O)C(O)C(O)C3O)ccc2c1
+     Reaction: O-glucuronidation_(aliphatic_carboxyl) (Phase 2, score=0.992)
+  2. C[C@H](C(=O)O)c1ccc2cc(OCO)ccc2c1
+     Reaction: aliphatic hydroxylation (Phase 1, score=0.664)
+  3. C[C@H](C(=O)O)c1ccc2cc(O)ccc2c1
+     Reaction: O-demethylation (Phase 2, score=0.664)
+
+[get_3d_properties]
+3D Polar Surface Area (ePSA):
+3D conformation based estimation of PSA: 298.72
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.1332, 0.9512) → disc-like
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=1.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=1.0) ---
+
+
+--- Sample 4 (reward=1.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=1.0) ---
+
+
+--- Sample 8 (reward=0.0) ---
+
+
+--- Sample 9 (reward=1.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=1.0) ---
+
+
+--- Sample 13 (reward=1.0) ---
+
+
+--- Sample 14 (reward=1.0) ---
+
+
+--- Sample 15 (reward=1.0) ---
+
+
+--- Sample 16 (reward=1.0) ---
+
+
+=====================================
+
+=== Group 4 (dataset_idx=605, datasource=HIA_Hou_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: Human intestinal absorption (HIA) measures the fraction of an orally administered drug absorbed from the gastrointestinal tract into the portal circulation. This is the first barrier to oral bioavailability — a drug must cross the intestinal epithelium before it encounters hepatic first-pass metabolism. Absorption occurs primarily via passive transcellular diffusion through the lipid bilayer of enterocytes, though carrier-mediated uptake (e.g., PEPT1 for peptide-like drugs, OATP for anionic compounds) and paracellular transport (for very small, hydrophilic molecules) also contribute.
+
+Molecular features favoring high intestinal absorption: moderate lipophilicity (logP 1-4) enables passive diffusion across the enterocyte membrane. Low polar surface area (TPSA < 120 Å²) is one of the strongest predictors — the desolvation cost of burying polar groups in the lipid bilayer is the primary barrier to transcellular transport. Limited hydrogen bond donors (HBD ≤ 3-4) are more important than acceptors because donors form stronger interactions with water that must be broken during membrane partitioning. Molecular weight below 500 Da and moderate flexibility (rotatable bonds ≤ 10) favor absorption. Adequate aqueous solubility in GI fluids (pH 1-7.4) ensures the drug is dissolved and available for absorption.
+
+Features associated with poor absorption: high TPSA (>140 Å²) is the strongest negative predictor. Zwitterionic or multiply charged species at intestinal pH have poor membrane permeability. Very polar, highly hydrophilic molecules (logP < -1) cannot partition into the lipid bilayer. Large, rigid molecules with MW > 600 Da have difficulty crossing the membrane. Compounds subject to active efflux by P-glycoprotein (Pgp/ABCB1) or BCRP (ABCG2) at the apical enterocyte membrane experience reduced net absorption — Pgp substrates are pumped back into the lumen after partial absorption. Acid-labile compounds may degrade in gastric pH before reaching the absorptive surface of the small intestine.
+Question: Given a drug SMILES string, predict whether it
+(A) cannot be absorbed (B) can be absorbed
+Drug SMILES: N=C(N)NC[C@@H]1COC2(CCCCC2)O1
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 213.28 Da
+- Heavy atoms: 15, Heteroatoms: 5
+- logP (Wildman-Crippen): 0.5500
+- TPSA: 80.36 Å²
+- H-bond donors: 3, H-bond acceptors: 3
+- Rotatable bonds: 2
+- Fraction sp3 carbons (Fsp3): 0.9000
+- Molar refractivity: 56.56
+- QED (drug-likeness, 0-1): 0.4619
+- Lipinski violations: 0
+- Bertz complexity: 238.82
+- Topology: HallKierAlpha=-0.8100, Kappa1=10.6990, Kappa2=4.3650, Kappa3=2.6030, BalabanJ=1.7990, IPC=3648.9190
+- Amide bonds: 0
+- Stereocenters: 1
+- Pharmacophore features: 0 hydrophobic, 0 aromatic, 0 neg-ionizable, 1 pos-ionizable
+- Gasteiger charges: max=0.1853 (atom 1, C), min=-0.3702 (atom 2, N)
+- Charge polarization: 0.5555
+- EState indices: max=7.0640 (nucleophilic proxy), min=-0.3180 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -9.4816 eV
+- LUMO energy: -3.9425 eV
+- HOMO-LUMO gap: 5.5392 eV
+- Dipole moment: 3.6306 Debye
+- Electrophilicity index (ω): 8.1333 eV
+- Total energy: -48.022842 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- guanidine: N=C(N)N ([*]NC(=N)N)
+- 1,3-dioxolane: C1COCO1 ([*][C@@H]1COC([*])([*])O1)
+
+[analyze_ring_systems]
+Ring Systems:
+- 2 systems:
+  - 5 membered, non-aromatic, 2 O
+  - 6 membered, non-aromatic, no heteroatoms
+- Ring counts: 2 total, 0 aromatic, 2 aliphatic, 2 saturated
+- Heterocycles: 1
+- Aromatic atoms: 0 / 15
+- Spiro centers: 1
+- Not detected: PAH, macrocycle, bridgehead
+
+[assess_adme_properties]
+pKa Prediction:
+  Acidic sites (2): atom 3 pKa = 13.31, atom 0 pKa = 13.31
+  Basic sites (1): atom 0 pKa = 11.48
+Ionization at pH 7.4: base, charge 1
+- Dominant form: NC(=[NH2+])NC[C@@H]1COC2(CCCCC2)O1
+- Ambiguous (pKa near pH): No
+
+LogD at pH 7.4: -3.53
+Solubility: logS = -1.17 log(mol/L)
+
+[screen_structural_alerts]
+Structural Alerts (4 categories):
+
+1. Imine / Schiff base
+C=N bond susceptible to hydrolysis; imines conjugated with carbonyls are frequent hitters in screening assays.
+Matched alerts (4): imine_1 [C=N], imine_2 [N=CN], imine [C=N], Imine 3 [C=N]
+
+2. Enamine / alkene-heterocycle conjugate
+Conjugated systems with heterocyclic rings; common PAINS motif that interferes with multiple assay types.
+Matched alerts (1): enamine_like [C=N]
+
+3. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (1): Precursors of aldehydes and ketones [CC(C)(O)O]
+
+4. Reactive / unstable / toxic groups
+Generally reactive or unstable functional groups flagged across multiple toxicity endpoints.
+Matched alerts (2): Ketal [CC1(C)OCCO1], Imines [C=N]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: N=C(N)NC[C@@H]1COC2(CCCCC2)O1
+
+[predict_metabolites]
+Predicted Metabolites (SyGMa — Phase 1 + Phase 2):
+
+  1. N=C(N)NC[C@@H]1COC2(CCCC(O)C2)O1
+     Pathway: aliphatic_hydroxylation_(sec_carbon_in_a_ringA) (score=0.1060)
+  2. N=C(N)NC[C@@H]1COC2(CCC(O)CC2)O1
+     Pathway: aliphatic_hydroxylation_(sec_carbon_in_a_ringA) (score=0.1060)
+  3. N=C(N)N
+     Pathway: N-dealkylation_(R-NHCH2-alkyl) (score=0.0790)
+
+Summary: 19 metabolites predicted (showing top 3: 3 Phase 1, 0 Phase 2)
+
+[get_3d_properties]
+3D Polar Surface Area (ePSA):
+3D conformation based estimation of PSA: 311.86
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.1486, 0.9549) → disc-like
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=0.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=1.0) ---
+
+
+--- Sample 4 (reward=0.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=1.0) ---
+
+
+--- Sample 8 (reward=1.0) ---
+
+
+--- Sample 9 (reward=1.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=0.0) ---
+
+
+--- Sample 13 (reward=1.0) ---
+
+
+--- Sample 14 (reward=1.0) ---
+
+
+--- Sample 15 (reward=1.0) ---
+
+
+--- Sample 16 (reward=1.0) ---
+
+
+=====================================
+
+=== Group 5 (dataset_idx=531, datasource=HIA_Hou_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: Human intestinal absorption (HIA) measures the fraction of an orally administered drug absorbed from the gastrointestinal tract into the portal circulation. This is the first barrier to oral bioavailability — a drug must cross the intestinal epithelium before it encounters hepatic first-pass metabolism. Absorption occurs primarily via passive transcellular diffusion through the lipid bilayer of enterocytes, though carrier-mediated uptake (e.g., PEPT1 for peptide-like drugs, OATP for anionic compounds) and paracellular transport (for very small, hydrophilic molecules) also contribute.
+
+Molecular features favoring high intestinal absorption: moderate lipophilicity (logP 1-4) enables passive diffusion across the enterocyte membrane. Low polar surface area (TPSA < 120 Å²) is one of the strongest predictors — the desolvation cost of burying polar groups in the lipid bilayer is the primary barrier to transcellular transport. Limited hydrogen bond donors (HBD ≤ 3-4) are more important than acceptors because donors form stronger interactions with water that must be broken during membrane partitioning. Molecular weight below 500 Da and moderate flexibility (rotatable bonds ≤ 10) favor absorption. Adequate aqueous solubility in GI fluids (pH 1-7.4) ensures the drug is dissolved and available for absorption.
+
+Features associated with poor absorption: high TPSA (>140 Å²) is the strongest negative predictor. Zwitterionic or multiply charged species at intestinal pH have poor membrane permeability. Very polar, highly hydrophilic molecules (logP < -1) cannot partition into the lipid bilayer. Large, rigid molecules with MW > 600 Da have difficulty crossing the membrane. Compounds subject to active efflux by P-glycoprotein (Pgp/ABCB1) or BCRP (ABCG2) at the apical enterocyte membrane experience reduced net absorption — Pgp substrates are pumped back into the lumen after partial absorption. Acid-labile compounds may degrade in gastric pH before reaching the absorptive surface of the small intestine.
+Question: Given a drug SMILES string, predict whether it
+(A) cannot be absorbed (B) can be absorbed
+Drug SMILES: NC(=O)N1C(=O)[C@@H](C(=O)c2cccs2)c2cc(Cl)ccc21
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 320.76 Da
+- Heavy atoms: 21, Heteroatoms: 7
+- logP (Wildman-Crippen): 2.7900
+- TPSA: 80.47 Å²
+- H-bond donors: 1, H-bond acceptors: 4
+- Rotatable bonds: 2
+- Fraction sp3 carbons (Fsp3): 0.0714
+- Molar refractivity: 79.91
+- QED (drug-likeness, 0-1): 0.6821
+- Lipinski violations: 0
+- Bertz complexity: 757.59
+- Topology: HallKierAlpha=-2.1800, Kappa1=13.7870, Kappa2=4.9790, Kappa3=2.1240, BalabanJ=2.1420, IPC=83102.9590
+- Amide bonds: 3
+- Stereocenters: 1
+- Pharmacophore features: 4 hydrophobic, 2 aromatic, 0 neg-ionizable, 0 pos-ionizable
+- Gasteiger charges: max=0.3257 (atom 1, C), min=-0.3508 (atom 0, N)
+- Charge polarization: 0.6765
+- EState indices: max=12.5280 (nucleophilic proxy), min=-1.0790 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -11.1296 eV
+- LUMO energy: -8.3240 eV
+- HOMO-LUMO gap: 2.8055 eV
+- Dipole moment: 6.2446 Debye
+- Electrophilicity index (ω): 33.7229 eV
+- Total energy: -60.422657 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- ketone: C=O ([*]C([*])=O)
+- lactam: NC=O ([*]N([*])C([*])=O)
+- urea: NC(=O)N ([*]N([*])C(N)=O)
+- Aryl chloride: Cl ([*]Cl)
+- thiophene: c1cccs1 ([*]c1cccs1)
+- indoline: N1CCc2ccccc21 ([*]N1C(=[*])[C@@H]([*])c2cc([*])ccc21)
+
+[analyze_ring_systems]
+Ring Systems:
+- 2 systems:
+  - fused (5+6 membered, 1 aromatic, 1 N)
+  - 5 membered, aromatic, 1 S
+- Ring counts: 3 total, 2 aromatic, 1 aliphatic, 0 saturated
+- Heterocycles: 2
+- Aromatic atoms: 11 / 21
+- Not detected: PAH, macrocycle, spiro, bridgehead
+
+[assess_adme_properties]
+pKa Prediction:
+  Acidic sites (2): atom 6 pKa = 5.12, atom 0 pKa = 11.75
+  No basic sites.
+Ionization at pH 7.4: neutral, charge 0
+- Dominant form: NC(=O)N1C(=O)[C@@H](C(=O)c2cccs2)c2cc(Cl)ccc21
+- Ambiguous (pKa near pH): Yes
+- Charge class distribution: neutral: 1, base: 1
+
+LogD at pH 7.4: 0.51
+Solubility: logS = -8.38 log(mol/L)
+
+[screen_structural_alerts]
+Structural Alerts (9 categories):
+
+1. Acyl halide / acid anhydride / activated ester
+Highly reactive acylating agents; react with nucleophilic residues non-selectively.
+Matched alerts (1): beta-keto/anhydride [O=CCC=O]
+
+2. Aldehyde / reactive carbonyl
+Reactive carbonyl that forms Schiff bases with lysine residues; includes alpha-dicarbonyls and reactive ketone variants.
+Matched alerts (1): Ketone [cC(C)=O]
+
+3. Other structural flags
+Miscellaneous structural alerts from medicinal chemistry filters.
+Matched alerts (1): Dye 11 [cc[C@H](C=O)C=O]
+
+4. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (3): Ketones [cC(C)=O], Esters of aromatic alcohols and their thio and aza analogues [cNC(N)=O], Acid anhydrides and their thio and aza analogues [NC(=O)NC=O]
+
+5. Non-genotoxic carcinogenicity
+Promotes cancer through non-DNA-reactive mechanisms (receptor activation, epigenetic changes, chronic inflammation).
+Matched alerts (1): Halogenated benzene [Clc1ccccc1]
+
+6. Genotoxic carcinogenicity / mutagenicity
+DNA-reactive motifs that cause mutations via direct genotoxic mechanisms.
+Matched alerts (1): Aromatic amines [cN]
+
+7. Acute aquatic toxicity
+Structural features associated with acute toxicity to aquatic organisms, indicating general ecotoxicity and bioactivity.
+Matched alerts (1): Aryl halide [cCl]
+
+8. Reactive metabolite formation (idiosyncratic toxicity)
+Can form reactive metabolites via CYP metabolism that covalently modify liver proteins, triggering immune-mediated hepatotoxicity.
+Matched alerts (1): Thiophenes [c1ccsc1]
+
+9. Reactive / unstable / toxic groups
+Generally reactive or unstable functional groups flagged across multiple toxicity endpoints.
+Matched alerts (1): Simple anilines and phenols [c]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: NC(=O)N1C(=O)[C@@H](C(=O)c2cccs2)c2cc(Cl)ccc21
+
+[predict_metabolites]
+Predicted Metabolites (SyGMa — Phase 1 + Phase 2):
+
+  1. NC(=O)N1C(=O)[C@@H](C(O)c2cccs2)c2cc(Cl)ccc21
+     Pathway: carbonyl_reduction_(next_to_aromatic_carbon) (score=0.2690)
+  2. NC(=O)Nc1ccc(Cl)cc1[C@@H](C(=O)O)C(=O)c1cccs1
+     Pathway: hydrolysis_(tertiary_amide) (score=0.0960)
+  3. NC(=O)N1C(=O)[C@@H](C(=O)c2cccs2)c2cc(Cl)c(O)cc21
+     Pathway: aromatic_hydroxylation_(para_to_carbon) (score=0.0610)
+
+Summary: 38 metabolites predicted (showing top 3: 3 Phase 1, 0 Phase 2)
+
+[get_3d_properties]
+3D Polar Surface Area (ePSA):
+3D conformation based estimation of PSA: 316.42
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.5075, 0.6924) → intermediate
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=1.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=1.0) ---
+
+
+--- Sample 4 (reward=1.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=1.0) ---
+
+
+--- Sample 8 (reward=0.0) ---
+
+
+--- Sample 9 (reward=1.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=1.0) ---
+
+
+--- Sample 13 (reward=1.0) ---
+
+
+--- Sample 14 (reward=1.0) ---
+
+
+--- Sample 15 (reward=1.0) ---
+
+
+--- Sample 16 (reward=1.0) ---
+
+
+=====================================
+

@@ -269,6 +269,8 @@ DATA_DIR_BASENAME="$(basename "$DATA_DIR")"
 case "$DATA_DIR_BASENAME" in
     prepended_tools_v6)              DATA_TAG="pre-v6" ;;
     prepended_tools_v7)              DATA_TAG="pre-v7" ;;
+    openai_format_prepended_tools_v9) DATA_TAG="pre-v9" ;;
+    openai_format_prepended_tools_v9_pseudo|openai_format_prepended_tools_v9_psuedo) DATA_TAG="pre-v9p" ;;
     *)                               DATA_TAG="$DATA_DIR_BASENAME" ;;
 esac
 mkdir -p "$PROJECT_ROOT/logs"

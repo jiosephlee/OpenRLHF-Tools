@@ -11,6 +11,9 @@ Versions (incremental):
          adme, structural_alerts, remove_salts, predict_metabolites)
          + task-specific get_3d_properties for permeability/binding tasks
   - v7: v6 + find_similar_molecules (KNN neighbor lookup)
+  - v8: v7 with predict_metabolites task-specific (CYP, DILI, Bioavailability,
+         ClinTox, Carcinogens, AMES, hERG). Uses deduplicated_canonicalized
+         dataset as base. predict_solubility is an internal subtool only.
 
 Usage::
 
@@ -348,8 +351,10 @@ from openrlhf.tools.therapeutic_tools import (
     SCREEN_STRUCTURAL_ALERTS_TOOL as _STRUCTURAL_ALERTS_SCHEMA,
     REMOVE_SALTS_TOOL as _REMOVE_SALTS_SCHEMA,
     PREDICT_METABOLITES_TOOL as _PREDICT_METABOLITES_SCHEMA,
+    PREDICT_SOLUBILITY_TOOL as _PREDICT_SOLUBILITY_SCHEMA,
     GET_3D_PROPERTIES_TOOL as _3D_PROPERTIES_SCHEMA,
     FIND_SIMILAR_MOLECULES_TOOL as _FIND_SIMILAR_SCHEMA,
+    SIMILAR_MOLECULES_TASK_SCHEMAS as _SIMILAR_TASK_SCHEMAS,
     _FUNCTION_MAP as _ALL_CALLABLES,
 )
 
@@ -394,23 +399,82 @@ _V6_VERSION = {
 }
 
 # ---------------------------------------------------------------------------
-# v7: v6 + find_similar_molecules
+# v7: v6 + per-task find_similar_molecules_{task}
 # ---------------------------------------------------------------------------
-_V7_BASIC_SCHEMAS: List[Dict[str, Any]] = _V6_BASIC_SCHEMAS + [_FIND_SIMILAR_SCHEMA]
+_V7_BASIC_SCHEMAS: List[Dict[str, Any]] = list(_V6_BASIC_SCHEMAS)  # no generic find_similar in basic
+
+# Merge 3D and per-task similarity schemas into one task map
+_V7_TASK_MAP: Dict[str, List[Dict[str, Any]]] = {}
+for _task in set(list(_TASKS_WITH_3D) + list(_SIMILAR_TASK_SCHEMAS)):
+    _extras: List[Dict[str, Any]] = []
+    if _task in _TASKS_WITH_3D:
+        _extras.append(_3D_PROPERTIES_SCHEMA)
+    if _task in _SIMILAR_TASK_SCHEMAS:
+        _extras.append(_SIMILAR_TASK_SCHEMAS[_task])
+    _V7_TASK_MAP[_task] = _extras
 
 _V7_VERSION = {
     "basic_schemas": _V7_BASIC_SCHEMAS,
-    "task_specific_map": _V6_TASK_MAP,  # same 3D task map
-    "callables": dict(_ALL_CALLABLES),  # all callables including find_similar_molecules
+    "task_specific_map": _V7_TASK_MAP,
+    "callables": dict(_ALL_CALLABLES),  # includes all find_similar_molecules_{task} callables
+}
+
+# ---------------------------------------------------------------------------
+# v8: v7 with predict_metabolites task-specific (predict_solubility is internal only)
+# ---------------------------------------------------------------------------
+_V8_BASIC_SCHEMAS: List[Dict[str, Any]] = [
+    _MOLECULE_PROFILE_SCHEMA,
+    _FUNCTIONAL_GROUPS_SCHEMA,
+    _RING_SYSTEMS_SCHEMA,
+    _ADME_SCHEMA,
+    _STRUCTURAL_ALERTS_SCHEMA,
+    _REMOVE_SALTS_SCHEMA,
+]
+
+# Tasks where metabolic fate is informative (CYP substrates, hepatotox,
+# metabolic activation → mutagenicity/carcinogenicity, bioavailability).
+_TASKS_WITH_METABOLISM = {
+    "CYP2C9_Substrate_CarbonMangels",
+    "CYP2D6_Substrate_CarbonMangels",
+    "CYP3A4_Substrate_CarbonMangels",
+    "DILI",
+    "Bioavailability_Ma",
+    "ClinTox",
+    "Carcinogens_Lagunin",
+    "AMES",
+    "hERG",
+}
+
+_V8_TASK_MAP: Dict[str, List[Dict[str, Any]]] = {}
+for _task in set(list(_TASKS_WITH_3D) + list(_SIMILAR_TASK_SCHEMAS) + list(_TASKS_WITH_METABOLISM)):
+    _extras: List[Dict[str, Any]] = []
+    if _task in _TASKS_WITH_3D:
+        _extras.append(_3D_PROPERTIES_SCHEMA)
+    if _task in _TASKS_WITH_METABOLISM:
+        _extras.append(_PREDICT_METABOLITES_SCHEMA)
+    if _task in _SIMILAR_TASK_SCHEMAS:
+        _extras.append(_SIMILAR_TASK_SCHEMAS[_task])
+    _V8_TASK_MAP[_task] = _extras
+
+_V8_CALLABLES: Dict[str, Callable] = dict(_ALL_CALLABLES)
+
+_V8_VERSION = {
+    "basic_schemas": _V8_BASIC_SCHEMAS,
+    "task_specific_map": _V8_TASK_MAP,
+    "callables": _V8_CALLABLES,
 }
 
 # ---------------------------------------------------------------------------
 # Public registry
 # ---------------------------------------------------------------------------
-_ALL_VERSIONS = {"v1", "v2", "v3", "v4", "v5", "v6", "v7"}
+_ALL_VERSIONS = {"v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"}
 
 # Keep TOOL_VERSIONS for backwards compat but populate lazily
-TOOL_VERSIONS: Dict[str, Dict[str, Any]] = {"v6": _V6_VERSION, "v7": _V7_VERSION}
+TOOL_VERSIONS: Dict[str, Dict[str, Any]] = {
+    "v6": _V6_VERSION,
+    "v7": _V7_VERSION,
+    "v8": _V8_VERSION,
+}
 
 
 def get_version(ver: str) -> Dict[str, Any]:
@@ -420,7 +484,7 @@ def get_version(ver: str) -> Dict[str, Any]:
             f"Unknown tool version {ver!r}. "
             f"Available: {sorted(_ALL_VERSIONS)}"
         )
-    if ver in ("v6", "v7"):
+    if ver in ("v6", "v7", "v8"):
         return TOOL_VERSIONS[ver]
     # Lazy-load legacy versions on first access
     legacy = _build_legacy_versions()

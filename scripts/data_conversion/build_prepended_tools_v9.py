@@ -21,6 +21,7 @@ import json
 import os
 import sys
 import traceback
+from functools import lru_cache
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -60,6 +61,8 @@ TASKS_WITH_3D = {
 PROMPT_KEY_OVERRIDES = {
     "SARSCoV2_3CLPro_Diamond": "SARSCOV2_3CLPro_Diamond",
 }
+
+RF_EXPLANATIONS_ROOT = PROJECT_ROOT / "LLM4SD" / "RF_explanations"
 
 TOOL_PREAMBLE_TEMPLATE = """\
 You have access to the following tools to help analyze the molecule. Use them when necessary (**Don't use the same tool more than once**).
@@ -145,6 +148,60 @@ def build_prompt_text(
 
 def label_to_answer(label: int, task: str) -> str:
     return "(B)" if label == 1 else "(A)"
+
+
+def _normalize_smiles(smiles: str) -> str:
+    return smiles.strip()
+
+
+@lru_cache(maxsize=None)
+def _load_rf_cache_fallback(task: str) -> dict[str, dict]:
+    task_dir = RF_EXPLANATIONS_ROOT / task
+    cache: dict[str, dict] = {}
+
+    for split_name in ("train", "valid", "val"):
+        path = task_dir / f"{split_name}.jsonl"
+        if not path.exists():
+            continue
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                smiles = obj.get("drug") or obj.get("Drug") or obj.get("smiles")
+                if not smiles:
+                    continue
+                cache[_normalize_smiles(str(smiles))] = obj
+    return cache
+
+
+def _decision_tree_analysis_fallback(
+    smiles: str,
+    task: str,
+    include_pseudo_label: bool = False,
+) -> str:
+    cache = _load_rf_cache_fallback(task)
+    record = cache.get(_normalize_smiles(smiles))
+    if not record:
+        return "No random-forest explanation available for this molecule."
+
+    explanation = str(record.get("explanation", "")).strip()
+    if not explanation:
+        explanation = "No random-forest explanation text available."
+
+    if include_pseudo_label and record.get("pseudo_label") is not None:
+        try:
+            pseudo = int(record["pseudo_label"])
+            pseudo_answer = "(B)" if pseudo == 1 else "(A)"
+            explanation = f"{explanation}\nPseudo label: {pseudo_answer} ({pseudo})"
+        except (TypeError, ValueError):
+            explanation = f"{explanation}\nPseudo label: {record['pseudo_label']}"
+
+    return explanation
 
 
 def process_split(
@@ -285,11 +342,27 @@ def main():
     sim_module._load_split_smiles.cache_clear()
 
     from openrlhf.tools.therapeutic_tools import _FUNCTION_MAP
+    function_map = dict(_FUNCTION_MAP)
+
+    # Use therapeutic_tools.decision_tree when available; otherwise use LLM4SD RF files directly.
+    try:
+        from openrlhf.tools.therapeutic_tools.decision_tree import (
+            _load_task_cache as _load_task_cache_impl,
+            decision_tree_analysis as decision_tree_analysis_impl,
+        )
+    except Exception:
+        print(
+            "  [WARN]  therapeutic_tools.decision_tree not found; using fallback "
+            f"from {RF_EXPLANATIONS_ROOT}"
+        )
+        _load_task_cache_impl = _load_rf_cache_fallback
+        decision_tree_analysis_impl = _decision_tree_analysis_fallback
+
+    function_map["decision_tree_analysis"] = decision_tree_analysis_impl
 
     # Preload decision_tree RF caches for all tasks
-    from openrlhf.tools.therapeutic_tools.decision_tree import _load_task_cache
     for task in tasks:
-        cache = _load_task_cache(task)
+        cache = _load_task_cache_impl(task)
         print(f"  RF cache for {task}: {len(cache)} entries")
 
     total = 0
@@ -330,7 +403,7 @@ def main():
 
             count = process_split(
                 task, split, src_path, dst_path, dst_pseudo_path,
-                prompt_template, tool_names, _FUNCTION_MAP,
+                prompt_template, tool_names, function_map,
                 cot_instruction,
             )
             total += count

@@ -403,42 +403,6 @@ class SamplesGenerator:
             trace_no_ids.pop(key, None)
         return trace_no_ids
 
-    def _write_step_trace(
-        self, step_idx: int, episode_traces: list, prompts_consumed: int, filtered_count: int, total_episodes: int = 0
-    ):
-        if not self.rollout_trace_run_dir or not episode_traces:
-            return
-        step_id = step_idx + 1
-        trace_path = os.path.join(self.rollout_trace_run_dir, f"step{step_id}.jsonl")
-        # Only save the first trace per step to avoid excessive disk usage.
-        engine_idx, trace = episode_traces[0]
-        record = {
-            "step": step_id,
-            "episode": 0,
-            "engine_idx": engine_idx,
-            "prompts_consumed": prompts_consumed,
-            "filtered_count": filtered_count,
-            "total_episodes": total_episodes,
-            "trace": self._strip_token_ids(trace),
-            "decoded": self._decode_trace(trace),
-        }
-        with open(trace_path, "w") as f:
-            f.write(json.dumps(self._to_jsonable(record), ensure_ascii=True) + "\n")
-
-    def _write_eval_trace(self, eval_idx: int, episode_trace: tuple, total_episodes: int):
-        if not self.rollout_trace_run_dir or episode_trace is None:
-            return
-        engine_idx, trace = episode_trace
-        trace_path = os.path.join(self.rollout_trace_run_dir, f"eval_{eval_idx}.json")
-        record = {
-            "eval": eval_idx,
-            "engine_idx": engine_idx,
-            "total_episodes": total_episodes,
-            "trace": self._strip_token_ids(trace),
-            "decoded": self._decode_trace(trace),
-        }
-        with open(trace_path, "w") as f:
-            f.write(json.dumps(self._to_jsonable(record), ensure_ascii=True))
 
     #### Prompt group trace methods (Phase 12) ####
     def _build_prompt_group_record(self, responses, ds_idx, datasource, global_step):
@@ -476,23 +440,6 @@ class SamplesGenerator:
         except Exception as e:
             logger.warning(f"Failed to write prompt group JSON: {e}")
 
-        # TXT format
-        txt_path = os.path.join(self.rollout_trace_run_dir, f"step{step_idx}_groups.txt")
-        try:
-            with open(txt_path, "w") as f:
-                for gi, group in enumerate(prompt_groups, 1):
-                    ds_idx = group.get("dataset_idx", "?")
-                    ds_name = group.get("datasource", "?")
-                    f.write(f"=== Group {gi} (dataset_idx={ds_idx}, datasource={ds_name}) ===\n")
-                    f.write(f"PROMPT: {group.get('prompt', '')}\n")
-                    f.write(f"LABEL: {group.get('label', '')}\n\n")
-                    for si, sample in enumerate(group.get("samples", []), 1):
-                        reward = sample.get("reward", "?")
-                        f.write(f"--- Sample {si} (reward={reward}) ---\n")
-                        f.write(f"{sample.get('full_text', '')}\n\n")
-                    f.write("=====================================\n\n")
-        except Exception as e:
-            logger.warning(f"Failed to write prompt group TXT: {e}")
 
     def save_easy_hard_collection(self):
         """Write accumulated easy/hard examples to disk (Phase 12)."""
@@ -746,12 +693,6 @@ class SamplesGenerator:
             log_step_trace=False,
             **generate_kwargs,
         )
-        self._write_eval_trace(
-            int(generate_kwargs.get("global_step", 0)),
-            getattr(self, "_last_episode_trace", None),
-            getattr(self, "_last_total_episodes", 0),
-        )
-
         # Collect vLLM stats for eval.
         global_step = int(generate_kwargs.get("global_step", 0))
         self._collect_and_write_vllm_stats(
@@ -776,7 +717,11 @@ class SamplesGenerator:
         return experiences
 
     def get_replay_indices(self) -> Tuple[set, set]:
-        """Return (hard_indices, kept_indices) accumulated during the episode."""
+        """Return (hard_indices, kept_indices) accumulated during the episode.
+
+        Note: kept_indices are tracked but excluded from the actual replay pool.
+        They are returned for logging/diagnostics only.
+        """
         return self._replay_hard_indices, self._replay_kept_indices
 
     #### Oversampling: missed indices getter ####
@@ -901,7 +846,7 @@ class SamplesGenerator:
         self._step_prompts_consumed = prompts_consumed
 
         #### Write prompt group traces and collect easy/hard (Phase 12) ####
-        if prompt_groups and self.strategy.is_rank_0():
+        if prompt_groups and self.strategy.is_rank_0() and self._trace_step_idx % 5 == 0:
             self._write_prompt_group_traces(self._trace_step_idx, prompt_groups)
         if easy_ex:
             self._easy_hard_collection["easy"].append(easy_ex)
@@ -1245,11 +1190,6 @@ class SamplesGenerator:
                             engine_pending[new_engine_idx] += 1
 
                 del responses  # free raw vLLM response dicts
-
-        self._last_episode_trace = episode_traces[0] if episode_traces else None
-        self._last_total_episodes = total_episodes
-        if generate_kwargs.get("log_step_trace", True):
-            self._write_step_trace(step_idx, episode_traces, prompts_consumed, filtered_count, total_episodes)
 
         self._last_generation_wall_time = time.time() - generation_start_time
 

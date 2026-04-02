@@ -14,6 +14,8 @@ Versions (incremental):
   - v8: v7 with predict_metabolites task-specific (CYP, DILI, Bioavailability,
          ClinTox, Carcinogens, AMES, hERG). Uses deduplicated_canonicalized
          dataset as base. predict_solubility is an internal subtool only.
+  - v9: v8 + decision_tree_analysis (RF feature attributions from LLM4SD).
+         Two dataset variants: v9 (no pseudo_label), v9_pseudo (with pseudo_label).
 
 Usage::
 
@@ -352,6 +354,7 @@ from openrlhf.tools.therapeutic_tools import (
     REMOVE_SALTS_TOOL as _REMOVE_SALTS_SCHEMA,
     PREDICT_METABOLITES_TOOL as _PREDICT_METABOLITES_SCHEMA,
     PREDICT_SOLUBILITY_TOOL as _PREDICT_SOLUBILITY_SCHEMA,
+    DECISION_TREE_ANALYSIS_TOOL as _DECISION_TREE_SCHEMA,
     GET_3D_PROPERTIES_TOOL as _3D_PROPERTIES_SCHEMA,
     FIND_SIMILAR_MOLECULES_TOOL as _FIND_SIMILAR_SCHEMA,
     SIMILAR_MOLECULES_TASK_SCHEMAS as _SIMILAR_TASK_SCHEMAS,
@@ -465,15 +468,34 @@ _V8_VERSION = {
 }
 
 # ---------------------------------------------------------------------------
+# v9: v8 + decision_tree_analysis (RF feature attributions)
+# ---------------------------------------------------------------------------
+_V9_BASIC_SCHEMAS: List[Dict[str, Any]] = _V8_BASIC_SCHEMAS + [_DECISION_TREE_SCHEMA]
+
+_V9_TASK_MAP: Dict[str, List[Dict[str, Any]]] = {
+    _task: _extras + [_DECISION_TREE_SCHEMA]
+    for _task, _extras in _V8_TASK_MAP.items()
+}
+
+_V9_CALLABLES: Dict[str, Callable] = dict(_ALL_CALLABLES)
+
+_V9_VERSION = {
+    "basic_schemas": _V9_BASIC_SCHEMAS,
+    "task_specific_map": _V9_TASK_MAP,
+    "callables": _V9_CALLABLES,
+}
+
+# ---------------------------------------------------------------------------
 # Public registry
 # ---------------------------------------------------------------------------
-_ALL_VERSIONS = {"v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"}
+_ALL_VERSIONS = {"v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9"}
 
 # Keep TOOL_VERSIONS for backwards compat but populate lazily
 TOOL_VERSIONS: Dict[str, Dict[str, Any]] = {
     "v6": _V6_VERSION,
     "v7": _V7_VERSION,
     "v8": _V8_VERSION,
+    "v9": _V9_VERSION,
 }
 
 
@@ -484,7 +506,7 @@ def get_version(ver: str) -> Dict[str, Any]:
             f"Unknown tool version {ver!r}. "
             f"Available: {sorted(_ALL_VERSIONS)}"
         )
-    if ver in ("v6", "v7", "v8"):
+    if ver in ("v6", "v7", "v8", "v9"):
         return TOOL_VERSIONS[ver]
     # Lazy-load legacy versions on first access
     legacy = _build_legacy_versions()

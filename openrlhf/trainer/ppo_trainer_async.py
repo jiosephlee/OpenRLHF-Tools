@@ -180,7 +180,7 @@ class GenerateSamplesActor:
     def _run_replay_episodes(self, episode, total_consumed_prompts):
         """After primary episode, replay filtered prompts for up to max_replay_rounds."""
         hard_indices, kept_indices = self.samples_generator.get_replay_indices()
-        replay_indices = list(hard_indices | kept_indices)
+        replay_indices = list(hard_indices)
         max_replay_rounds = getattr(self.args, "max_replay_rounds", 2)
         original_dataloader = self.samples_generator.prompts_dataloader
 
@@ -194,7 +194,7 @@ class GenerateSamplesActor:
 
             logger.info(
                 f"[AsyncSmartReplay] Episode {episode + 1}, round {replay_round + 1}/{max_replay_rounds}: "
-                f"replaying {len(replay_indices)} prompts (hard={len(hard_indices)}, kept={len(kept_indices)})"
+                f"replaying {len(replay_indices)} prompts (hard={len(hard_indices)}, kept={len(kept_indices)} tracked)"
             )
 
             subset = Subset(original_dataloader.dataset, replay_indices)
@@ -237,10 +237,10 @@ class GenerateSamplesActor:
                     break
 
             hard_indices, kept_indices = self.samples_generator.get_replay_indices()
-            replay_indices = list(hard_indices | kept_indices)
+            replay_indices = list(hard_indices)
             logger.info(
                 f"[AsyncSmartReplay] Round {replay_round + 1} done. "
-                f"{len(replay_indices)} non-easy prompts remain (hard={len(hard_indices)}, kept={len(kept_indices)})."
+                f"{len(replay_indices)} replay prompts remain (hard={len(hard_indices)}, kept={len(kept_indices)} tracked)."
             )
 
         self.samples_generator.prompts_dataloader = original_dataloader

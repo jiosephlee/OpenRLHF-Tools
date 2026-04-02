@@ -1,0 +1,896 @@
+=== Group 1 (dataset_idx=11498, datasource=AMES_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: The Ames test is a bacterial reverse mutation assay that detects compounds capable of inducing genetic damage. Histidine-dependent Salmonella typhimurium (and sometimes E. coli tryptophan auxotrophs) are exposed to the test compound; mutagenic compounds cause reversion mutations that restore the bacteria's ability to synthesize the required amino acid, producing visible colonies. The test is run both with and without metabolic activation (rat liver S9 fraction) to detect pro-mutagens that require CYP-mediated bioactivation.
+
+Mutagenicity in the Ames test arises through several distinct mechanisms. Direct-acting mutagens are electrophilic species that react covalently with DNA bases — alkylating agents (epoxides, aziridines, nitrogen mustards, alkyl halides), Michael acceptors (α,β-unsaturated carbonyls, acrylates, vinyl sulfones), and acylating agents. Pro-mutagens require metabolic activation: aromatic amines are N-hydroxylated by CYP1A2 to form reactive hydroxylamines/nitrenium ions that form DNA adducts; polycyclic aromatic hydrocarbons (PAHs) are epoxidized by CYP1A1/1B1 to form diol-epoxides; nitroaromatics are reduced to reactive nitroso and hydroxylamine intermediates. DNA intercalators — large planar polycyclic molecules — can cause frameshift mutations by inserting between base pairs and disrupting replication fidelity.
+
+Structural features associated with mutagenicity: aromatic amines and their acetylated derivatives (especially primary aromatic amines —NH₂ on an aromatic ring), nitroaromatic groups (—NO₂ on aromatic rings — reduced to reactive species), alkylating functional groups (epoxides, aziridines, alkyl halides, nitrogen mustards), Michael acceptors (α,β-unsaturated carbonyls adjacent to electron-withdrawing groups), aromatic nitroso groups, hydrazines and hydrazides, polycyclic aromatic hydrocarbons with bay regions (facilitating diol-epoxide formation), and N-nitroso compounds. Features arguing against mutagenicity: absence of electrophilic or DNA-reactive functional groups, absence of aromatic amines or nitro groups, steric shielding of potentially reactive sites, high molecular weight and steric bulk that prevents DNA intercalation or minor groove binding, and the presence of rapid detoxification handles (e.g., carboxylic acids that promote glucuronidation and clearance before DNA damage occurs).
+Question: Given a drug SMILES string, predict whether it
+(A) is not mutagenic (B) is mutagenic
+Drug SMILES: CCCCCCCCCCCCCC(=O)[N-][N+](C)(C)CC(C)O
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 328.54 Da
+- Heavy atoms: 23, Heteroatoms: 4
+- logP (Wildman-Crippen): 4.9600
+- TPSA: 51.40 Å²
+- H-bond donors: 1, H-bond acceptors: 2
+- Rotatable bonds: 15
+- Fraction sp3 carbons (Fsp3): 0.9474
+- Molar refractivity: 98.10
+- QED (drug-likeness, 0-1): 0.2623
+- Lipinski violations: 0
+- Bertz complexity: 291.09
+- Topology: HallKierAlpha=-0.6100, Kappa1=22.3900, Kappa2=13.7950, Kappa3=16.0420, BalabanJ=3.4210, IPC=59123.7770
+- Amide bonds: 1
+- Stereocenters: 1
+- Pharmacophore features: 12 hydrophobic, 0 aromatic, 0 neg-ionizable, 1 pos-ionizable
+- Gasteiger charges: max=0.0998 (atom 20, C), min=-0.4555 (atom 15, N)
+- Charge polarization: 0.5553
+- EState indices: max=11.8370 (nucleophilic proxy), min=-0.4410 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -8.9991 eV
+- LUMO energy: -3.9764 eV
+- HOMO-LUMO gap: 5.0227 eV
+- Dipole moment: 5.7907 Debye
+- Electrophilicity index (ω): 8.3801 eV
+- Total energy: -75.025842 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- secondary hydroxyl: O ([*]O)
+- ammonium: [N+] ([*][N+]([*])([*])[*])
+- carbonyl: C=O ([*]C([*])=O)
+
+[analyze_ring_systems]
+Ring Systems:
+- No rings detected.
+
+[assess_adme_properties]
+pKa Prediction:
+  Acidic sites (1): atom 22 pKa = 13.50
+  No basic sites.
+Ionization at pH 7.4: zwitterion, charge 0
+- Dominant form: CCCCCCCCCCCCCC(=O)[N-][N+](C)(C)CC(C)O
+- Ambiguous (pKa near pH): No
+
+LogD at pH 7.4: 4.96
+Solubility: logS = -2.52 log(mol/L)
+
+[screen_structural_alerts]
+Structural Alerts (6 categories):
+
+1. Long aliphatic chain
+Molecules with long alkyl chains (>=7 carbons) tend to be non-specific membrane disruptors with poor drug-likeness.
+Matched alerts (10): Aliphatic_long_chain [CCCC], gte_10_carbon_sb_chain [CCCCCCCCCC], gte_8_CF2_or_CH2 [CCCCCCCC], Heptanes [CCCCCCC], I1 Aliphatic methylene chains 7 or more long [CCCCCCC], long chain hydrocarbon [CCCCCC], Long aliphatic chain [CCCCCCC], Unbranched chain [CCCCCC], ... and 2 more
+
+2. Nitroaromatic / nitro group
+Can be reduced to reactive nitroso/hydroxylamine intermediates that damage DNA.
+Matched alerts (3): Oxygen-nitrogen_single_bond [[N-][N+]], quaternary_nitrogen_2 [C[N+](C)(C)[N-]], quaternary nitrogen [C[N+](C)(C)[N-]]
+
+3. Hydrazine / hydrazone / azide
+Can be metabolically activated to reactive radicals; genotoxic.
+Matched alerts (2): R17 acylhydrazide [[N+][N-]C=O], acyl hydrazine [[N+][N-]C=O]
+
+4. Reactive / unstable group
+Miscellaneous reactive or unstable functional groups flagged by medicinal chemistry filters.
+Matched alerts (1): Hetero_hetero [C[N-][N+]C]
+
+5. Reactive / unstable / toxic groups
+Generally reactive or unstable functional groups flagged across multiple toxicity endpoints.
+Matched alerts (5): Alkyl chains [CCCCC], N-N Single bound not in a ring [[N-][N+]], Singel acyclic N-N bonds [[N-][N+]], Aliphatic chain [CCCCCC], Heptanes [CCCCCCC]
+
+6. Promiscuous compounds
+Structural motifs associated with non-specific activity across many biological targets (frequent hitters).
+Matched alerts (2): gte_8_CF2_or_CH2 [CCCCCCCC], gte_10_carbon_sb_chain [CCCCCCCCCC]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: CCCCCCCCCCCCCC(=O)[N-][N+](C)(C)CC(C)O
+
+[predict_metabolites]
+Predicted Metabolites (SyGMa — Phase 1 + Phase 2):
+
+  1. CCCCCCCCCCCCCC(=O)O
+     Pathway: hydrolysis_(heteroatom_bonded_amide) (score=0.1890)
+  2. CC(O)C[N+](C)(C)[NH-]
+     Pathway: hydrolysis_(heteroatom_bonded_amide) (score=0.1890)
+  3. CC(O)CCCCCCCCCCCC(=O)[N-][N+](C)(C)CC(C)O
+     Pathway: aliphatic_hydroxylation_(sec_carbon,next_to_CH3) (score=0.1060)
+
+Summary: 29 metabolites predicted (showing top 3: 3 Phase 1, 0 Phase 2)
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (A)
+
+--- Sample 1 (reward=1.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=1.0) ---
+
+
+--- Sample 4 (reward=1.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=0.0) ---
+
+
+--- Sample 8 (reward=1.0) ---
+
+
+--- Sample 9 (reward=1.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=0.0) ---
+
+
+--- Sample 13 (reward=1.0) ---
+
+
+--- Sample 14 (reward=0.0) ---
+
+
+--- Sample 15 (reward=0.0) ---
+
+
+--- Sample 16 (reward=1.0) ---
+
+
+=====================================
+
+=== Group 2 (dataset_idx=3154, datasource=BBB_Martins_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: The blood-brain barrier (BBB) is formed by brain capillary endothelial cells connected by tight junctions, surrounded by pericytes and astrocyte end-feet. Unlike peripheral capillaries, the BBB has no fenestrations and minimal pinocytosis, so drug entry into the CNS requires either passive transcellular diffusion through the endothelial cell membranes or carrier-mediated transport. Efflux transporters — particularly P-glycoprotein (Pgp/ABCB1) and BCRP (ABCG2) — on the luminal side actively pump many compounds back into the blood, creating an additional barrier beyond simple membrane permeability.
+
+Molecular features favoring BBB penetration: moderate lipophilicity (logP 1-3) provides the driving force for passive diffusion across the endothelial lipid bilayer. Low polar surface area (TPSA < 70-80 Å²) is the strongest single predictor of BBB penetration — the tight junctions eliminate the paracellular route, so transcellular diffusion is the only passive pathway. Few hydrogen bond donors (HBD ≤ 1-2) — more restrictive than for intestinal absorption because the BBB endothelium is less permeable. Small to moderate molecular weight (MW < 450 Da). Low overall hydrogen bonding capacity. Most successful CNS drugs are small, moderately lipophilic, and have minimal polar surface area. Being a substrate of nutrient transporters (LAT1 for amino acid-like drugs, GLUT1 for glucose-like structures) can facilitate active uptake.
+
+Features associated with poor BBB penetration: high TPSA (> 90 Å²) strongly predicts exclusion from the CNS. Multiple hydrogen bond donors (HBD ≥ 3) — each additional donor roughly halves BBB permeability. Compounds that are P-glycoprotein substrates are actively effluxed from the brain — basic amines with MW > 400 and moderate lipophilicity are common Pgp substrates. Charged molecules at pH 7.4 (carboxylates, sulfonates, phosphates, quaternary amines) have very poor passive BBB penetration. High molecular weight (> 500 Da). Very high lipophilicity (logP > 5) can paradoxically reduce BBB penetration due to excessive plasma protein binding and poor aqueous solubility, which reduce the free fraction available for diffusion.
+Question: Given a drug SMILES string, predict whether it
+(A) does not cross the BBB (B) crosses the BBB
+Drug SMILES: O=C(O)CCCc1ccc(N(CCCl)CCCl)cc1
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 304.22 Da
+- Heavy atoms: 19, Heteroatoms: 5
+- logP (Wildman-Crippen): 3.3800
+- TPSA: 40.54 Å²
+- H-bond donors: 1, H-bond acceptors: 2
+- Rotatable bonds: 9
+- Fraction sp3 carbons (Fsp3): 0.5000
+- Molar refractivity: 80.67
+- QED (drug-likeness, 0-1): 0.7111
+- Lipinski violations: 0
+- Bertz complexity: 375.54
+- Topology: HallKierAlpha=-0.9300, Kappa1=16.1250, Kappa2=9.0500, Kappa3=6.1680, BalabanJ=2.5540, IPC=16338.2410
+- Amide bonds: 0
+- Stereocenters: 0
+- Pharmacophore features: 6 hydrophobic, 1 aromatic, 1 neg-ionizable, 0 pos-ionizable
+- Gasteiger charges: max=0.3029 (atom 1, C), min=-0.4812 (atom 2, O)
+- Charge polarization: 0.7841
+- EState indices: max=10.4450 (nucleophilic proxy), min=-0.7430 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -9.5689 eV
+- LUMO energy: -6.5179 eV
+- HOMO-LUMO gap: 3.0510 eV
+- Dipole moment: 3.0326 Debye
+- Electrophilicity index (ω): 21.2053 eV
+- Total energy: -59.840005 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- alkyl chloride (x2): Cl ([*]Cl), Cl ([*]Cl)
+- tertiary mixed amine: N ([*]N([*])[*])
+- carboxylic acid: O=CO ([*]C(=O)O)
+- benzene: c1ccccc1 ([*]c1ccc([*])cc1)
+
+[analyze_ring_systems]
+Ring Systems:
+- 1 system: 6 membered, aromatic, no heteroatoms
+- Ring counts: 1 total, 1 aromatic, 0 aliphatic, 0 saturated
+- Heterocycles: 0
+- Aromatic atoms: 6 / 19
+- Not detected: PAH, macrocycle, spiro, bridgehead
+
+[assess_adme_properties]
+pKa Prediction:
+  Acidic sites (1): atom 2 pKa = 4.76
+  Basic sites (1): atom 10 pKa = 4.76
+Ionization at pH 7.4: acid, charge -1
+- Dominant form: O=C([O-])CCCc1ccc(N(CCCl)CCCl)cc1
+- Ambiguous (pKa near pH): No
+
+LogD at pH 7.4: 0.74
+Solubility: logS = -4.25 log(mol/L)
+
+[screen_structural_alerts]
+Structural Alerts (10 categories):
+
+1. Aniline / aromatic amine
+Aromatic amines can be metabolically activated (N-hydroxylation) to reactive species that bind DNA.
+Matched alerts (1): anil_di_alk_E(186) [Cc1ccc(N(C)C)cc1]
+
+2. Alkylating agent
+Can transfer alkyl groups to DNA bases, causing mutations.
+Matched alerts (8): alkyl_halide [CCl], primary_halide_sulfate [CCl], Alkyl_halides [CCl], R1 Reactive alkyl halides [CCl], Filter1_2_halo_ether [NCCCl], Filter26_alkyl_halide [NCCCl], Filter84_nitrogen_mustard [NCCCl], mustards [NCCCl]
+
+3. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (2): Haloalkanes [CCl], Haloalkanes [Cl]
+
+4. Genotoxic carcinogenicity / mutagenicity
+DNA-reactive motifs that cause mutations via direct genotoxic mechanisms.
+Matched alerts (8): Aliphatic halide (general) [CCl], Nitrogen and sulphur mustard (specific) [NCCCl], S or N mustard [ClCCNCCCl], Aliphatic halogens [CCl], Haloethylamines [cN(C)CCCl], α-Haloethyl N, S - mustards [ClCCNCCCl], Aromatic and aliphatic substituted primary alkyl halides [CCCl], Aromatic amines [cN]
+
+5. Reactive / unstable / toxic groups
+Generally reactive or unstable functional groups flagged across multiple toxicity endpoints.
+Matched alerts (6): α-Haloamines [NCCCl], Alkylhalides [CCl], Alkyl halides [CCl], N,N-Dialkyl aniline derivatives (5) [Cc1ccc(N(C)C)cc1], Alkyl Halides [CCl], Simple anilines and phenols [c]
+
+6. Acute aquatic toxicity
+Structural features associated with acute toxicity to aquatic organisms, indicating general ecotoxicity and bioactivity.
+Matched alerts (2): Haloethyl amines (N-mustard) [NCCCl], Alkyl halide [CCCl]
+
+7. Electrophilic agents
+Electrophilic centers that can react with biological nucleophiles (protein thiols, DNA bases).
+Matched alerts (1): Mustards [NCCCl]
+
+8. Reactive metabolite formation (idiosyncratic toxicity)
+Can form reactive metabolites via CYP metabolism that covalently modify liver proteins, triggering immune-mediated hepatotoxicity.
+Matched alerts (2): Anilines, anilides [CN(C)c1ccccc1], Carboxylic acids [CC(=O)O]
+
+9. Promiscuous compounds
+Structural motifs associated with non-specific activity across many biological targets (frequent hitters).
+Matched alerts (1): primary_halide_sulfate [CCl]
+
+10. Non-genotoxic carcinogenicity
+Promotes cancer through non-DNA-reactive mechanisms (receptor activation, epigenetic changes, chronic inflammation).
+Matched alerts (2): S or N mustard [ClCCNCCCl], Aliphatic halogens [CCl]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: O=C(O)CCCc1ccc(N(CCCl)CCCl)cc1
+
+[predict_metabolites]
+Predicted Metabolites (SyGMa — Phase 1 + Phase 2):
+
+  1. O=C(O)Cc1ccc(N(CCCl)CCCl)cc1
+     Pathway: beta-oxidation (score=0.1720)
+  2. O=C(CCCc1ccc(N(CCCl)CCCl)cc1)OC1OC(C(=O)O)C(O)C(O)C1O
+     Pathway: O-glucuronidation_(aliphatic_carboxyl) (score=0.1500)
+  3. O=C(O)CCCc1ccc(N(CCO)CCCl)cc1
+     Pathway: aliphatic_dehalogenation (score=0.1200)
+
+Summary: 32 metabolites predicted (showing top 3: 2 Phase 1, 1 Phase 2)
+
+[get_3d_properties]
+3D Polar Surface Area (ePSA):
+3D conformation based estimation of PSA: 382.00
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.2926, 0.8758) → disc-like
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (A)
+
+--- Sample 1 (reward=1.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=0.0) ---
+
+
+--- Sample 4 (reward=1.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=1.0) ---
+
+
+--- Sample 8 (reward=1.0) ---
+
+
+--- Sample 9 (reward=1.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=0.0) ---
+
+
+--- Sample 12 (reward=1.0) ---
+
+
+--- Sample 13 (reward=1.0) ---
+
+
+--- Sample 14 (reward=1.0) ---
+
+
+--- Sample 15 (reward=0.0) ---
+
+
+--- Sample 16 (reward=1.0) ---
+
+
+=====================================
+
+=== Group 3 (dataset_idx=11326, datasource=AMES_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: The Ames test is a bacterial reverse mutation assay that detects compounds capable of inducing genetic damage. Histidine-dependent Salmonella typhimurium (and sometimes E. coli tryptophan auxotrophs) are exposed to the test compound; mutagenic compounds cause reversion mutations that restore the bacteria's ability to synthesize the required amino acid, producing visible colonies. The test is run both with and without metabolic activation (rat liver S9 fraction) to detect pro-mutagens that require CYP-mediated bioactivation.
+
+Mutagenicity in the Ames test arises through several distinct mechanisms. Direct-acting mutagens are electrophilic species that react covalently with DNA bases — alkylating agents (epoxides, aziridines, nitrogen mustards, alkyl halides), Michael acceptors (α,β-unsaturated carbonyls, acrylates, vinyl sulfones), and acylating agents. Pro-mutagens require metabolic activation: aromatic amines are N-hydroxylated by CYP1A2 to form reactive hydroxylamines/nitrenium ions that form DNA adducts; polycyclic aromatic hydrocarbons (PAHs) are epoxidized by CYP1A1/1B1 to form diol-epoxides; nitroaromatics are reduced to reactive nitroso and hydroxylamine intermediates. DNA intercalators — large planar polycyclic molecules — can cause frameshift mutations by inserting between base pairs and disrupting replication fidelity.
+
+Structural features associated with mutagenicity: aromatic amines and their acetylated derivatives (especially primary aromatic amines —NH₂ on an aromatic ring), nitroaromatic groups (—NO₂ on aromatic rings — reduced to reactive species), alkylating functional groups (epoxides, aziridines, alkyl halides, nitrogen mustards), Michael acceptors (α,β-unsaturated carbonyls adjacent to electron-withdrawing groups), aromatic nitroso groups, hydrazines and hydrazides, polycyclic aromatic hydrocarbons with bay regions (facilitating diol-epoxide formation), and N-nitroso compounds. Features arguing against mutagenicity: absence of electrophilic or DNA-reactive functional groups, absence of aromatic amines or nitro groups, steric shielding of potentially reactive sites, high molecular weight and steric bulk that prevents DNA intercalation or minor groove binding, and the presence of rapid detoxification handles (e.g., carboxylic acids that promote glucuronidation and clearance before DNA damage occurs).
+Question: Given a drug SMILES string, predict whether it
+(A) is not mutagenic (B) is mutagenic
+Drug SMILES: C=C(C#N)C(=O)OCC(C)C
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 153.18 Da
+- Heavy atoms: 11, Heteroatoms: 3
+- logP (Wildman-Crippen): 1.2700
+- TPSA: 50.09 Å²
+- H-bond donors: 0, H-bond acceptors: 3
+- Rotatable bonds: 3
+- Fraction sp3 carbons (Fsp3): 0.5000
+- Molar refractivity: 40.55
+- QED (drug-likeness, 0-1): 0.3482
+- Lipinski violations: 0
+- Bertz complexity: 200.63
+- Topology: HallKierAlpha=-1.3000, Kappa1=9.7000, Kappa2=4.5050, Kappa3=4.1510, BalabanJ=3.7280, IPC=206.0150
+- Amide bonds: 0
+- Stereocenters: 0
+- Pharmacophore features: 2 hydrophobic, 0 aromatic, 0 neg-ionizable, 0 pos-ionizable
+- Gasteiger charges: max=0.3478 (atom 4, C), min=-0.4613 (atom 6, O)
+- Charge polarization: 0.8091
+- EState indices: max=10.7340 (nucleophilic proxy), min=-0.6240 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -11.7679 eV
+- LUMO energy: -8.5913 eV
+- HOMO-LUMO gap: 3.1766 eV
+- Dipole moment: 1.6168 Debye
+- Electrophilicity index (ω): 32.6209 eV
+- Total energy: -33.736399 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- alkene: C=C ([*]C([*])=C)
+- carboxylic ester: C(=O)O ([*]C(=O)O[*])
+- nitrile: C#N ([*]C#N)
+
+[analyze_ring_systems]
+Ring Systems:
+- No rings detected.
+
+[assess_adme_properties]
+pKa Prediction:
+  No acidic sites.
+  No basic sites.
+Ionization at pH 7.4: neutral, charge 0
+- Dominant form: C=C(C#N)C(=O)OCC(C)C
+- Ambiguous (pKa near pH): No
+
+LogD at pH 7.4: 1.27
+Solubility: logS = -2.36 log(mol/L)
+
+[screen_structural_alerts]
+Structural Alerts (12 categories):
+
+1. Acyl cyanide / reactive nitrile
+Highly electrophilic carbon attacked by biological nucleophiles; includes conjugated nitrile systems.
+Matched alerts (1): conjugated_nitrile_group [C=CC#N]
+
+2. Michael acceptor / electrophilic alkene
+Electrophilic alkene conjugated with electron-withdrawing group; can covalently modify cysteine residues on proteins.
+Matched alerts (7): Michael_acceptor_1 [C=CC=O], acrylate [C=CC=O], halo_acrylate [C=C], Michael acceptor [C=CC=O], vinyl michael acceptor2 [C=CC(=O)O], Filter44_michael_acceptor2 [C=CC=O], Filter85_keto_acrylonitrile [C=C(C#N)C(=O)O]
+
+3. Styrene / vinyl / alkene
+Terminal or conjugated alkenes can be metabolically epoxidized to form reactive intermediates.
+Matched alerts (1): Ethene [C=C]
+
+4. Ester / phenol ester / carbonate
+Esters can be hydrolyzed to release active metabolites; phenol esters and carbonates may indicate prodrug instability.
+Matched alerts (2): Ester [CC(=O)OC], aliphatic ester, not lactones [CC(=O)OC]
+
+5. Long aliphatic chain
+Molecules with long alkyl chains (>=7 carbons) tend to be non-specific membrane disruptors with poor drug-likeness.
+Matched alerts (1): Long aliphatic chain [CCCOCCC]
+
+6. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (2): α,β-Unsaturated carbonyls [C=CC(=O)O], Activated alkene (Michael acceptor) (2) [CC=C]
+
+7. Genotoxic carcinogenicity / mutagenicity
+DNA-reactive motifs that cause mutations via direct genotoxic mechanisms.
+Matched alerts (1): α,β-Unsaturated carbonyls [C=CC(=O)O]
+
+8. Reactive / unstable / toxic groups
+Generally reactive or unstable functional groups flagged across multiple toxicity endpoints.
+Matched alerts (5): Acrylates and similar [C=CC(=O)O], Acrylonitriles [C=CC#N], Michael acceptors (α,β-unsaturated carbonyls) [C=CC=O], Michael acceptors (acrylonitriles) [C=CC#N], Activated double bonds (1) [C=C(C#N)C=O]
+
+9. Acute aquatic toxicity
+Structural features associated with acute toxicity to aquatic organisms, indicating general ecotoxicity and bioactivity.
+Matched alerts (3): α,β-Unsaturated nitriles [C=CC#N], α,β-Unsaturated carboxylic acid ester (acrylates) [C=CC(=O)OC], α,β-Unsaturated carbonyl compounds [C=CC(=O)O]
+
+10. Electrophilic agents
+Electrophilic centers that can react with biological nucleophiles (protein thiols, DNA bases).
+Matched alerts (2): Polarised alkene-esters [C=CC(=O)OC], Polarised alkene-cyanos [C=CC#N]
+
+11. Reactive metabolite formation (idiosyncratic toxicity)
+Can form reactive metabolites via CYP metabolism that covalently modify liver proteins, triggering immune-mediated hepatotoxicity.
+Matched alerts (1): Michael acceptors [C]
+
+12. Promiscuous compounds
+Structural motifs associated with non-specific activity across many biological targets (frequent hitters).
+Matched alerts (2): halo_acrylate [C=C], acrylate [C=CC=O]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: C=C(C#N)C(=O)OCC(C)C
+
+[predict_metabolites]
+Predicted Metabolites (GLORYx — FAME3 SoM + reaction rules, Phase 1 + Phase 2):
+
+  1. CC(C)COC(=O)C(C#N)CSCC(NC(=O)CCC(N)C(=O)O)C(=O)NCC(=O)O
+     Reaction: glutathione_conjugation_(alpha,beta-unsaturated_carbonyl) (Phase 2, score=0.876)
+  2. C=C(C(N)=O)C(=O)OCC(C)C
+     Reaction: nitrile_to_amide (Phase 1, score=0.272)
+  3. CC(C)COC(=O)C1(C#N)CO1
+     Reaction: epoxidation (Phase 1, score=0.256)
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (A)
+
+--- Sample 1 (reward=0.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=0.0) ---
+
+
+--- Sample 4 (reward=0.0) ---
+
+
+--- Sample 5 (reward=0.0) ---
+
+
+--- Sample 6 (reward=0.0) ---
+
+
+--- Sample 7 (reward=0.0) ---
+
+
+--- Sample 8 (reward=0.0) ---
+
+
+--- Sample 9 (reward=0.0) ---
+
+
+--- Sample 10 (reward=0.0) ---
+
+
+--- Sample 11 (reward=0.0) ---
+
+
+--- Sample 12 (reward=1.0) ---
+
+
+--- Sample 13 (reward=0.0) ---
+
+
+--- Sample 14 (reward=1.0) ---
+
+
+--- Sample 15 (reward=0.0) ---
+
+
+--- Sample 16 (reward=0.0) ---
+
+
+=====================================
+
+=== Group 4 (dataset_idx=11437, datasource=AMES_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: The Ames test is a bacterial reverse mutation assay that detects compounds capable of inducing genetic damage. Histidine-dependent Salmonella typhimurium (and sometimes E. coli tryptophan auxotrophs) are exposed to the test compound; mutagenic compounds cause reversion mutations that restore the bacteria's ability to synthesize the required amino acid, producing visible colonies. The test is run both with and without metabolic activation (rat liver S9 fraction) to detect pro-mutagens that require CYP-mediated bioactivation.
+
+Mutagenicity in the Ames test arises through several distinct mechanisms. Direct-acting mutagens are electrophilic species that react covalently with DNA bases — alkylating agents (epoxides, aziridines, nitrogen mustards, alkyl halides), Michael acceptors (α,β-unsaturated carbonyls, acrylates, vinyl sulfones), and acylating agents. Pro-mutagens require metabolic activation: aromatic amines are N-hydroxylated by CYP1A2 to form reactive hydroxylamines/nitrenium ions that form DNA adducts; polycyclic aromatic hydrocarbons (PAHs) are epoxidized by CYP1A1/1B1 to form diol-epoxides; nitroaromatics are reduced to reactive nitroso and hydroxylamine intermediates. DNA intercalators — large planar polycyclic molecules — can cause frameshift mutations by inserting between base pairs and disrupting replication fidelity.
+
+Structural features associated with mutagenicity: aromatic amines and their acetylated derivatives (especially primary aromatic amines —NH₂ on an aromatic ring), nitroaromatic groups (—NO₂ on aromatic rings — reduced to reactive species), alkylating functional groups (epoxides, aziridines, alkyl halides, nitrogen mustards), Michael acceptors (α,β-unsaturated carbonyls adjacent to electron-withdrawing groups), aromatic nitroso groups, hydrazines and hydrazides, polycyclic aromatic hydrocarbons with bay regions (facilitating diol-epoxide formation), and N-nitroso compounds. Features arguing against mutagenicity: absence of electrophilic or DNA-reactive functional groups, absence of aromatic amines or nitro groups, steric shielding of potentially reactive sites, high molecular weight and steric bulk that prevents DNA intercalation or minor groove binding, and the presence of rapid detoxification handles (e.g., carboxylic acids that promote glucuronidation and clearance before DNA damage occurs).
+Question: Given a drug SMILES string, predict whether it
+(A) is not mutagenic (B) is mutagenic
+Drug SMILES: NC(CSC(=O)NCCCl)C(=O)O
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 226.68 Da
+- Heavy atoms: 13, Heteroatoms: 7
+- logP (Wildman-Crippen): 0.0800
+- TPSA: 92.42 Å²
+- H-bond donors: 3, H-bond acceptors: 4
+- Rotatable bonds: 5
+- Fraction sp3 carbons (Fsp3): 0.6667
+- Molar refractivity: 52.19
+- QED (drug-likeness, 0-1): 0.5777
+- Lipinski violations: 0
+- Bertz complexity: 190.72
+- Topology: HallKierAlpha=-0.4600, Kappa1=12.5400, Kappa2=6.9930, Kappa3=6.6790, BalabanJ=3.5160, IPC=568.9470
+- Amide bonds: 1
+- Stereocenters: 1
+- Pharmacophore features: 2 hydrophobic, 0 aromatic, 1 neg-ionizable, 1 pos-ionizable
+- Gasteiger charges: max=0.3208 (atom 10, C), min=-0.4801 (atom 12, O)
+- Charge polarization: 0.8009
+- EState indices: max=10.8740 (nucleophilic proxy), min=-1.1130 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -10.4749 eV
+- LUMO energy: -7.0383 eV
+- HOMO-LUMO gap: 3.4366 eV
+- Dipole moment: 2.2324 Debye
+- Electrophilicity index (ω): 22.3121 eV
+- Total energy: -44.301883 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- alkyl chloride: Cl ([*]Cl)
+- primary aliphatic amine: N ([*]N)
+- thioether: S ([*]S[*])
+- carboxylic acid: C(=O)O ([*]C(=O)O)
+- amide: C(=O)N ([*]C(=O)N[*])
+
+[analyze_ring_systems]
+Ring Systems:
+- No rings detected.
+
+[assess_adme_properties]
+pKa Prediction:
+  Acidic sites (2): atom 12 pKa = 2.10, atom 6 pKa = 3.63
+  Basic sites (1): atom 0 pKa = 7.79
+Ionization at pH 7.4: zwitterion, charge 0
+- Dominant form: [NH3+]C(CSC(=O)NCCCl)C(=O)[O-]
+- Ambiguous (pKa near pH): Yes
+- Charge class distribution: acid: 1, zwitterion: 1
+
+LogD at pH 7.4: -5.75
+Solubility: logS = 0.17 log(mol/L)
+
+[screen_structural_alerts]
+Structural Alerts (14 categories):
+
+1. Alkylating agent
+Can transfer alkyl groups to DNA bases, causing mutations.
+Matched alerts (8): alkyl_halide [CCl], primary_halide_sulfate [CCl], R1 Reactive alkyl halides [CCl], alkyl_halides [CCl], Filter1_2_halo_ether [NCCCl], Filter26_alkyl_halide [NCCCl], Filter84_nitrogen_mustard [NCCCl], mustards [NCCCl]
+
+2. Thiocarbonyl / thioester / thiocyanate
+Reactive sulfur-carbon bonds; can be metabolized to toxic intermediates or react with biological nucleophiles.
+Matched alerts (1): thioester [O=CS]
+
+3. Aldehyde / reactive carbonyl
+Reactive carbonyl that forms Schiff bases with lysine residues; includes alpha-dicarbonyls and reactive ketone variants.
+Matched alerts (1): reactive_carbonyls [O=CS]
+
+4. Long aliphatic chain
+Molecules with long alkyl chains (>=7 carbons) tend to be non-specific membrane disruptors with poor drug-likeness.
+Matched alerts (1): Long aliphatic chain [CNCSCCN]
+
+5. Thiourea / thioamide
+Thiocarbonyl compounds; can be metabolized to reactive sulfoxides or interfere with protein targets non-specifically.
+Matched alerts (1): Filter81_Thiocarbamate [NC(=O)S]
+
+6. Reactive / unstable group
+Miscellaneous reactive or unstable functional groups flagged by medicinal chemistry filters.
+Matched alerts (1): amino acid [NCC(=O)O]
+
+7. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (2): Haloalkanes [CCl], Haloalkanes [Cl]
+
+8. Genotoxic carcinogenicity / mutagenicity
+DNA-reactive motifs that cause mutations via direct genotoxic mechanisms.
+Matched alerts (4): Aliphatic halide (general) [CCl], Nitrogen and sulphur mustard (specific) [NCCCl], Aliphatic halogens [CCl], Aromatic and aliphatic substituted primary alkyl halides [CCCl]
+
+9. Reactive / unstable / toxic groups
+Generally reactive or unstable functional groups flagged across multiple toxicity endpoints.
+Matched alerts (5): α-Haloamines [NCCCl], Alkylhalides [CCl], Alkyl halides [CCl], Thiocarboxylic acids and their derivatives [O=CS], Alkyl Halides [CCl]
+
+10. Acute aquatic toxicity
+Structural features associated with acute toxicity to aquatic organisms, indicating general ecotoxicity and bioactivity.
+Matched alerts (3): Haloethyl amines (N-mustard) [NCCCl], Alkyl halide [CCCl], (Dithio) carbamates [NC(=O)S]
+
+11. Electrophilic agents
+Electrophilic centers that can react with biological nucleophiles (protein thiols, DNA bases).
+Matched alerts (1): Mustards [NCCCl]
+
+12. Reactive metabolite formation (idiosyncratic toxicity)
+Can form reactive metabolites via CYP metabolism that covalently modify liver proteins, triggering immune-mediated hepatotoxicity.
+Matched alerts (1): Carboxylic acids [CC(=O)O]
+
+13. Promiscuous compounds
+Structural motifs associated with non-specific activity across many biological targets (frequent hitters).
+Matched alerts (1): primary_halide_sulfate [CCl]
+
+14. Non-genotoxic carcinogenicity
+Promotes cancer through non-DNA-reactive mechanisms (receptor activation, epigenetic changes, chronic inflammation).
+Matched alerts (1): Aliphatic halogens [CCl]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: NC(CSC(=O)NCCCl)C(=O)O
+
+[predict_metabolites]
+Predicted Metabolites (SyGMa — Phase 1 + Phase 2):
+
+  1. NC(CS(=O)C(=O)NCCCl)C(=O)O
+     Pathway: sulfide_oxidation_(C-S-C) (score=0.2370)
+  2. NC(CSC(=O)NCCCl)C(=O)OC1OC(C(=O)O)C(O)C(O)C1O
+     Pathway: O-glucuronidation_(aliphatic_carboxyl) (score=0.1500)
+  3. CC(=O)NC(CSC(=O)NCCCl)C(=O)O
+     Pathway: N-acetylation_(aliphatic_NH2) (score=0.1490)
+
+Summary: 32 metabolites predicted (showing top 3: 1 Phase 1, 2 Phase 2)
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=0.0) ---
+
+
+--- Sample 2 (reward=0.0) ---
+
+
+--- Sample 3 (reward=0.0) ---
+
+
+--- Sample 4 (reward=0.0) ---
+
+
+--- Sample 5 (reward=0.0) ---
+
+
+--- Sample 6 (reward=0.0) ---
+
+
+--- Sample 7 (reward=0.0) ---
+
+
+--- Sample 8 (reward=0.0) ---
+
+
+--- Sample 9 (reward=0.0) ---
+
+
+--- Sample 10 (reward=0.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=0.0) ---
+
+
+--- Sample 13 (reward=0.0) ---
+
+
+--- Sample 14 (reward=0.0) ---
+
+
+--- Sample 15 (reward=0.0) ---
+
+
+--- Sample 16 (reward=0.0) ---
+
+
+=====================================
+
+=== Group 5 (dataset_idx=11535, datasource=AMES_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: The Ames test is a bacterial reverse mutation assay that detects compounds capable of inducing genetic damage. Histidine-dependent Salmonella typhimurium (and sometimes E. coli tryptophan auxotrophs) are exposed to the test compound; mutagenic compounds cause reversion mutations that restore the bacteria's ability to synthesize the required amino acid, producing visible colonies. The test is run both with and without metabolic activation (rat liver S9 fraction) to detect pro-mutagens that require CYP-mediated bioactivation.
+
+Mutagenicity in the Ames test arises through several distinct mechanisms. Direct-acting mutagens are electrophilic species that react covalently with DNA bases — alkylating agents (epoxides, aziridines, nitrogen mustards, alkyl halides), Michael acceptors (α,β-unsaturated carbonyls, acrylates, vinyl sulfones), and acylating agents. Pro-mutagens require metabolic activation: aromatic amines are N-hydroxylated by CYP1A2 to form reactive hydroxylamines/nitrenium ions that form DNA adducts; polycyclic aromatic hydrocarbons (PAHs) are epoxidized by CYP1A1/1B1 to form diol-epoxides; nitroaromatics are reduced to reactive nitroso and hydroxylamine intermediates. DNA intercalators — large planar polycyclic molecules — can cause frameshift mutations by inserting between base pairs and disrupting replication fidelity.
+
+Structural features associated with mutagenicity: aromatic amines and their acetylated derivatives (especially primary aromatic amines —NH₂ on an aromatic ring), nitroaromatic groups (—NO₂ on aromatic rings — reduced to reactive species), alkylating functional groups (epoxides, aziridines, alkyl halides, nitrogen mustards), Michael acceptors (α,β-unsaturated carbonyls adjacent to electron-withdrawing groups), aromatic nitroso groups, hydrazines and hydrazides, polycyclic aromatic hydrocarbons with bay regions (facilitating diol-epoxide formation), and N-nitroso compounds. Features arguing against mutagenicity: absence of electrophilic or DNA-reactive functional groups, absence of aromatic amines or nitro groups, steric shielding of potentially reactive sites, high molecular weight and steric bulk that prevents DNA intercalation or minor groove binding, and the presence of rapid detoxification handles (e.g., carboxylic acids that promote glucuronidation and clearance before DNA damage occurs).
+Question: Given a drug SMILES string, predict whether it
+(A) is not mutagenic (B) is mutagenic
+Drug SMILES: CCl
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 50.49 Da
+- Heavy atoms: 2, Heteroatoms: 1
+- logP (Wildman-Crippen): 0.8500
+- TPSA: 0.00 Å²
+- H-bond donors: 0, H-bond acceptors: 0
+- Rotatable bonds: 0
+- Fraction sp3 carbons (Fsp3): 1.0000
+- Molar refractivity: 11.78
+- QED (drug-likeness, 0-1): 0.3574
+- Lipinski violations: 0
+- Bertz complexity: 2.00
+- Topology: HallKierAlpha=0.2900, Kappa1=2.2900, Kappa2=1.2900, Kappa3=1.7380, BalabanJ=1.0000, IPC=2.0000
+- Amide bonds: 0
+- Stereocenters: 0
+- Pharmacophore features: 0 hydrophobic, 0 aromatic, 0 neg-ionizable, 0 pos-ionizable
+- Gasteiger charges: max=0.0108 (atom 0, C), min=-0.1304 (atom 1, Cl)
+- Charge polarization: 0.1413
+- EState indices: max=4.6390 (nucleophilic proxy), min=1.4720 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -11.2932 eV
+- LUMO energy: -4.1885 eV
+- HOMO-LUMO gap: 7.1047 eV
+- Dipole moment: 2.0509 Debye
+- Electrophilicity index (ω): 8.4339 eV
+- Total energy: -8.210213 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- alkyl chloride: Cl (*Cl)
+
+[analyze_ring_systems]
+Ring Systems:
+- No rings detected.
+
+[assess_adme_properties]
+pKa Prediction:
+  No acidic sites.
+  No basic sites.
+Ionization at pH 7.4: neutral, charge 0
+- Dominant form: CCl
+- Ambiguous (pKa near pH): No
+
+LogD at pH 7.4: 0.85
+Solubility: logS = -1.67 log(mol/L)
+
+[screen_structural_alerts]
+Structural Alerts (6 categories):
+
+1. Alkylating agent
+Can transfer alkyl groups to DNA bases, causing mutations.
+Matched alerts (1): alkyl_halide [CCl]
+
+2. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (1): Haloalkanes [CCl]
+
+3. Genotoxic carcinogenicity / mutagenicity
+DNA-reactive motifs that cause mutations via direct genotoxic mechanisms.
+Matched alerts (3): Aliphatic halide (general) [CCl], Aliphatic halide (specific) [CCl], Aliphatic halogens [CCl]
+
+4. Electrophilic agents
+Electrophilic centers that can react with biological nucleophiles (protein thiols, DNA bases).
+Matched alerts (1): Alkyl halides [CCl]
+
+5. Reactive / unstable / toxic groups
+Generally reactive or unstable functional groups flagged across multiple toxicity endpoints.
+Matched alerts (3): Alkylhalides [CCl], Alkyl halides [CCl], Alkyl Halides [CCl]
+
+6. Non-genotoxic carcinogenicity
+Promotes cancer through non-DNA-reactive mechanisms (receptor activation, epigenetic changes, chronic inflammation).
+Matched alerts (1): Aliphatic halogens [CCl]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: CCl
+
+[predict_metabolites]
+Predicted Metabolites (GLORYx — Phase 1 + Phase 2):
+
+No metabolites predicted.
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=0.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=0.0) ---
+
+
+--- Sample 4 (reward=1.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=0.0) ---
+
+
+--- Sample 8 (reward=0.0) ---
+
+
+--- Sample 9 (reward=1.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=1.0) ---
+
+
+--- Sample 13 (reward=1.0) ---
+
+
+--- Sample 14 (reward=1.0) ---
+
+
+--- Sample 15 (reward=0.0) ---
+
+
+--- Sample 16 (reward=1.0) ---
+
+
+=====================================
+

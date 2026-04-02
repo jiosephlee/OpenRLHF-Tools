@@ -1,0 +1,936 @@
+=== Group 1 (dataset_idx=667, datasource=HIA_Hou_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: Human intestinal absorption (HIA) measures the fraction of an orally administered drug absorbed from the gastrointestinal tract into the portal circulation. This is the first barrier to oral bioavailability — a drug must cross the intestinal epithelium before it encounters hepatic first-pass metabolism. Absorption occurs primarily via passive transcellular diffusion through the lipid bilayer of enterocytes, though carrier-mediated uptake (e.g., PEPT1 for peptide-like drugs, OATP for anionic compounds) and paracellular transport (for very small, hydrophilic molecules) also contribute.
+
+Molecular features favoring high intestinal absorption: moderate lipophilicity (logP 1-4) enables passive diffusion across the enterocyte membrane. Low polar surface area (TPSA < 120 Å²) is one of the strongest predictors — the desolvation cost of burying polar groups in the lipid bilayer is the primary barrier to transcellular transport. Limited hydrogen bond donors (HBD ≤ 3-4) are more important than acceptors because donors form stronger interactions with water that must be broken during membrane partitioning. Molecular weight below 500 Da and moderate flexibility (rotatable bonds ≤ 10) favor absorption. Adequate aqueous solubility in GI fluids (pH 1-7.4) ensures the drug is dissolved and available for absorption.
+
+Features associated with poor absorption: high TPSA (>140 Å²) is the strongest negative predictor. Zwitterionic or multiply charged species at intestinal pH have poor membrane permeability. Very polar, highly hydrophilic molecules (logP < -1) cannot partition into the lipid bilayer. Large, rigid molecules with MW > 600 Da have difficulty crossing the membrane. Compounds subject to active efflux by P-glycoprotein (Pgp/ABCB1) or BCRP (ABCG2) at the apical enterocyte membrane experience reduced net absorption — Pgp substrates are pumped back into the lumen after partial absorption. Acid-labile compounds may degrade in gastric pH before reaching the absorptive surface of the small intestine.
+Question: Given a drug SMILES string, predict whether it
+(A) cannot be absorbed (B) can be absorbed
+Drug SMILES: O=C1CC2(CCCC2)CC(=O)N1CCCCN1CCN(c2ncccn2)CC1
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 385.51 Da
+- Heavy atoms: 28, Heteroatoms: 7
+- logP (Wildman-Crippen): 2.0900
+- TPSA: 69.64 Å²
+- H-bond donors: 0, H-bond acceptors: 6
+- Rotatable bonds: 6
+- Fraction sp3 carbons (Fsp3): 0.7143
+- Molar refractivity: 106.77
+- QED (drug-likeness, 0-1): 0.5517
+- Lipinski violations: 0
+- Bertz complexity: 661.30
+- Topology: HallKierAlpha=-2.0200, Kappa1=19.3030, Kappa2=8.5540, Kappa3=4.3460, BalabanJ=1.1550, IPC=3863909.2650
+- Amide bonds: 2
+- Stereocenters: 0
+- Pharmacophore features: 3 hydrophobic, 1 aromatic, 0 neg-ionizable, 1 pos-ionizable
+- Gasteiger charges: max=0.2292 (atom 1, C), min=-0.3383 (atom 19, N)
+- Charge polarization: 0.5675
+- EState indices: max=12.5100 (nucleophilic proxy), min=0.0070 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -9.4789 eV
+- LUMO energy: -7.4290 eV
+- HOMO-LUMO gap: 2.0499 eV
+- Dipole moment: 3.8044 Debye
+- Electrophilicity index (ω): 34.8646 eV
+- Total energy: -83.617758 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- piperazine: N1CCNCC1 ([*]N1CCN([*])CC1)
+- pyrimidine: c1ncccn1 ([*]c1ncccn1)
+- 8-azaspiro[4.5]decane-7,9-dione: O=C1CC2(CCCC2)CC(=O)N1 ([*]N1C(=O)CC2(CCCC2)CC1=O)
+
+[analyze_ring_systems]
+Ring Systems:
+- 4 systems:
+  - 6 membered, aromatic, 2 N
+  - 6 membered, non-aromatic, 1 N
+  - 5 membered, non-aromatic, no heteroatoms
+  - 6 membered, non-aromatic, 2 N
+- Ring counts: 4 total, 1 aromatic, 3 aliphatic, 3 saturated
+- Heterocycles: 3
+- Aromatic atoms: 6 / 28
+- Spiro centers: 1
+- Not detected: PAH, macrocycle, bridgehead
+
+[assess_adme_properties]
+pKa Prediction:
+  No acidic sites.
+  Basic sites (4): atom 16 pKa = 7.56, atom 25 pKa = 6.00, atom 21 pKa = 6.00, atom 19 pKa = 5.80
+Ionization at pH 7.4: base, charge 1
+- Dominant form: O=C1CC2(CCCC2)CC(=O)[NH+]1CCCCN1CCN(c2ncccn2)CC1
+- Ambiguous (pKa near pH): Yes
+- Charge class distribution: base: 3, neutral: 1
+
+LogD at pH 7.4: 1.70
+Solubility: logS = -3.54 log(mol/L)
+
+[screen_structural_alerts]
+Structural Alerts (6 categories):
+
+1. Long aliphatic chain
+Molecules with long alkyl chains (>=7 carbons) tend to be non-specific membrane disruptors with poor drug-likeness.
+Matched alerts (1): Aliphatic_long_chain [CCCC]
+
+2. Miscellaneous heterocyclic PAINS
+Various heterocyclic scaffolds flagged as frequent hitters in high-throughput screening assays.
+Matched alerts (1): phthalimide [CC(=O)NC(=O)C]
+
+3. Natural product toxin scaffold
+Structural motifs from known natural toxins.
+Matched alerts (2): N5 Cycloheximide derivatives [O=C1CCCC(=O)N1], cycloheximide [O=C1CCCC(=O)N1]
+
+4. Genotoxic carcinogenicity / mutagenicity
+DNA-reactive motifs that cause mutations via direct genotoxic mechanisms.
+Matched alerts (1): Aromatic amines [cN]
+
+5. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (1): Acid anhydrides and their thio and aza analogues [CC(=O)NC=O]
+
+6. Reactive / unstable / toxic groups
+Generally reactive or unstable functional groups flagged across multiple toxicity endpoints.
+Matched alerts (1): Glutarimides [O=C1CCCC(=O)N1]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: O=C1CC2(CCCC2)CC(=O)N1CCCCN1CCN(c2ncccn2)CC1
+
+[predict_metabolites]
+Predicted Metabolites (SyGMa — Phase 1 + Phase 2):
+
+  1. O=C1CC2(CCCC2)CC(=O)N1CCCCN1CCN(c2ncc(O)cn2)CC1
+     Pathway: aromatic_hydroxylation_(para_to_nitrogen) (score=0.1450)
+  2. O=C1CC2(CCCC2)CC(=O)N1
+     Pathway: N-dealkylation_(tertiaryN-CH2-alkyl) (score=0.1190)
+  3. OCCCCN1CCN(c2ncccn2)CC1
+     Pathway: N-dealkylation_(tertiaryN-CH2-alkyl) (score=0.1190)
+
+Summary: 55 metabolites predicted (showing top 3: 3 Phase 1, 0 Phase 2)
+
+[get_3d_properties]
+3D Polar Surface Area (ePSA):
+3D conformation based estimation of PSA: 527.86
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.1035, 0.9748) → disc-like
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=1.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=1.0) ---
+
+
+--- Sample 4 (reward=1.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=1.0) ---
+
+
+--- Sample 8 (reward=1.0) ---
+
+
+--- Sample 9 (reward=0.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=1.0) ---
+
+
+--- Sample 13 (reward=1.0) ---
+
+
+--- Sample 14 (reward=1.0) ---
+
+
+--- Sample 15 (reward=1.0) ---
+
+
+--- Sample 16 (reward=1.0) ---
+
+
+=====================================
+
+=== Group 2 (dataset_idx=4444, datasource=BBB_Martins_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: The blood-brain barrier (BBB) is formed by brain capillary endothelial cells connected by tight junctions, surrounded by pericytes and astrocyte end-feet. Unlike peripheral capillaries, the BBB has no fenestrations and minimal pinocytosis, so drug entry into the CNS requires either passive transcellular diffusion through the endothelial cell membranes or carrier-mediated transport. Efflux transporters — particularly P-glycoprotein (Pgp/ABCB1) and BCRP (ABCG2) — on the luminal side actively pump many compounds back into the blood, creating an additional barrier beyond simple membrane permeability.
+
+Molecular features favoring BBB penetration: moderate lipophilicity (logP 1-3) provides the driving force for passive diffusion across the endothelial lipid bilayer. Low polar surface area (TPSA < 70-80 Å²) is the strongest single predictor of BBB penetration — the tight junctions eliminate the paracellular route, so transcellular diffusion is the only passive pathway. Few hydrogen bond donors (HBD ≤ 1-2) — more restrictive than for intestinal absorption because the BBB endothelium is less permeable. Small to moderate molecular weight (MW < 450 Da). Low overall hydrogen bonding capacity. Most successful CNS drugs are small, moderately lipophilic, and have minimal polar surface area. Being a substrate of nutrient transporters (LAT1 for amino acid-like drugs, GLUT1 for glucose-like structures) can facilitate active uptake.
+
+Features associated with poor BBB penetration: high TPSA (> 90 Å²) strongly predicts exclusion from the CNS. Multiple hydrogen bond donors (HBD ≥ 3) — each additional donor roughly halves BBB permeability. Compounds that are P-glycoprotein substrates are actively effluxed from the brain — basic amines with MW > 400 and moderate lipophilicity are common Pgp substrates. Charged molecules at pH 7.4 (carboxylates, sulfonates, phosphates, quaternary amines) have very poor passive BBB penetration. High molecular weight (> 500 Da). Very high lipophilicity (logP > 5) can paradoxically reduce BBB penetration due to excessive plasma protein binding and poor aqueous solubility, which reduce the free fraction available for diffusion.
+Question: Given a drug SMILES string, predict whether it
+(A) does not cross the BBB (B) crosses the BBB
+Drug SMILES: CC(=O)OCC(=O)[C@@]1(O)CC[C@H]2[C@@H]3C[C@H](Cl)C4=CC(=O)C=C[C@]4(C)[C@H]3C(=O)C[C@@]21C
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 434.92 Da
+- Heavy atoms: 30, Heteroatoms: 7
+- logP (Wildman-Crippen): 2.5500
+- TPSA: 97.74 Å²
+- H-bond donors: 1, H-bond acceptors: 6
+- Rotatable bonds: 3
+- Fraction sp3 carbons (Fsp3): 0.6522
+- Molar refractivity: 108.62
+- QED (drug-likeness, 0-1): 0.5412
+- Lipinski violations: 0
+- Bertz complexity: 905.37
+- Topology: HallKierAlpha=-1.7900, Kappa1=21.4420, Kappa2=6.8570, Kappa3=2.7940, BalabanJ=1.7070, IPC=3799628.6170
+- Amide bonds: 0
+- Stereocenters: 7
+- Pharmacophore features: 7 hydrophobic, 0 aromatic, 0 neg-ionizable, 0 pos-ionizable
+- Gasteiger charges: max=0.3026 (atom 1, C), min=-0.4577 (atom 3, O)
+- Charge polarization: 0.7603
+- EState indices: max=13.5040 (nucleophilic proxy), min=-1.7170 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -10.5095 eV
+- LUMO energy: -8.0529 eV
+- HOMO-LUMO gap: 2.4566 eV
+- Dipole moment: 6.8722 Debye
+- Electrophilicity index (ω): 35.0655 eV
+- Total energy: -91.976503 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- alkene (x2): C=C ([*]C([*])=C[*]), C=C ([*]C=C[*])
+- alkyl chloride: Cl ([*]Cl)
+- tertiary hydroxyl: O ([*]O)
+- ketone (x3): C=O ([*]C([*])=O), C=O ([*]C([*])=O), C=O ([*]C([*])=O)
+- carboxylic ester: C(=O)O (*C(=O)O[*])
+
+[analyze_ring_systems]
+Ring Systems:
+- 1 system: fused (5+6+6+6 membered, non-aromatic, no heteroatoms)
+- Ring counts: 4 total, 0 aromatic, 4 aliphatic, 3 saturated
+- Heterocycles: 0
+- Aromatic atoms: 0 / 30
+- Not detected: PAH, macrocycle, spiro, bridgehead
+
+[assess_adme_properties]
+pKa Prediction:
+  Acidic sites (1): atom 8 pKa = 12.40
+  No basic sites.
+Ionization at pH 7.4: neutral, charge 0
+- Dominant form: CC(=O)OCC(=O)[C@@]1(O)CC[C@H]2[C@@H]3C[C@H](Cl)C4=CC(=O)C=C[C@]4(C)[C@H]3C(=O)C[C@@]21C
+- Ambiguous (pKa near pH): No
+
+LogD at pH 7.4: 2.55
+Solubility: logS = -4.01 log(mol/L)
+
+[screen_structural_alerts]
+Structural Alerts (14 categories):
+
+1. Alkylating agent
+Can transfer alkyl groups to DNA bases, causing mutations.
+Matched alerts (6): alkyl_halide [CCl], secondary_halide_sulfate [CCl], R1 Reactive alkyl halides [CCl], alkyl_halides [CCl], Filter3_allyl_halide [C=CCCl], Filter45_allyl_halide2 [C=CCCl]
+
+2. Aldehyde / reactive carbonyl
+Reactive carbonyl that forms Schiff bases with lysine residues; includes alpha-dicarbonyls and reactive ketone variants.
+Matched alerts (1): Ketone [CC(C)=O]
+
+3. Ester / phenol ester / carbonate
+Esters can be hydrolyzed to release active metabolites; phenol esters and carbonates may indicate prodrug instability.
+Matched alerts (2): Ester [COC(C)=O], aliphatic ester, not lactones [COC(C)=O]
+
+4. Long aliphatic chain
+Molecules with long alkyl chains (>=7 carbons) tend to be non-specific membrane disruptors with poor drug-likeness.
+Matched alerts (1): Long aliphatic chain [CCOCCCO]
+
+5. Michael acceptor / electrophilic alkene
+Electrophilic alkene conjugated with electron-withdrawing group; can covalently modify cysteine residues on proteins.
+Matched alerts (3): vinyl michael acceptor1 [CC(=O)C=CC], Filter44_michael_acceptor2 [C=CC=O], alpha beta-unsaturated ketones; center of Michael reactivity [CC=C]
+
+6. Reactive / unstable group
+Miscellaneous reactive or unstable functional groups flagged by medicinal chemistry filters.
+Matched alerts (1): aliphatic ketone not ring and not di-carbonyl [CC(C)=O]
+
+7. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (6): Haloalkanes [CCl], Ketones [CC(C)=O], α,β-Unsaturated carbonyl and thiocarbonyl compounds [CC(=CC=O)C], α,β-Unsaturated ketones and  thioketones [CC(=O)C=CC], Activated alkene (Michael acceptor) (1) [CC=C], Acylating agents [CCOC(C)=O]
+
+8. Genotoxic carcinogenicity / mutagenicity
+DNA-reactive motifs that cause mutations via direct genotoxic mechanisms.
+Matched alerts (4): Aliphatic halide (general) [CCl], Aliphatic halide (specific) [CCl], Aliphatic halogens [CCl], α,β-Unsaturated carbonyls [CC(=O)C=C]
+
+9. Reactive / unstable / toxic groups
+Generally reactive or unstable functional groups flagged across multiple toxicity endpoints.
+Matched alerts (7): Vinylketones and similar [CC(=O)C=C], Alkylhalides [CCl], Alkyl halides [CCl], Activated double bonds (2) [CC=CC=O], Carboxylic acid esters [CCOC(C)=O], Ketones [CC(C)=O], Alkyl Halides [CCl]
+
+10. Acute aquatic toxicity
+Structural features associated with acute toxicity to aquatic organisms, indicating general ecotoxicity and bioactivity.
+Matched alerts (3): α,β-Unsaturated carbonyl compounds [CC(=O)C=C], Alkyl halide [CCCl], Halogenated allylic group [C=CCCl]
+
+11. Electrophilic agents
+Electrophilic centers that can react with biological nucleophiles (protein thiols, DNA bases).
+Matched alerts (4): Polarised alkene-ketones [C], Alkyl halides [CCl], Allyl acetates [CCOC(C)=O], α-Haloalkenes [C=CC]
+
+12. Reactive metabolite formation (idiosyncratic toxicity)
+Can form reactive metabolites via CYP metabolism that covalently modify liver proteins, triggering immune-mediated hepatotoxicity.
+Matched alerts (1): Michael acceptors [C]
+
+13. Promiscuous compounds
+Structural motifs associated with non-specific activity across many biological targets (frequent hitters).
+Matched alerts (1): secondary_halide_sulfate [CCl]
+
+14. Non-genotoxic carcinogenicity
+Promotes cancer through non-DNA-reactive mechanisms (receptor activation, epigenetic changes, chronic inflammation).
+Matched alerts (2): Aliphatic halogens [CCl], α,β-unsaturated carbonyls [C=CC=O]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: CC(=O)OCC(=O)[C@@]1(O)CC[C@H]2[C@@H]3C[C@H](Cl)C4=CC(=O)C=C[C@]4(C)[C@H]3C(=O)C[C@@]21C
+
+[predict_metabolites]
+Predicted Metabolites (GLORYx — FAME3 SoM + reaction rules, Phase 1 + Phase 2):
+
+  1. CC(=O)OCC(=O)[C@@]1(O)CC[C@H]2[C@@H]3C[C@H](Cl)C4=CC(=O)CC(SCC(NC(=O)CCC(N)C(=O)O)C(=O)NCC(=O)O)[C@]4(C)[C@H]3C(=O)C[C@@]21C
+     Reaction: glutathione_conjugation_(alpha,beta-unsaturated_carbonyl) (Phase 2, score=0.432)
+  2. C[C@]12C=CC(=O)C=C1[C@@H](Cl)C[C@@H]1[C@@H]2C(=O)C[C@@]2(C)[C@H]1CC[C@]2(O)C(=O)CO
+     Reaction: O-deacetylation (Phase 2, score=0.268)
+  3. C[C@]12C=CC(=O)C=C1[C@@H](Cl)C[C@@H]1[C@@H]2C(=O)C[C@@]2(C)[C@H]1CC[C@]2(O)C(=O)C=O
+     Reaction: oxidative ether cleavage to one alcohol and one aldehyde/ketone (Phase 1, score=0.268)
+
+[get_3d_properties]
+3D Polar Surface Area (ePSA):
+3D conformation based estimation of PSA: 505.82
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.2168, 0.8814) → disc-like
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=1.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=1.0) ---
+
+
+--- Sample 4 (reward=0.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=1.0) ---
+
+
+--- Sample 8 (reward=1.0) ---
+
+
+--- Sample 9 (reward=1.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=1.0) ---
+
+
+--- Sample 13 (reward=1.0) ---
+
+
+--- Sample 14 (reward=0.0) ---
+
+
+--- Sample 15 (reward=1.0) ---
+
+
+--- Sample 16 (reward=1.0) ---
+
+
+=====================================
+
+=== Group 3 (dataset_idx=1642, datasource=PAMPA_NCATS_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: The Parallel Artificial Membrane Permeability Assay (PAMPA) measures passive transcellular permeability by quantifying how much compound diffuses across an artificial lipid membrane (typically a phospholipid mixture on a filter support) from a donor to an acceptor compartment. Unlike Caco-2 cell assays, PAMPA has no active transporters, no efflux pumps, and no paracellular pathway — it isolates pure passive diffusion. The NCATS variant uses a standardized protocol across a large compound library.
+
+The rate of passive diffusion is governed by the drug's ability to partition from aqueous solution into the lipid bilayer, diffuse across it, and re-partition into the aqueous phase on the other side. This is primarily determined by the molecule's desolvation cost — how much energy is required to strip away the hydration shell of polar groups before entering the hydrophobic membrane interior.
+
+Molecular features favoring high PAMPA permeability: low polar surface area (TPSA < 80 Å² for high permeability, 80-120 Å² for moderate) is the single most predictive descriptor. Few hydrogen bond donors (HBD ≤ 2-3) — each donor adds roughly 10 Å² of TPSA and a strong water interaction that must be broken. Moderate lipophilicity (logP 1-4) provides the driving force for membrane partitioning. Molecular weight < 500 Da. Intramolecular hydrogen bonds can "mask" polar groups and improve permeability beyond what TPSA alone would predict — this is exploited in cyclic peptide drug design. Compact, low-flexibility conformations reduce the entropic cost of membrane insertion.
+
+Features associated with poor PAMPA permeability: high TPSA (>120 Å²) is the dominant negative predictor. Multiple hydrogen bond donors (HBD ≥ 4) strongly reduce permeability. Charged species at the assay pH (typically pH 7.4) — carboxylates, phosphates, quaternary amines — have very poor passive diffusion because the charge cannot be buried in the lipid interior. Very hydrophilic molecules (logP < 0) lack the driving force for membrane partitioning. High molecular weight (>600 Da) and many rotatable bonds (>10) also reduce permeability.
+Question: Given a drug SMILES string, predict whether it
+(A) is not permeable to cell membranes in a PAMPA assay (B) is permeable to cell membranes in a PAMPA assay
+Drug SMILES: Cc1cc(C)nc(NS(=O)(=O)c2ccc(NC(=S)NC(=O)COc3ccc(Br)cc3Cl)cc2)n1
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 584.91 Da
+- Heavy atoms: 34, Heteroatoms: 13
+- logP (Wildman-Crippen): 4.2021
+- TPSA: 122.31 Å²
+- H-bond donors: 3, H-bond acceptors: 7
+- Rotatable bonds: 7
+- Fraction sp3 carbons (Fsp3): 0.1429
+- Molar refractivity: 137.77
+- QED (drug-likeness, 0-1): 0.3533
+- Lipinski violations: 1 (MW > 500)
+- Bertz complexity: 1317.24
+- Topology: HallKierAlpha=-2.8000, Kappa1=25.8162, Kappa2=11.0835, Kappa3=7.3520, BalabanJ=1.5456, IPC=20443027.5531
+- Amide bonds: 1
+- Stereocenters: 0
+- Pharmacophore features: 3 hydrophobic, 3 aromatic, 0 neg-ionizable, 0 pos-ionizable
+- Gasteiger charges: max=0.2637 (atom 8, S), min=-0.4822 (atom 22, O)
+- Charge polarization: 0.7459
+- EState indices: max=12.6144 (nucleophilic proxy), min=-3.8867 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -9.9344 eV
+- LUMO energy: -8.3575 eV
+- HOMO-LUMO gap: 1.5769 eV
+- Dipole moment: 10.8926 Debye
+- Electrophilicity index (ω): 53.0467 eV
+- Total energy: -100.683931 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- alkyl aryl ether: O ([*]O[*])
+- secondary amide: NC=O ([*]NC([*])=O)
+- thiourea: NC(=S)N ([*]NC(=S)N[*])
+- Aryl chloride: Cl ([*]Cl)
+- Aryl bromide: Br ([*]Br)
+- sulfonamide: NS(=O)=O ([*]NS([*])(=O)=O)
+- benzene (x2): c1ccccc1 ([*]c1ccc([*])cc1), c1ccccc1 ([*]c1ccc([*])cc1[*])
+- pyrimidine: c1ccncn1 (*c1cc([*])nc([*])n1)
+
+[analyze_ring_systems]
+Ring Systems:
+- 3 systems:
+  - 6 membered, aromatic, 2 N
+  - 6 membered, aromatic, no heteroatoms
+  - 6 membered, aromatic, no heteroatoms
+- Ring counts: 3 total, 3 aromatic, 0 aliphatic, 0 saturated
+- Heterocycles: 1
+- Aromatic atoms: 18 / 34
+- Not detected: PAH, macrocycle, spiro, bridgehead
+
+[assess_adme_properties]
+pKa Prediction:
+  Acidic sites (3): atom 18 pKa = 6.03, atom 7 pKa = 6.75, atom 15 pKa = 8.80
+  Basic sites (5): atom 7 pKa = 5.13, atom 15 pKa = 1.92, atom 33 pKa = 1.60, atom 5 pKa = 1.60, atom 17 pKa = 0.59
+Ionization at pH 7.4: neutral, charge 0
+- Dominant form: Cc1cc(C)nc(NS(=O)(=O)c2ccc(NC(=S)NC(=O)COc3ccc(Br)cc3Cl)cc2)n1
+- Ambiguous (pKa near pH): Yes
+- Charge class distribution: neutral: 1, acid: 1
+
+LogD at pH 7.4: 2.82
+Solubility (ESOL heuristic): ESOL logS: -6.0435
+
+[screen_structural_alerts]
+Structural Alerts (9 categories):
+
+1. Thiocarbonyl / thioester / thiocyanate
+Reactive sulfur-carbon bonds; can be metabolized to toxic intermediates or react with biological nucleophiles.
+Matched alerts (1): Thiocarbonyl_group [C=S]
+
+2. Thiourea / thioamide
+Thiocarbonyl compounds; can be metabolized to reactive sulfoxides or interfere with protein targets non-specifically.
+Matched alerts (1): thiourea [NC(N)=S]
+
+3. Reactive / unstable group
+Miscellaneous reactive or unstable functional groups flagged by medicinal chemistry filters.
+Matched alerts (2): Hetero_hetero [cNSc], 26 [NC(N)=S]
+
+4. Polyhalogenated / perfluorinated
+Heavily halogenated compounds; may accumulate in tissue, disrupt membranes, or release toxic metabolites.
+Matched alerts (1): aryl bromide [ccBr]
+
+5. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (4): Aromatic primary and secondary amines [cN], Aromatic amines [cN], Esters of aromatic alcohols and their thio and aza analogues [cNC(N)=S], Acid anhydrides and their thio and aza analogues [NC(=S)NC=O]
+
+6. Non-genotoxic carcinogenicity
+Promotes cancer through non-DNA-reactive mechanisms (receptor activation, epigenetic changes, chronic inflammation).
+Matched alerts (1): Thiocarbonyl [N]
+
+7. Genotoxic carcinogenicity / mutagenicity
+DNA-reactive motifs that cause mutations via direct genotoxic mechanisms.
+Matched alerts (1): Aromatic amines [cN]
+
+8. Reactive / unstable / toxic groups
+Generally reactive or unstable functional groups flagged across multiple toxicity endpoints.
+Matched alerts (5): Linear thioureas [NC(N)=S], Thione [C=S], Thiourea [NC(N)=S], Heteroatom-bonded thiocarbonyls [NC=S], Thiocarbonyls [NC=S]
+
+9. Acute aquatic toxicity
+Structural features associated with acute toxicity to aquatic organisms, indicating general ecotoxicity and bioactivity.
+Matched alerts (1): Aryl halide [cBr]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: Cc1cc(C)nc(NS(=O)(=O)c2ccc(NC(=S)NC(=O)COc3ccc(Br)cc3Cl)cc2)n1
+
+[predict_metabolites]
+Predicted Metabolites (SyGMa — Phase 1 + Phase 2):
+
+  1. Cc1cc(CO)nc(NS(=O)(=O)c2ccc(NC(=S)NC(=O)COc3ccc(Br)cc3Cl)cc2)n1
+     Pathway: benzylic_hydroxylation_(c-CH3) (score=0.1530)
+  2. Cc1nc(NS(=O)(=O)c2ccc(NC(=S)NC(=O)COc3ccc(Br)cc3Cl)cc2)nc(C)c1O
+     Pathway: aromatic_hydroxylation_(para_to_nitrogen) (score=0.1450)
+  3. O=C(O)COc1ccc(Br)cc1Cl
+     Pathway: hydrolysis_(secondary_amide) (score=0.0920)
+
+Summary: 65 metabolites predicted (showing top 3: 3 Phase 1, 0 Phase 2)
+
+[get_3d_properties]
+3D Polar Surface Area (ePSA):
+3D conformation based estimation of PSA: 167.05
+3D conformation based estimation of Polar Fraction: 0.21
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.3916, 0.7513) → intermediate
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=0.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=0.0) ---
+
+
+--- Sample 4 (reward=0.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=0.0) ---
+
+
+--- Sample 7 (reward=0.0) ---
+
+
+--- Sample 8 (reward=1.0) ---
+
+
+--- Sample 9 (reward=1.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=0.0) ---
+
+
+--- Sample 13 (reward=1.0) ---
+
+
+--- Sample 14 (reward=1.0) ---
+
+
+--- Sample 15 (reward=0.0) ---
+
+
+--- Sample 16 (reward=0.0) ---
+
+
+=====================================
+
+=== Group 4 (dataset_idx=339, datasource=Bioavailability_Ma_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: Oral bioavailability (F) is the fraction of an orally administered drug that reaches systemic circulation in unchanged form. It is determined by three sequential barriers: absorption from the gastrointestinal lumen across the intestinal epithelium, first-pass metabolism in the gut wall (primarily by CYP3A4), and first-pass metabolism in the liver (by CYP enzymes and conjugation). This dataset uses a binary threshold of F ≥ 20% vs F < 20%.
+
+Molecular features favoring high oral bioavailability: compliance with Lipinski's Rule of Five (MW ≤ 500, logP ≤ 5, HBD ≤ 5, HBA ≤ 10) — these are necessary but not sufficient conditions for oral absorption. Moderate lipophilicity (logP 1-3) balances membrane permeability with aqueous solubility. Low polar surface area (TPSA < 140 Å²) facilitates transcellular passive diffusion. Limited molecular flexibility (rotatable bonds ≤ 10) reduces the entropic penalty for adopting a membrane-permeable conformation. Adequate aqueous solubility ensures dissolution in GI fluids. Metabolic stability — resistance to CYP-mediated oxidation and Phase II conjugation — preserves the parent compound through first-pass metabolism.
+
+Features associated with poor bioavailability: high MW (>500 Da) and excessive hydrogen bonding capacity reduce membrane permeability. Very high lipophilicity (logP > 5) causes poor aqueous solubility despite good permeability. High TPSA (>140 Å²) strongly correlates with poor absorption. Many rotatable bonds (>10) reduce the probability of adopting a compact, membrane-permeable conformation. Susceptibility to efflux by P-glycoprotein (Pgp) at the intestinal epithelium reduces net absorption. Labile metabolic soft spots — unhindered aromatic rings, benzylic positions, N-dealkylation sites — lead to rapid first-pass metabolism. Compounds that are substrates of CYP3A4 (the dominant gut-wall and hepatic CYP) face extensive first-pass extraction.
+Question: Given a drug SMILES string, predict whether it
+(A) has oral bioavailability < 20% (B) has oral bioavailability ≥ 20%
+Drug SMILES: C[C@@H]1[C@H](O)[C@@H](C)/C=C/C=C/CC/C=C/C=C/C=C/C=C/C(O[C@H]2O[C@H](C)[C@@H](O)[C@H](N)[C@@H]2O)CC2O[C@](O)(CC(O)C(O)CCC(O)CC(O)CC(O)CC(=O)O[C@H]1C)CC(O)C2C(=O)O
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 926.11 Da
+- Heavy atoms: 65, Heteroatoms: 18
+- logP (Wildman-Crippen): 0.9357
+- TPSA: 319.61 Å²
+- H-bond donors: 12, H-bond acceptors: 17
+- Rotatable bonds: 3
+- Fraction sp3 carbons (Fsp3): 0.7021
+- Molar refractivity: 237.09
+- QED (drug-likeness, 0-1): 0.1753
+- Lipinski violations: 3 (MW > 500, HBD > 5, HBA > 10)
+- Bertz complexity: 1619.95
+- Topology: HallKierAlpha=-3.1800, Kappa1=56.1446, Kappa2=27.5878, Kappa3=18.7915, BalabanJ=1.8373, IPC=26516073899290.0234
+- Amide bonds: 0
+- Stereocenters: 19
+- Pharmacophore features: 3 hydrophobic, 0 aromatic, 1 neg-ionizable, 1 pos-ionizable
+- Gasteiger charges: max=0.3113 (atom 62, C), min=-0.4809 (atom 64, O)
+- Charge polarization: 0.7922
+- EState indices: max=12.6209 (nucleophilic proxy), min=-2.3534 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -9.8578 eV
+- LUMO energy: -7.3708 eV
+- HOMO-LUMO gap: 2.4870 eV
+- Dipole moment: 3.2915 Debye
+- Electrophilicity index (ω): 29.8369 eV
+- Total energy: -210.878926 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- alkene (x6): C=C ([*]/C=C/[*]), C=C ([*]/C=C/[*]), C=C ([*]/C=C/[*]), C=C ([*]/C=C/[*]), C=C ([*]/C=C/[*]), C=C ([*]/C=C/[*])
+- secondary hydroxyl (x7): O ([*]O), O ([*]O), O ([*]O), O ([*]O), O ([*]O), O ([*]O), O ([*]O)
+- primary aliphatic amine: N ([*]N)
+- 1,2-diol: C(O)CO ([*]C(O)C([*])O)
+- acetal: COCOC ([*]C([*])O[C@H]([*])O[C@H]([*])[*])
+- hemiacetal: COCO ([*]C([*])O[C@]([*])([*])O)
+- carboxylic acid: C(=O)O ([*]C(=O)O)
+- lactone: C(=O)O ([*]C(=O)O[*])
+- tetrahydropyran (x2): C1OCCCC1 ([*][C@H]1O[C@H]([*])[C@@H]([*])[C@H]([*])[C@@H]1[*]), C1OCCCC1 ([*]C1O[C@]([*])([*])CC([*])C1[*])
+
+[analyze_ring_systems]
+Ring Systems:
+- 2 systems:
+  - fused (6+36 membered, non-aromatic, 2 O)
+  - 6 membered, non-aromatic, 1 O
+- Ring counts: 3 total, 0 aromatic, 3 aliphatic, 2 saturated
+- Heterocycles: 3
+- Aromatic atoms: 0 / 65
+- Macrocycles: 1 (largest ring: 36-membered)
+- Bridgehead atoms: 2
+- Not detected: PAH, spiro
+
+[assess_adme_properties]
+pKa Prediction:
+  Acidic sites (11): atom 64 pKa = 3.82, atom 31 pKa = 11.80, atom 36 pKa = 11.81, atom 39 pKa = 11.92, atom 60 pKa = 11.93, atom 27 pKa = 12.16, atom 45 pKa = 12.17, atom 41 pKa = 12.30, atom 3 pKa = 12.53, atom 51 pKa = 12.72, atom 48 pKa = 12.76
+  Basic sites (1): atom 29 pKa = 8.15
+Ionization at pH 7.4: zwitterion, charge 0
+- Dominant form: C[C@@H]1[C@H](O)[C@@H](C)/C=C/C=C/CC/C=C/C=C/C=C/C=C/C(O[C@H]2O[C@H](C)[C@@H](O)[C@H]([NH3+])[C@@H]2O)CC2O[C@](O)(CC(O)C(O)CCC(O)CC(O)CC(O)CC(=O)O[C@H]1C)CC(O)C2C(=O)[O-]
+- Ambiguous (pKa near pH): Yes
+- Charge class distribution: acid: 1, zwitterion: 1
+
+LogD at pH 7.4: -3.47
+Solubility (ESOL heuristic): ESOL logS: -5.9734
+
+[screen_structural_alerts]
+Structural Alerts (7 categories):
+
+1. Reactive / unstable group
+Miscellaneous reactive or unstable functional groups flagged by medicinal chemistry filters.
+Matched alerts (3): gte_7_aliphatic_OH [CO.CO.CO.CO.CO.OCCO], Non-Hydrogen_atoms [C], carbons [C]
+
+2. Styrene / vinyl / alkene
+Terminal or conjugated alkenes can be metabolically epoxidized to form reactive intermediates.
+Matched alerts (3): N2 Polyenes [C=C/C=C/C=C/C=C], polyenes [C=C/C=C/C=C/C=C], polyene [C=C/C=C/C=C/C=C]
+
+3. Ester / phenol ester / carbonate
+Esters can be hydrolyzed to release active metabolites; phenol esters and carbonates may indicate prodrug instability.
+Matched alerts (2): acetal [CO[C@H](C)OC], Ester [CC(=O)OC]
+
+4. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (2): Precursors of aldehydes and ketones [C[C@](O)(C)O], Aldehydes and precursors [C]
+
+5. Reactive metabolite formation (idiosyncratic toxicity)
+Can form reactive metabolites via CYP metabolism that covalently modify liver proteins, triggering immune-mediated hepatotoxicity.
+Matched alerts (1): Carboxylic acids [CC(=O)O]
+
+6. Reactive / unstable / toxic groups
+Generally reactive or unstable functional groups flagged across multiple toxicity endpoints.
+Matched alerts (3): α-hydroxy substituted carbonyls [O=CCCO], Acetal [CO[C@H](C)O], Carboxylic acid esters [CCOC(=O)C]
+
+7. Promiscuous compounds
+Structural motifs associated with non-specific activity across many biological targets (frequent hitters).
+Matched alerts (1): gte_7_aliphatic_OH [CO.CO.CO.CO.CO.OCCO]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: C[C@@H]1[C@H](O)[C@@H](C)/C=C/C=C/CC/C=C/C=C/C=C/C=C/C(O[C@H]2O[C@H](C)[C@@H](O)[C@H](N)[C@@H]2O)CC2O[C@](O)(CC(O)C(O)CCC(O)CC(O)CC(O)CC(=O)O[C@H]1C)CC(O)C2C(=O)O
+
+[predict_metabolites]
+Predicted Metabolites (GLORYx — FAME3 SoM + reaction rules, Phase 1 + Phase 2):
+
+  1. CC(=O)N[C@@H]1[C@H](O)[C@@H](OC2/C=C\C=C\C=C/C=C/CC/C=C\C=C\[C@H](C)[C@@H](O)[C@@H](C)[C@H](C)OC(=O)CC(O)CC(O)CC(O)CCC(O)C(O)C[C@]3(O)CC(O)C(C(=O)O)C(C2)O3)O[C@H](C)[C@H]1O
+     Reaction: N-acetylation_(aliphatic_NH2) (Phase 2, score=0.860)
+  2. C[C@@H]1[C@H](O)[C@@H](C)/C=C/C=C\CC/C=C/C=C\C=C\C=C/C(O[C@H]2O[C@H](C)[C@@H](O)[C@H](N)[C@@H]2OS(=O)(=O)O)CC2O[C@](O)(CC(O)C(O)CCC(O)CC(O)CC(O)CC(=O)O[C@H]1C)CC(O)C2C(=O)O
+     Reaction: sulfation_(aliphatic_hydroxyl) (Phase 2, score=0.644)
+  3. C[C@@H]1[C@H](OS(=O)(=O)O)[C@@H](C)/C=C/C=C\CC/C=C/C=C\C=C\C=C/C(O[C@H]2O[C@H](C)[C@@H](O)[C@H](N)[C@@H]2O)CC2O[C@](O)(CC(O)C(O)CCC(O)CC(O)CC(O)CC(=O)O[C@H]1C)CC(O)C2C(=O)O
+     Reaction: sulfation_(aliphatic_hydroxyl) (Phase 2, score=0.607)
+
+[get_3d_properties]
+3D Polar Surface Area (ePSA):
+3D conformation based estimation of PSA: 486.23
+3D conformation based estimation of Polar Fraction: 0.38
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.2164, 0.8410) → disc-like
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (A)
+
+--- Sample 1 (reward=1.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=0.0) ---
+
+
+--- Sample 4 (reward=1.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=1.0) ---
+
+
+--- Sample 8 (reward=1.0) ---
+
+
+--- Sample 9 (reward=1.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=1.0) ---
+
+
+--- Sample 13 (reward=1.0) ---
+
+
+--- Sample 14 (reward=1.0) ---
+
+
+--- Sample 15 (reward=1.0) ---
+
+
+--- Sample 16 (reward=1.0) ---
+
+
+=====================================
+
+=== Group 5 (dataset_idx=5946, datasource=SARSCoV2_3CLPro_Diamond_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: SARS-CoV-2 3CL protease (Mpro) is a cysteine protease essential for viral replication. It cleaves the viral polyprotein at 11 sites, making it a validated drug target. This dataset comes from a crystallographic fragment screen conducted at the Diamond Light Source, where fragments were soaked into Mpro crystals at high concentration (typically 50-200 mM) and binding was detected by electron density in difference maps. About 8% of screened fragments showed binding. High aqueous solubility is important for achieving sufficient soaking concentration — poorly soluble fragments may fail to produce detectable electron density even if they could bind.
+
+The active site lies in a groove between domains I and II. The catalytic dyad consists of Cys145 (nucleophile) and His41 (general base). The oxyanion hole is formed by backbone NHs of Gly143, Ser144, and Cys145 — these stabilize the tetrahedral intermediate during substrate cleavage and also form hydrogen bonds with fragment carbonyl or sulfonyl groups. Key subsites: S1 (His163, Glu166/Phe140 backbones — prefers small H-bond acceptors like lactams, pyridones, or pyrazoles), S2 (His41, Met49, Met165 — a hydrophobic pocket that accommodates medium-sized aromatics and aliphatic groups), S1' (shallow and solvent-exposed — tolerates diverse substituents), and S4 (Gln189, flexible and partially solvent-exposed). The combined S1+S2 pocket volume is roughly 300 Å³.
+
+About 40% of confirmed fragment hits bind covalently. Electrophilic warheads react with the Cys145 thiolate: chloroacetamides are the most common (SN2 displacement of chloride), followed by acrylamides (Michael addition) and vinyl sulfonamides. The remaining ~60% bind non-covalently through H-bond networks with the oxyanion hole and S1 pocket residues, plus hydrophobic packing against Met49 and Met165 in S2.
+
+Favorable molecular features for binding: an electrophilic warhead capable of reacting with Cys145, H-bond donor/acceptor pairs complementary to the oxyanion hole (e.g., amides, sulfonamides, heterocyclic NHs), compact size (MW < 300 Da for fragment-level crystallographic detection), high aqueous solubility (logS > -2), and some three-dimensional character to complement the binding groove shape. Unfavorable features: bulky groups that exceed the subsite volume, purely hydrophobic molecules lacking H-bond capacity, heavy halogens like iodine (whose strong anomalous X-ray scattering can complicate electron density interpretation and lead to false negatives), and highly flexible molecules with many rotatable bonds (entropic penalty for adopting a bound conformation).
+Question: Given a drug SMILES string, predict whether it
+(A) does not bind SARS-CoV-2 3CL protease (B) binds SARS-CoV-2 3CL protease
+Drug SMILES: CC(=O)NCc1ccc(S(N)(=O)=O)cc1
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 228.27 Da
+- Heavy atoms: 15, Heteroatoms: 6
+- logP (Wildman-Crippen): -0.0300
+- TPSA: 89.26 Å²
+- H-bond donors: 2, H-bond acceptors: 3
+- Rotatable bonds: 3
+- Fraction sp3 carbons (Fsp3): 0.2222
+- Molar refractivity: 55.34
+- QED (drug-likeness, 0-1): 0.7609
+- Lipinski violations: 0
+- Bertz complexity: 450.75
+- Topology: HallKierAlpha=-1.4000, Kappa1=11.6740, Kappa2=4.4130, Kappa3=3.6850, BalabanJ=2.7730, IPC=1624.8380
+- Amide bonds: 1
+- Stereocenters: 0
+- Pharmacophore features: 2 hydrophobic, 1 aromatic, 0 neg-ionizable, 0 pos-ionizable
+- Gasteiger charges: max=0.2375 (atom 9, S), min=-0.3523 (atom 3, N)
+- Charge polarization: 0.5898
+- EState indices: max=10.9180 (nucleophilic proxy), min=-3.6380 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -10.9671 eV
+- LUMO energy: -7.4298 eV
+- HOMO-LUMO gap: 3.5373 eV
+- Dipole moment: 6.0463 Debye
+- Electrophilicity index (ω): 23.9200 eV
+- Total energy: -46.657350 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- secondary amide: C(=O)N (*C(=O)N[*])
+- sulfonamide: S(N)(=O)=O ([*]S(N)(=O)=O)
+- benzene: c1ccccc1 ([*]c1ccc([*])cc1)
+
+[analyze_ring_systems]
+Ring Systems:
+- 1 system: 6 membered, aromatic, no heteroatoms
+- Ring counts: 1 total, 1 aromatic, 0 aliphatic, 0 saturated
+- Heterocycles: 0
+- Aromatic atoms: 6 / 15
+- Not detected: PAH, macrocycle, spiro, bridgehead
+
+[assess_adme_properties]
+pKa Prediction:
+  Acidic sites (2): atom 10 pKa = 10.12, atom 3 pKa = 13.42
+  Basic sites (1): atom 10 pKa = 4.13
+Ionization at pH 7.4: neutral, charge 0
+- Dominant form: CC(=O)NCc1ccc(S(N)(=O)=O)cc1
+- Ambiguous (pKa near pH): Yes
+- Charge class distribution: acid: 1, neutral: 1
+
+LogD at pH 7.4: -0.03
+Solubility: logS = -1.14 log(mol/L)
+
+[screen_structural_alerts]
+Structural Alerts (2 categories):
+
+1. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (1): Acylating agents [cCNC(C)=O]
+
+2. Chelating agents
+Can sequester metal ions essential for enzyme function; may interfere with ion channels.
+Matched alerts (1): H7* [Cc1ccc(S(N)(=O)=O)cc1]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: CC(=O)NCc1ccc(S(N)(=O)=O)cc1
+
+[predict_metabolites]
+Predicted Metabolites (GLORYx — FAME3 SoM + reaction rules, Phase 1 + Phase 2):
+
+  1. CC(=O)NCc1ccc(S(=O)(=O)NC(C)=O)cc1
+     Reaction: N-acetylation_(heteroatom_bonded_NH2) (Phase 2, score=0.904)
+  2. CC(=O)N(O)Cc1ccc(S(N)(=O)=O)cc1
+     Reaction: amine hydroxylation (Phase 1, score=0.328)
+  3. CC(N)=O
+     Reaction: N-dealkylation_(R-NHCH2-alkyl) (Phase 1, score=0.328)
+
+[get_3d_properties]
+3D Polar Surface Area (ePSA):
+3D conformation based estimation of PSA: 279.23
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.1438, 0.9622) → disc-like
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=1.0) ---
+
+
+--- Sample 2 (reward=0.0) ---
+
+
+--- Sample 3 (reward=0.0) ---
+
+
+--- Sample 4 (reward=1.0) ---
+
+
+--- Sample 5 (reward=0.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=1.0) ---
+
+
+--- Sample 8 (reward=0.0) ---
+
+
+--- Sample 9 (reward=0.0) ---
+
+
+--- Sample 10 (reward=0.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=0.0) ---
+
+
+--- Sample 13 (reward=0.0) ---
+
+
+--- Sample 14 (reward=0.0) ---
+
+
+--- Sample 15 (reward=1.0) ---
+
+
+--- Sample 16 (reward=0.0) ---
+
+
+=====================================
+

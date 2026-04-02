@@ -1,0 +1,596 @@
+=== Group 1 (dataset_idx=11845, datasource=AMES_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|>
+
+# Tools
+
+## functions
+
+namespace functions {
+
+// Get a comprehensive molecular profile including identity (MW), drug-likeness (QED, Lipinski violations), key physicochemical properties (logP, TPSA, HBD, HBA, rotatable bonds, Fsp3, molar refractivity), complexity metrics (Bertz CT, stereocenters), topology indices (Hall-Kier, Kappa, Balaban J, IPC), pharmacophore feature counts (hydrophobic, aromatic, ionizable), and electronic properties (Gasteiger charges, EState indices, HOMO/LUMO gap).
+type get_molecule_profile = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Analyze functional groups in a molecule using AccFG. Returns named functional groups with fragment SMILES, attachment points, and atom IDs for structural reasoning. Use this to understand what chemical motifs are present.
+type analyze_functional_groups = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Analyze ring topology and aromaticity. Returns per-system descriptions with ring sizes and heteroatom content, ring type counts (aromatic/aliphatic/saturated/heterocyclic), aromaticity metrics, and flags for PAH, macrocycle, spiro, and bridgehead features.
+type analyze_ring_systems = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Assess ADME properties: pKa prediction (acidic/basic sites), ionization state classification at target pH, logD estimation, and aqueous solubility. These are causally linked: pKa → ionization → logD → permeability.
+type assess_adme_properties = (_: {
+// SMILES string of the molecule.
+smiles: string,
+// Target pH for ionization/logD estimation (default: 7.4).
+ph?: number
+}) => any;
+
+// Screen a molecule for toxicophores — structural motifs associated with specific toxicity mechanisms. Groups alerts into categories like 'Michael acceptor' (protein-reactive electrophile), 'alkylating agent' (DNA-reactive), 'PAH' (CYP-activated), etc. Each category includes a mechanistic explanation. Also screens against ToxAlerts endpoint-specific patterns covering skin sensitization, mutagenicity, carcinogenicity, reactive metabolite formation, electrophilic reactivity, chelation, and promiscuity. Returns pharmacophore feature counts (donor/acceptor/aromatic/hydrophobe). Use this to identify structural liabilities and understand their toxicological mechanisms.
+type screen_structural_alerts = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Remove salts and counterions from a SMILES string, keeping only the largest organic fragment. Use as a preprocessing step before other analyses when the input SMILES contains disconnected components separated by '.' that include inorganic ions (e.g., [Na+], Cl-, etc.).
+type remove_salts = (_: {
+// SMILES string (may contain salts).
+smiles: string
+}) => any;
+
+// Predict CYP450 metabolism: returns top 3 ranked metabolites with SMILES, reaction types, and priority scores for Phase 1 (oxidation, reduction, hydrolysis) and Phase 2 (glucuronidation, sulfation, GSH conjugation). Uses GLORYx (FAME3 SoM + reaction rules) when cached, otherwise SyGMa rule-based metabolite prediction as fallback. 
+type predict_metabolites = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+} // namespace functions<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: Mutagenicity means the ability of a drug to induce genetic alterations. Drugs that can cause damage to the DNA can result in cell death or other severe adverse effects. Nowadays, the most widely used assay for testing the mutagenicity of compounds is the Ames experiment which was invented by a professor named Ames. The Ames test is a short-term bacterial reverse mutation assay detecting a large number of compounds which can induce genetic damage and frameshift mutations.
+Question: Given a drug SMILES string, predict whether it
+(A) is not mutagenic (B) is mutagenic
+Drug SMILES: CN(C)C(=O)Cl
+Please think step by step and use the relevant tools in your analysis. Then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=0.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=1.0) ---
+
+
+--- Sample 4 (reward=1.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=1.0) ---
+
+
+--- Sample 8 (reward=0.0) ---
+
+
+--- Sample 9 (reward=1.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=1.0) ---
+
+
+--- Sample 13 (reward=1.0) ---
+
+
+--- Sample 14 (reward=1.0) ---
+
+
+--- Sample 15 (reward=0.0) ---
+
+
+--- Sample 16 (reward=1.0) ---
+
+
+=====================================
+
+=== Group 2 (dataset_idx=11851, datasource=AMES_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|>
+
+# Tools
+
+## functions
+
+namespace functions {
+
+// Get a comprehensive molecular profile including identity (MW), drug-likeness (QED, Lipinski violations), key physicochemical properties (logP, TPSA, HBD, HBA, rotatable bonds, Fsp3, molar refractivity), complexity metrics (Bertz CT, stereocenters), topology indices (Hall-Kier, Kappa, Balaban J, IPC), pharmacophore feature counts (hydrophobic, aromatic, ionizable), and electronic properties (Gasteiger charges, EState indices, HOMO/LUMO gap).
+type get_molecule_profile = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Analyze functional groups in a molecule using AccFG. Returns named functional groups with fragment SMILES, attachment points, and atom IDs for structural reasoning. Use this to understand what chemical motifs are present.
+type analyze_functional_groups = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Analyze ring topology and aromaticity. Returns per-system descriptions with ring sizes and heteroatom content, ring type counts (aromatic/aliphatic/saturated/heterocyclic), aromaticity metrics, and flags for PAH, macrocycle, spiro, and bridgehead features.
+type analyze_ring_systems = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Assess ADME properties: pKa prediction (acidic/basic sites), ionization state classification at target pH, logD estimation, and aqueous solubility. These are causally linked: pKa → ionization → logD → permeability.
+type assess_adme_properties = (_: {
+// SMILES string of the molecule.
+smiles: string,
+// Target pH for ionization/logD estimation (default: 7.4).
+ph?: number
+}) => any;
+
+// Screen a molecule for toxicophores — structural motifs associated with specific toxicity mechanisms. Groups alerts into categories like 'Michael acceptor' (protein-reactive electrophile), 'alkylating agent' (DNA-reactive), 'PAH' (CYP-activated), etc. Each category includes a mechanistic explanation. Also screens against ToxAlerts endpoint-specific patterns covering skin sensitization, mutagenicity, carcinogenicity, reactive metabolite formation, electrophilic reactivity, chelation, and promiscuity. Returns pharmacophore feature counts (donor/acceptor/aromatic/hydrophobe). Use this to identify structural liabilities and understand their toxicological mechanisms.
+type screen_structural_alerts = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Remove salts and counterions from a SMILES string, keeping only the largest organic fragment. Use as a preprocessing step before other analyses when the input SMILES contains disconnected components separated by '.' that include inorganic ions (e.g., [Na+], Cl-, etc.).
+type remove_salts = (_: {
+// SMILES string (may contain salts).
+smiles: string
+}) => any;
+
+// Predict CYP450 metabolism: returns top 3 ranked metabolites with SMILES, reaction types, and priority scores for Phase 1 (oxidation, reduction, hydrolysis) and Phase 2 (glucuronidation, sulfation, GSH conjugation). Uses GLORYx (FAME3 SoM + reaction rules) when cached, otherwise SyGMa rule-based metabolite prediction as fallback. 
+type predict_metabolites = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+} // namespace functions<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: Mutagenicity means the ability of a drug to induce genetic alterations. Drugs that can cause damage to the DNA can result in cell death or other severe adverse effects. Nowadays, the most widely used assay for testing the mutagenicity of compounds is the Ames experiment which was invented by a professor named Ames. The Ames test is a short-term bacterial reverse mutation assay detecting a large number of compounds which can induce genetic damage and frameshift mutations.
+Question: Given a drug SMILES string, predict whether it
+(A) is not mutagenic (B) is mutagenic
+Drug SMILES: ClC(Cl)=C(Cl)Cl
+Please think step by step and use the relevant tools in your analysis. Then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (A)
+
+--- Sample 1 (reward=0.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=0.0) ---
+
+
+--- Sample 4 (reward=0.0) ---
+
+
+--- Sample 5 (reward=0.0) ---
+
+
+--- Sample 6 (reward=0.0) ---
+
+
+--- Sample 7 (reward=0.0) ---
+
+
+--- Sample 8 (reward=0.0) ---
+
+
+--- Sample 9 (reward=0.0) ---
+
+
+--- Sample 10 (reward=0.0) ---
+
+
+--- Sample 11 (reward=0.0) ---
+
+
+--- Sample 12 (reward=0.0) ---
+
+
+--- Sample 13 (reward=0.0) ---
+
+
+--- Sample 14 (reward=0.0) ---
+
+
+--- Sample 15 (reward=0.0) ---
+
+
+--- Sample 16 (reward=1.0) ---
+
+
+=====================================
+
+=== Group 3 (dataset_idx=11837, datasource=AMES_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|>
+
+# Tools
+
+## functions
+
+namespace functions {
+
+// Get a comprehensive molecular profile including identity (MW), drug-likeness (QED, Lipinski violations), key physicochemical properties (logP, TPSA, HBD, HBA, rotatable bonds, Fsp3, molar refractivity), complexity metrics (Bertz CT, stereocenters), topology indices (Hall-Kier, Kappa, Balaban J, IPC), pharmacophore feature counts (hydrophobic, aromatic, ionizable), and electronic properties (Gasteiger charges, EState indices, HOMO/LUMO gap).
+type get_molecule_profile = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Analyze functional groups in a molecule using AccFG. Returns named functional groups with fragment SMILES, attachment points, and atom IDs for structural reasoning. Use this to understand what chemical motifs are present.
+type analyze_functional_groups = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Analyze ring topology and aromaticity. Returns per-system descriptions with ring sizes and heteroatom content, ring type counts (aromatic/aliphatic/saturated/heterocyclic), aromaticity metrics, and flags for PAH, macrocycle, spiro, and bridgehead features.
+type analyze_ring_systems = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Assess ADME properties: pKa prediction (acidic/basic sites), ionization state classification at target pH, logD estimation, and aqueous solubility. These are causally linked: pKa → ionization → logD → permeability.
+type assess_adme_properties = (_: {
+// SMILES string of the molecule.
+smiles: string,
+// Target pH for ionization/logD estimation (default: 7.4).
+ph?: number
+}) => any;
+
+// Screen a molecule for toxicophores — structural motifs associated with specific toxicity mechanisms. Groups alerts into categories like 'Michael acceptor' (protein-reactive electrophile), 'alkylating agent' (DNA-reactive), 'PAH' (CYP-activated), etc. Each category includes a mechanistic explanation. Also screens against ToxAlerts endpoint-specific patterns covering skin sensitization, mutagenicity, carcinogenicity, reactive metabolite formation, electrophilic reactivity, chelation, and promiscuity. Returns pharmacophore feature counts (donor/acceptor/aromatic/hydrophobe). Use this to identify structural liabilities and understand their toxicological mechanisms.
+type screen_structural_alerts = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Remove salts and counterions from a SMILES string, keeping only the largest organic fragment. Use as a preprocessing step before other analyses when the input SMILES contains disconnected components separated by '.' that include inorganic ions (e.g., [Na+], Cl-, etc.).
+type remove_salts = (_: {
+// SMILES string (may contain salts).
+smiles: string
+}) => any;
+
+// Predict CYP450 metabolism: returns top 3 ranked metabolites with SMILES, reaction types, and priority scores for Phase 1 (oxidation, reduction, hydrolysis) and Phase 2 (glucuronidation, sulfation, GSH conjugation). Uses GLORYx (FAME3 SoM + reaction rules) when cached, otherwise SyGMa rule-based metabolite prediction as fallback. 
+type predict_metabolites = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+} // namespace functions<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: Mutagenicity means the ability of a drug to induce genetic alterations. Drugs that can cause damage to the DNA can result in cell death or other severe adverse effects. Nowadays, the most widely used assay for testing the mutagenicity of compounds is the Ames experiment which was invented by a professor named Ames. The Ames test is a short-term bacterial reverse mutation assay detecting a large number of compounds which can induce genetic damage and frameshift mutations.
+Question: Given a drug SMILES string, predict whether it
+(A) is not mutagenic (B) is mutagenic
+Drug SMILES: ClC[C@H](Cl)CBr
+Please think step by step and use the relevant tools in your analysis. Then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=0.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=1.0) ---
+
+
+--- Sample 4 (reward=1.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=1.0) ---
+
+
+--- Sample 8 (reward=0.0) ---
+
+
+--- Sample 9 (reward=1.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=1.0) ---
+
+
+--- Sample 13 (reward=0.0) ---
+
+
+--- Sample 14 (reward=0.0) ---
+
+
+--- Sample 15 (reward=1.0) ---
+
+
+--- Sample 16 (reward=1.0) ---
+
+
+=====================================
+
+=== Group 4 (dataset_idx=11857, datasource=AMES_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|>
+
+# Tools
+
+## functions
+
+namespace functions {
+
+// Get a comprehensive molecular profile including identity (MW), drug-likeness (QED, Lipinski violations), key physicochemical properties (logP, TPSA, HBD, HBA, rotatable bonds, Fsp3, molar refractivity), complexity metrics (Bertz CT, stereocenters), topology indices (Hall-Kier, Kappa, Balaban J, IPC), pharmacophore feature counts (hydrophobic, aromatic, ionizable), and electronic properties (Gasteiger charges, EState indices, HOMO/LUMO gap).
+type get_molecule_profile = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Analyze functional groups in a molecule using AccFG. Returns named functional groups with fragment SMILES, attachment points, and atom IDs for structural reasoning. Use this to understand what chemical motifs are present.
+type analyze_functional_groups = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Analyze ring topology and aromaticity. Returns per-system descriptions with ring sizes and heteroatom content, ring type counts (aromatic/aliphatic/saturated/heterocyclic), aromaticity metrics, and flags for PAH, macrocycle, spiro, and bridgehead features.
+type analyze_ring_systems = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Assess ADME properties: pKa prediction (acidic/basic sites), ionization state classification at target pH, logD estimation, and aqueous solubility. These are causally linked: pKa → ionization → logD → permeability.
+type assess_adme_properties = (_: {
+// SMILES string of the molecule.
+smiles: string,
+// Target pH for ionization/logD estimation (default: 7.4).
+ph?: number
+}) => any;
+
+// Screen a molecule for toxicophores — structural motifs associated with specific toxicity mechanisms. Groups alerts into categories like 'Michael acceptor' (protein-reactive electrophile), 'alkylating agent' (DNA-reactive), 'PAH' (CYP-activated), etc. Each category includes a mechanistic explanation. Also screens against ToxAlerts endpoint-specific patterns covering skin sensitization, mutagenicity, carcinogenicity, reactive metabolite formation, electrophilic reactivity, chelation, and promiscuity. Returns pharmacophore feature counts (donor/acceptor/aromatic/hydrophobe). Use this to identify structural liabilities and understand their toxicological mechanisms.
+type screen_structural_alerts = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Remove salts and counterions from a SMILES string, keeping only the largest organic fragment. Use as a preprocessing step before other analyses when the input SMILES contains disconnected components separated by '.' that include inorganic ions (e.g., [Na+], Cl-, etc.).
+type remove_salts = (_: {
+// SMILES string (may contain salts).
+smiles: string
+}) => any;
+
+// Predict CYP450 metabolism: returns top 3 ranked metabolites with SMILES, reaction types, and priority scores for Phase 1 (oxidation, reduction, hydrolysis) and Phase 2 (glucuronidation, sulfation, GSH conjugation). Uses GLORYx (FAME3 SoM + reaction rules) when cached, otherwise SyGMa rule-based metabolite prediction as fallback. 
+type predict_metabolites = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+} // namespace functions<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: Mutagenicity means the ability of a drug to induce genetic alterations. Drugs that can cause damage to the DNA can result in cell death or other severe adverse effects. Nowadays, the most widely used assay for testing the mutagenicity of compounds is the Ames experiment which was invented by a professor named Ames. The Ames test is a short-term bacterial reverse mutation assay detecting a large number of compounds which can induce genetic damage and frameshift mutations.
+Question: Given a drug SMILES string, predict whether it
+(A) is not mutagenic (B) is mutagenic
+Drug SMILES: CCCOO
+Please think step by step and use the relevant tools in your analysis. Then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=1.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=1.0) ---
+
+
+--- Sample 4 (reward=1.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=1.0) ---
+
+
+--- Sample 8 (reward=1.0) ---
+
+
+--- Sample 9 (reward=0.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=1.0) ---
+
+
+--- Sample 13 (reward=1.0) ---
+
+
+--- Sample 14 (reward=1.0) ---
+
+
+--- Sample 15 (reward=0.0) ---
+
+
+--- Sample 16 (reward=0.0) ---
+
+
+=====================================
+
+=== Group 5 (dataset_idx=3662, datasource=BBB_Martins_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|>
+
+# Tools
+
+## functions
+
+namespace functions {
+
+// Get a comprehensive molecular profile including identity (MW), drug-likeness (QED, Lipinski violations), key physicochemical properties (logP, TPSA, HBD, HBA, rotatable bonds, Fsp3, molar refractivity), complexity metrics (Bertz CT, stereocenters), topology indices (Hall-Kier, Kappa, Balaban J, IPC), pharmacophore feature counts (hydrophobic, aromatic, ionizable), and electronic properties (Gasteiger charges, EState indices, HOMO/LUMO gap).
+type get_molecule_profile = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Analyze functional groups in a molecule using AccFG. Returns named functional groups with fragment SMILES, attachment points, and atom IDs for structural reasoning. Use this to understand what chemical motifs are present.
+type analyze_functional_groups = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Analyze ring topology and aromaticity. Returns per-system descriptions with ring sizes and heteroatom content, ring type counts (aromatic/aliphatic/saturated/heterocyclic), aromaticity metrics, and flags for PAH, macrocycle, spiro, and bridgehead features.
+type analyze_ring_systems = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Assess ADME properties: pKa prediction (acidic/basic sites), ionization state classification at target pH, logD estimation, and aqueous solubility. These are causally linked: pKa → ionization → logD → permeability.
+type assess_adme_properties = (_: {
+// SMILES string of the molecule.
+smiles: string,
+// Target pH for ionization/logD estimation (default: 7.4).
+ph?: number
+}) => any;
+
+// Screen a molecule for toxicophores — structural motifs associated with specific toxicity mechanisms. Groups alerts into categories like 'Michael acceptor' (protein-reactive electrophile), 'alkylating agent' (DNA-reactive), 'PAH' (CYP-activated), etc. Each category includes a mechanistic explanation. Also screens against ToxAlerts endpoint-specific patterns covering skin sensitization, mutagenicity, carcinogenicity, reactive metabolite formation, electrophilic reactivity, chelation, and promiscuity. Returns pharmacophore feature counts (donor/acceptor/aromatic/hydrophobe). Use this to identify structural liabilities and understand their toxicological mechanisms.
+type screen_structural_alerts = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Remove salts and counterions from a SMILES string, keeping only the largest organic fragment. Use as a preprocessing step before other analyses when the input SMILES contains disconnected components separated by '.' that include inorganic ions (e.g., [Na+], Cl-, etc.).
+type remove_salts = (_: {
+// SMILES string (may contain salts).
+smiles: string
+}) => any;
+
+// Predict CYP450 metabolism: returns top 3 ranked metabolites with SMILES, reaction types, and priority scores for Phase 1 (oxidation, reduction, hydrolysis) and Phase 2 (glucuronidation, sulfation, GSH conjugation). Uses GLORYx (FAME3 SoM + reaction rules) when cached, otherwise SyGMa rule-based metabolite prediction as fallback. 
+type predict_metabolites = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+// Compute 3D conformational properties from a conformer ensemble. Returns exposed polar surface area (ePSA) and 3D shape (PMI ratios for rod/disc/sphere classification). Computationally expensive (~seconds). Use only when 3D surface/shape information is specifically needed beyond 2D TPSA.
+type get_3d_properties = (_: {
+// SMILES string of the molecule.
+smiles: string
+}) => any;
+
+} // namespace functions<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: As a membrane separating circulating blood and brain extracellular fluid, the blood-brain barrier (BBB) is the protection layer that blocks most foreign drugs. Thus the ability of a drug to penetrate the barrier to deliver to the site of action forms a crucial challenge in development of drugs for central nervous system.
+Question: Given a drug SMILES string, predict whether it
+(A) does not cross the BBB (B) crosses the BBB
+Drug SMILES: CSC(=O)C1(O)C(C)CC2C3CCC4=CC(=O)C=CC4(C)C3(F)C(O)CC21C
+Please think step by step and use the relevant tools in your analysis. Then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=1.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=1.0) ---
+
+
+--- Sample 4 (reward=1.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=0.0) ---
+
+
+--- Sample 7 (reward=1.0) ---
+
+
+--- Sample 8 (reward=1.0) ---
+
+
+--- Sample 9 (reward=1.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=1.0) ---
+
+
+--- Sample 13 (reward=1.0) ---
+
+
+--- Sample 14 (reward=1.0) ---
+
+
+--- Sample 15 (reward=1.0) ---
+
+
+--- Sample 16 (reward=1.0) ---
+
+
+=====================================
+

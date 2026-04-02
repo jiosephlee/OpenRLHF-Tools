@@ -1124,7 +1124,7 @@ class PPOTrainer(BasePPOTrainer):
         hard_indices, kept_indices = self.samples_generator.get_replay_indices()
         #### Oversampling: include missed indices in replay pool ####
         missed_indices = self.samples_generator.get_missed_indices()
-        replay_indices = list(hard_indices | kept_indices | missed_indices)
+        replay_indices = list(hard_indices | missed_indices)
         #### end oversampling ####
         max_replay_rounds = getattr(self.args, "max_replay_rounds", 2)
         original_dataloader = self.samples_generator.prompts_dataloader
@@ -1139,7 +1139,7 @@ class PPOTrainer(BasePPOTrainer):
 
             logger.info(
                 f"[SmartReplay] Episode {episode + 1}, round {replay_round + 1}/{max_replay_rounds}: "
-                f"replaying {len(replay_indices)} prompts (hard={len(hard_indices)}, kept={len(kept_indices)})"
+                f"replaying {len(replay_indices)} prompts (hard={len(hard_indices)}, kept={len(kept_indices)} tracked)"
             )
 
             # Build a dataloader over the replay subset.
@@ -1237,12 +1237,12 @@ class PPOTrainer(BasePPOTrainer):
             hard_indices, kept_indices = self.samples_generator.get_replay_indices()
             #### Oversampling: include missed indices in next replay round ####
             missed_indices = self.samples_generator.get_missed_indices()
-            replay_indices = list(hard_indices | kept_indices | missed_indices)
+            replay_indices = list(hard_indices | missed_indices)
             #### end oversampling ####
             logger.info(
                 f"[SmartReplay] Round {replay_round + 1} done. "
-                f"{len(replay_indices)} non-easy prompts remain "
-                f"(hard={len(hard_indices)}, kept={len(kept_indices)}, missed={len(missed_indices)})."
+                f"{len(replay_indices)} replay prompts remain "
+                f"(hard={len(hard_indices)}, kept={len(kept_indices)} tracked, missed={len(missed_indices)})."
             )
 
         # Restore original dataloader.

@@ -26,7 +26,7 @@
 #   PRETRAIN_PATH= EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=1 TIS=1 TIS_TYPE=tis TRAIN_MAX_TOKENS_PER_GPU=40960 SMART_REPLAY=1 REDUCE_OPTIMIZER=adam_offload LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss.sh
 #   USE_LORA=1 LEARNING_RATE=2e-5 EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TRAIN_MAX_TOKENS_PER_GPU=41952 REDUCE_OPTIMIZER=none LIGER_GRPO_LOSS=0 DEQUANT=unsloth LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss.sh
 #.  EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TRAIN_MAX_TOKENS_PER_GPU=41952 REDUCE_OPTIMIZER=none LIGER_GRPO_LOSS=0 DEQUANT=unsloth LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss.sh
-#   OVERSAMPLE_RATIO=2 TIS=1 TIS_TYPE=icepop DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=cispo bash train_grpo_tdc_gpt_oss.sh
+#   LEARNING_RATE=9e-7 SMART_REPLAY=1 OVERSAMPLE_RATIO=2 TIS=1 TIS_TYPE=icepop DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=cispo bash train_grpo_tdc_gpt_oss.sh
 # Distributed:
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 bash scripts/train_grpo_tdc_gpt_oss.sh
 #       
@@ -142,9 +142,9 @@ MODE="${MODE:-colocated}"
 EFFECTIVE_ROLLOUT_BATCH_SIZE="${EFFECTIVE_ROLLOUT_BATCH_SIZE:-8}"
 EFFECTIVE_MINI_GRADIENT_STEPS="${EFFECTIVE_MINI_GRADIENT_STEPS:-2}"
 ASYNC_ADVANTAGE="${ASYNC_ADVANTAGE:-4}"
-TOOL_VERSION="${TOOL_VERSION:-v6}"
+TOOL_VERSION="${TOOL_VERSION:-v7}"
 SMART_REPLAY="${SMART_REPLAY:-0}"
-MAX_REPLAY_ROUNDS="${MAX_REPLAY_ROUNDS:-1}"
+MAX_REPLAY_ROUNDS="${MAX_REPLAY_ROUNDS:-2}"
 
 LIGER_GRPO_LOSS="${LIGER_GRPO_LOSS:-0}"
 LIGER_GRPO_BACKEND="${LIGER_GRPO_BACKEND:-triton}"
@@ -186,7 +186,7 @@ if [ "$MODE" = "colocated" ]; then
     VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
     ROLLOUT_BATCH_SIZE=$(( EFFECTIVE_ROLLOUT_BATCH_SIZE * ASYNC_ADVANTAGE ))
     MINI_GRADIENT_STEPS=$(( EFFECTIVE_MINI_GRADIENT_STEPS))
-    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.7}"
+    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.69}"
     VLLM_SYNC_BACKEND=nccl
     EVAL_STEPS="${EVAL_STEPS:-$COLO_EVAL_STEPS}"
 elif [ "$MODE" = "distributed" ]; then
@@ -230,7 +230,7 @@ else
 fi
 
 ### WARMUP LOGIC ###
-WARMUP_STEPS=10
+WARMUP_STEPS=8
 WARM_STEPS_MULTIPLIER=$(( MINI_GRADIENT_STEPS ))
 
 ### MULTI-TASK ###
@@ -269,7 +269,21 @@ if [ ! -d "$PROJECT_ROOT/openrlhf" ]; then
 fi 
 
 ### DATA ###
-DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_gpt_oss"
+DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v7_tools"
+# Short tag derived from dataset dir name for run naming
+# e.g. openai_format_enriched -> "enr", openai_format_v6_encourage_tool_use -> "v6etu"
+DATA_DIR_BASENAME="$(basename "$DATA_DIR")"
+case "$DATA_DIR_BASENAME" in
+    openai_format_enriched)          DATA_TAG="enr" ;;
+    openai_format_enriched_v7_tools) DATA_TAG="enr-v7t" ;;
+    openai_format_enriched_v6_tools) DATA_TAG="enr-v6t" ;;
+    openai_format_v6_encourage_tool_use) DATA_TAG="v6etu" ;;
+    openai_format_v7_tools)          DATA_TAG="v7t" ;;
+    openai_format_gpt_oss)           DATA_TAG="gptoss" ;;
+    prepended_tools_v6)              DATA_TAG="pre-v6" ;;
+    prepended_tools_v7)              DATA_TAG="pre-v7" ;;
+    *)                               DATA_TAG="${DATA_DIR_BASENAME#openai_format_}" ;;
+esac
 mkdir -p "$PROJECT_ROOT/logs"
 
 TRAIN_PARTS=()
@@ -299,12 +313,12 @@ SUFFIX=""
 
 if [ "$MODE" = "colocated" ]; then
     MODE_TAG="colo"
-    RUN_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
-    WANDB_GROUP="TDC-GPTOss-${QUANT_LABEL}-colo-$TASK_LABEL"
+    RUN_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-${DATA_TAG}-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
+    WANDB_GROUP="TDC-GPTOss-${QUANT_LABEL}-${DATA_TAG}-colo-$TASK_LABEL"
 else
     MODE_TAG="dist-${LAYOUT_TAG}"
-    RUN_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
-    WANDB_GROUP="TDC-GPTOss-${QUANT_LABEL}-dist-${LAYOUT_TAG}-$TASK_LABEL"
+    RUN_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-${DATA_TAG}-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
+    WANDB_GROUP="TDC-GPTOss-${QUANT_LABEL}-${DATA_TAG}-dist-${LAYOUT_TAG}-$TASK_LABEL"
 fi
 RUN_ID="${RUN_NAME}"
 HUB_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"

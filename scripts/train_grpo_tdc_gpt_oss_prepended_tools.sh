@@ -26,7 +26,7 @@
 #   DEQUANT=unsloth LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo bash scripts/train_grpo_tdc_gpt_oss_prepended_tools.sh
 #
 #   USE_LORA=1 LEARNING_RATE=1e-5 DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=ppo SMART_REPLAY=1 bash train_grpo_tdc_gpt_oss_prepended_tools.sh
-#   OVERSAMPLE_RATIO=2 TIS=1 TIS_TYPE=tis DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=cispo bash train_grpo_tdc_gpt_oss_prepended_tools.sh
+#   LEARNING_RATE=9e-7 SMART_REPLAY=1 OVERSAMPLE_RATIO=2 TIS=1 TIS_TYPE=tis DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=cispo bash train_grpo_tdc_gpt_oss_prepended_tools.sh
 #
 #   # With features:
 #   EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TIS=1 TIS_TYPE=tis REDUCE_OPTIMIZER=adam_offload TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=1 LOSS_TYPE=dapo SMART_REPLAY=1 DEQUANT=unsloth bash scripts/train_grpo_tdc_gpt_oss_prepended_tools.sh
@@ -180,7 +180,7 @@ if [ "$MODE" = "colocated" ]; then
     VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
     ROLLOUT_BATCH_SIZE=$(( EFFECTIVE_ROLLOUT_BATCH_SIZE * ASYNC_ADVANTAGE ))
     MINI_GRADIENT_STEPS=$(( EFFECTIVE_MINI_GRADIENT_STEPS))
-    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.7}"
+    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-.69}"
     VLLM_SYNC_BACKEND=nccl
     EVAL_STEPS="${EVAL_STEPS:-$COLO_EVAL_STEPS}"
 elif [ "$MODE" = "distributed" ]; then
@@ -224,7 +224,7 @@ else
 fi
 
 ### WARMUP LOGIC ###
-WARMUP_STEPS=10
+WARMUP_STEPS=5
 WARM_STEPS_MULTIPLIER=$(( MINI_GRADIENT_STEPS ))
 
 ### MULTI-TASK: all 16 TDC tasks ###
@@ -263,7 +263,14 @@ if [ ! -d "$PROJECT_ROOT/openrlhf" ]; then
 fi
 
 ### DATA ###
-DATA_DIR="$PROJECT_ROOT/data/tdc/prepended_tools_v6"
+DATA_DIR="$PROJECT_ROOT/data/tdc/prepended_tools_v7"
+# Short tag derived from dataset dir name for run naming
+DATA_DIR_BASENAME="$(basename "$DATA_DIR")"
+case "$DATA_DIR_BASENAME" in
+    prepended_tools_v6)              DATA_TAG="pre-v6" ;;
+    prepended_tools_v7)              DATA_TAG="pre-v7" ;;
+    *)                               DATA_TAG="$DATA_DIR_BASENAME" ;;
+esac
 mkdir -p "$PROJECT_ROOT/logs"
 
 TRAIN_PARTS=()
@@ -293,15 +300,15 @@ SUFFIX=""
 
 if [ "$MODE" = "colocated" ]; then
     MODE_TAG="colo"
-    RUN_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-prepended-tools-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
-    WANDB_GROUP="TDC-GPTOss-${QUANT_LABEL}-PrependedTools-colo-$TASK_LABEL"
+    RUN_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${DATA_TAG}-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
+    WANDB_GROUP="TDC-GPTOss-${QUANT_LABEL}-${DATA_TAG}-colo-$TASK_LABEL"
 else
     MODE_TAG="dist-${LAYOUT_TAG}"
-    RUN_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-prepended-tools-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
-    WANDB_GROUP="TDC-GPTOss-${QUANT_LABEL}-PrependedTools-dist-${LAYOUT_TAG}-$TASK_LABEL"
+    RUN_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${DATA_TAG}-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
+    WANDB_GROUP="TDC-GPTOss-${QUANT_LABEL}-${DATA_TAG}-dist-${LAYOUT_TAG}-$TASK_LABEL"
 fi
 RUN_ID="${RUN_NAME}"
-HUB_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-prepended-tools-ep${MAX_EPOCHS}-${DATE_TAG}"
+HUB_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${DATA_TAG}-ep${MAX_EPOCHS}-${DATE_TAG}"
 RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}"
 mkdir -p "$RUNS_DIR"
 LOCAL_SAVE_DIR="${LOCAL_SAVE_DIR:-/vast/projects/myatskar/design-documents/hf_home}"
@@ -478,6 +485,11 @@ if [ "$USE_LORA" = "1" ]; then
 fi
 if [ "${UNSLOTH_MOE:-0}" = "1" ]; then
     OPTIONAL_FLAGS+=" --use_unsloth_moe_kernels"
+fi
+# KNN pseudo-labels for reversal tracking (extracted from prepended tool outputs)
+KNN_PL_PATH="$PROJECT_ROOT/data/tdc/metadata/prepended_v7_pseudo_labels.json"
+if [ -f "$KNN_PL_PATH" ]; then
+    OPTIONAL_FLAGS+=" --knn_pseudo_labels_path $KNN_PL_PATH"
 fi
 
 ### TRAINING ###

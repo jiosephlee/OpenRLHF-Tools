@@ -1,0 +1,861 @@
+=== Group 1 (dataset_idx=3364, datasource=BBB_Martins_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: The blood-brain barrier (BBB) is formed by brain capillary endothelial cells connected by tight junctions, surrounded by pericytes and astrocyte end-feet. Unlike peripheral capillaries, the BBB has no fenestrations and minimal pinocytosis, so drug entry into the CNS requires either passive transcellular diffusion through the endothelial cell membranes or carrier-mediated transport. Efflux transporters — particularly P-glycoprotein (Pgp/ABCB1) and BCRP (ABCG2) — on the luminal side actively pump many compounds back into the blood, creating an additional barrier beyond simple membrane permeability.
+
+Molecular features favoring BBB penetration: moderate lipophilicity (logP 1-3) provides the driving force for passive diffusion across the endothelial lipid bilayer. Low polar surface area (TPSA < 70-80 Å²) is the strongest single predictor of BBB penetration — the tight junctions eliminate the paracellular route, so transcellular diffusion is the only passive pathway. Few hydrogen bond donors (HBD ≤ 1-2) — more restrictive than for intestinal absorption because the BBB endothelium is less permeable. Small to moderate molecular weight (MW < 450 Da). Low overall hydrogen bonding capacity. Most successful CNS drugs are small, moderately lipophilic, and have minimal polar surface area. Being a substrate of nutrient transporters (LAT1 for amino acid-like drugs, GLUT1 for glucose-like structures) can facilitate active uptake.
+
+Features associated with poor BBB penetration: high TPSA (> 90 Å²) strongly predicts exclusion from the CNS. Multiple hydrogen bond donors (HBD ≥ 3) — each additional donor roughly halves BBB permeability. Compounds that are P-glycoprotein substrates are actively effluxed from the brain — basic amines with MW > 400 and moderate lipophilicity are common Pgp substrates. Charged molecules at pH 7.4 (carboxylates, sulfonates, phosphates, quaternary amines) have very poor passive BBB penetration. High molecular weight (> 500 Da). Very high lipophilicity (logP > 5) can paradoxically reduce BBB penetration due to excessive plasma protein binding and poor aqueous solubility, which reduce the free fraction available for diffusion.
+Question: Given a drug SMILES string, predict whether it
+(A) does not cross the BBB (B) crosses the BBB
+Drug SMILES: C/C(=C1/CCOC(=O)S1)N(C=O)Cc1cnc(C)nc1N
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 308.36 Da
+- Heavy atoms: 21, Heteroatoms: 8
+- logP (Wildman-Crippen): 1.8300
+- TPSA: 98.41 Å²
+- H-bond donors: 1, H-bond acceptors: 7
+- Rotatable bonds: 4
+- Fraction sp3 carbons (Fsp3): 0.3846
+- Molar refractivity: 79.04
+- QED (drug-likeness, 0-1): 0.6689
+- Lipinski violations: 0
+- Bertz complexity: 603.08
+- Topology: HallKierAlpha=-2.0900, Kappa1=15.3020, Kappa2=6.5750, Kappa3=3.7200, BalabanJ=2.2070, IPC=49466.3600
+- Amide bonds: 1
+- Stereocenters: 0
+- Pharmacophore features: 2 hydrophobic, 1 aromatic, 0 neg-ionizable, 0 pos-ionizable
+- Gasteiger charges: max=0.3714 (atom 6, C), min=-0.4570 (atom 5, O)
+- Charge polarization: 0.8284
+- EState indices: max=11.3380 (nucleophilic proxy), min=-0.3480 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -10.2749 eV
+- LUMO energy: -7.4748 eV
+- HOMO-LUMO gap: 2.8001 eV
+- Dipole moment: 7.9110 Debye
+- Electrophilicity index (ω): 28.1281 eV
+- Total energy: -63.145440 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- alkene: C=C (*/C([*])=C(/[*])[*])
+- primary aromatic amine: N ([*]N)
+- thioether: S ([*]S[*])
+- lactone: OC=O ([*]OC([*])=O)
+- tertiary amide: NC=O ([*]N([*])C=O)
+- pyrimidine: c1cncnc1 ([*]c1cnc([*])nc1[*])
+
+[analyze_ring_systems]
+Ring Systems:
+- 2 systems:
+  - 6 membered, aromatic, 2 N
+  - 6 membered, non-aromatic, 1 O, 1 S
+- Ring counts: 2 total, 1 aromatic, 1 aliphatic, 1 saturated
+- Heterocycles: 2
+- Aromatic atoms: 6 / 21
+- Not detected: PAH, macrocycle, spiro, bridgehead
+
+[assess_adme_properties]
+pKa Prediction:
+  Acidic sites (1): atom 20 pKa = 12.93
+  Basic sites (3): atom 15 pKa = 5.39, atom 20 pKa = 4.77, atom 18 pKa = 4.10
+Ionization at pH 7.4: neutral, charge 0
+- Dominant form: C/C(=C1/CCOC(=O)S1)N(C=O)Cc1cnc(C)nc1N
+- Ambiguous (pKa near pH): Yes
+- Charge class distribution: base: 1, neutral: 1
+
+LogD at pH 7.4: 1.83
+Solubility: logS = -0.80 log(mol/L)
+
+[screen_structural_alerts]
+Structural Alerts (9 categories):
+
+1. Aldehyde / reactive carbonyl
+Reactive carbonyl that forms Schiff bases with lysine residues; includes alpha-dicarbonyls and reactive ketone variants.
+Matched alerts (2): aldehyde [C=O], Filter38_aldehyde [NC=O]
+
+2. Thiocarbonyl / thioester / thiocyanate
+Reactive sulfur-carbon bonds; can be metabolized to toxic intermediates or react with biological nucleophiles.
+Matched alerts (3): thioester [O=CS], thiocarbonate [O=C(O)S], Filter69_thio_carbonate [O=C(O)S]
+
+3. Reactive / unstable group
+Miscellaneous reactive or unstable functional groups flagged by medicinal chemistry filters.
+Matched alerts (1): formate_formide [CNC=O]
+
+4. Aniline / aromatic amine
+Aromatic amines can be metabolically activated (N-hydroxylation) to reactive species that bind DNA.
+Matched alerts (1): aniline [cc(N)n]
+
+5. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (3): Aromatic primary and secondary amines [cN], Aromatic amines [cN], Esters of unsaturated alcohols and their thio and aza analogues [CSC(=O)O]
+
+6. Genotoxic carcinogenicity / mutagenicity
+DNA-reactive motifs that cause mutations via direct genotoxic mechanisms.
+Matched alerts (5): Aromatic amine (general) [cN], Aromatic amine (specific) [cN], Primary aromatic amine, hydroxyl amine and its derived esters or amine generating group [cN], Primary and secondary aromatic amines [c], Aromatic amines [cN]
+
+7. Electrophilic agents
+Electrophilic centers that can react with biological nucleophiles (protein thiols, DNA bases).
+Matched alerts (1): Acetates [CNC=O]
+
+8. Reactive / unstable / toxic groups
+Generally reactive or unstable functional groups flagged across multiple toxicity endpoints.
+Matched alerts (3): Aldehydes [C=O], Enamines [C\C=C(\C)N], Aldehydes (including aminoformyl moieties) [N]
+
+9. Promiscuous compounds
+Structural motifs associated with non-specific activity across many biological targets (frequent hitters).
+Matched alerts (1): thiocarbonate [O=C(O)S]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: C/C(=C1/CCOC(=O)S1)N(C=O)Cc1cnc(C)nc1N
+
+[predict_metabolites]
+Predicted Metabolites (GLORYx — FAME3 SoM + reaction rules, Phase 1 + Phase 2):
+
+  1. CC(=O)Nc1nc(C)ncc1CN(C=O)/C(C)=C1\CCOC(=O)S1
+     Reaction: N-acetylation_(aniline) (Phase 2, score=0.656)
+  2. C/C(=C1/CCOC(=O)S1)N(C=O)Cc1cnc(C)nc1NS(=O)(=O)O
+     Reaction: sulfation_(aniline) (Phase 2, score=0.492)
+  3. C/C(=C1/CC(O)OC(=O)S1)N(C=O)Cc1cnc(C)nc1N
+     Reaction: aliphatic hydroxylation (Phase 1, score=0.420)
+
+[get_3d_properties]
+3D Polar Surface Area (ePSA):
+3D conformation based estimation of PSA: 364.41
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.2420, 0.9391) → disc-like
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=1.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=1.0) ---
+
+
+--- Sample 4 (reward=1.0) ---
+
+
+--- Sample 5 (reward=0.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=1.0) ---
+
+
+--- Sample 8 (reward=1.0) ---
+
+
+--- Sample 9 (reward=1.0) ---
+
+
+--- Sample 10 (reward=0.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=0.0) ---
+
+
+--- Sample 13 (reward=0.0) ---
+
+
+--- Sample 14 (reward=1.0) ---
+
+
+--- Sample 15 (reward=1.0) ---
+
+
+--- Sample 16 (reward=1.0) ---
+
+
+=====================================
+
+=== Group 2 (dataset_idx=3363, datasource=BBB_Martins_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: The blood-brain barrier (BBB) is formed by brain capillary endothelial cells connected by tight junctions, surrounded by pericytes and astrocyte end-feet. Unlike peripheral capillaries, the BBB has no fenestrations and minimal pinocytosis, so drug entry into the CNS requires either passive transcellular diffusion through the endothelial cell membranes or carrier-mediated transport. Efflux transporters — particularly P-glycoprotein (Pgp/ABCB1) and BCRP (ABCG2) — on the luminal side actively pump many compounds back into the blood, creating an additional barrier beyond simple membrane permeability.
+
+Molecular features favoring BBB penetration: moderate lipophilicity (logP 1-3) provides the driving force for passive diffusion across the endothelial lipid bilayer. Low polar surface area (TPSA < 70-80 Å²) is the strongest single predictor of BBB penetration — the tight junctions eliminate the paracellular route, so transcellular diffusion is the only passive pathway. Few hydrogen bond donors (HBD ≤ 1-2) — more restrictive than for intestinal absorption because the BBB endothelium is less permeable. Small to moderate molecular weight (MW < 450 Da). Low overall hydrogen bonding capacity. Most successful CNS drugs are small, moderately lipophilic, and have minimal polar surface area. Being a substrate of nutrient transporters (LAT1 for amino acid-like drugs, GLUT1 for glucose-like structures) can facilitate active uptake.
+
+Features associated with poor BBB penetration: high TPSA (> 90 Å²) strongly predicts exclusion from the CNS. Multiple hydrogen bond donors (HBD ≥ 3) — each additional donor roughly halves BBB permeability. Compounds that are P-glycoprotein substrates are actively effluxed from the brain — basic amines with MW > 400 and moderate lipophilicity are common Pgp substrates. Charged molecules at pH 7.4 (carboxylates, sulfonates, phosphates, quaternary amines) have very poor passive BBB penetration. High molecular weight (> 500 Da). Very high lipophilicity (logP > 5) can paradoxically reduce BBB penetration due to excessive plasma protein binding and poor aqueous solubility, which reduce the free fraction available for diffusion.
+Question: Given a drug SMILES string, predict whether it
+(A) does not cross the BBB (B) crosses the BBB
+Drug SMILES: CN1[C@@H]2CC[C@H]1CC(NC(=O)N1CC(C)(C)c3ccccc31)C2
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 313.45 Da
+- Heavy atoms: 23, Heteroatoms: 4
+- logP (Wildman-Crippen): 3.1190
+- TPSA: 35.58 Å²
+- H-bond donors: 1, H-bond acceptors: 2
+- Rotatable bonds: 1
+- Fraction sp3 carbons (Fsp3): 0.6316
+- Molar refractivity: 92.94
+- QED (drug-likeness, 0-1): 0.8645
+- Lipinski violations: 0
+- Bertz complexity: 612.80
+- Topology: HallKierAlpha=-1.5500, Kappa1=15.0057, Kappa2=5.2329, Kappa3=2.4366, BalabanJ=1.4859, IPC=237550.5600
+- Amide bonds: 2
+- Stereocenters: 3
+- Pharmacophore features: 2 hydrophobic, 1 aromatic, 0 neg-ionizable, 1 pos-ionizable
+- Gasteiger charges: max=0.3216 (atom 9, C), min=-0.3348 (atom 8, N)
+- Charge polarization: 0.6565
+- EState indices: max=12.8805 (nucleophilic proxy), min=0.0275 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -9.5320 eV
+- LUMO energy: -6.2107 eV
+- HOMO-LUMO gap: 3.3213 eV
+- Dipole moment: 4.2321 Debye
+- Electrophilicity index (ω): 18.6550 eV
+- Total energy: -67.368753 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- urea: NC(=O)N ([*]NC(=O)N([*])[*])
+- pyrrolidine: N1CCCC1 (*N1[C@H]([*])CC[C@@H]1[*])
+- piperidine: N1CCCCC1 (*N1[C@H]([*])CC([*])C[C@@H]1[*])
+- indoline: N1CCc2ccccc21 ([*]N1CC([*])([*])c2ccccc21)
+
+[analyze_ring_systems]
+Ring Systems:
+- 2 systems:
+  - fused (5+6 membered, 1 aromatic, 1 N)
+  - fused (5+6 membered, non-aromatic, 1 N)
+- Ring counts: 4 total, 1 aromatic, 3 aliphatic, 2 saturated
+- Heterocycles: 3
+- Aromatic atoms: 6 / 23
+- Bridgehead atoms: 2
+- Not detected: PAH, macrocycle, spiro
+
+[assess_adme_properties]
+pKa Prediction:
+  Acidic sites (1): atom 8 pKa = 13.32
+  Basic sites (1): atom 1 pKa = 10.84
+Ionization at pH 7.4: base, charge 1
+- Dominant form: C[NH+]1[C@@H]2CC[C@H]1CC(NC(=O)N1CC(C)(C)c3ccccc31)C2
+- Ambiguous (pKa near pH): Yes
+- Charge class distribution: base: 3, neutral: 1
+
+LogD at pH 7.4: -0.32
+Solubility (ESOL heuristic): ESOL logS: -3.8754
+
+[screen_structural_alerts]
+Structural Alerts (3 categories):
+
+1. Genotoxic carcinogenicity / mutagenicity
+DNA-reactive motifs that cause mutations via direct genotoxic mechanisms.
+Matched alerts (1): Aromatic amines [cN]
+
+2. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (1): Esters of aromatic alcohols and their thio and aza analogues [cNC(N)=O]
+
+3. Reactive / unstable / toxic groups
+Generally reactive or unstable functional groups flagged across multiple toxicity endpoints.
+Matched alerts (1): Simple anilines and phenols [c]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: CN1[C@@H]2CC[C@H]1CC(NC(=O)N1CC(C)(C)c3ccccc31)C2
+
+[predict_metabolites]
+Predicted Metabolites (SyGMa — Phase 1 + Phase 2):
+
+  1. CC1(C)CN(C(=O)NC2C[C@H]3CC[C@@H](C2)N3)c2ccccc21
+     Pathway: N-demethylation_(R-N(CR)CH3) (score=0.4180)
+  2. CC1(C)CN(C(=O)NC2C[C@H]3CC[C@@H](C2)[N+]3(C)[O-])c2ccccc21
+     Pathway: N-oxidation_(tertiary_NCH3) (score=0.1900)
+  3. CN1[C@@H]2CC[C@H]1CC(NC(=O)N1CC(C)(C)c3cc(O)ccc31)C2
+     Pathway: aromatic_hydroxylation_(para_to_nitrogen) (score=0.1450)
+
+Summary: 51 metabolites predicted (showing top 3: 2 Phase 1, 1 Phase 2)
+
+[get_3d_properties]
+3D Polar Surface Area (ePSA):
+3D conformation based estimation of PSA: 31.53
+3D conformation based estimation of Polar Fraction: 0.06
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.1836, 0.9063) → disc-like
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=1.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=0.0) ---
+
+
+--- Sample 4 (reward=1.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=1.0) ---
+
+
+--- Sample 8 (reward=1.0) ---
+
+
+--- Sample 9 (reward=1.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=1.0) ---
+
+
+--- Sample 13 (reward=1.0) ---
+
+
+--- Sample 14 (reward=0.0) ---
+
+
+--- Sample 15 (reward=1.0) ---
+
+
+--- Sample 16 (reward=0.0) ---
+
+
+=====================================
+
+=== Group 3 (dataset_idx=3290, datasource=BBB_Martins_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: The blood-brain barrier (BBB) is formed by brain capillary endothelial cells connected by tight junctions, surrounded by pericytes and astrocyte end-feet. Unlike peripheral capillaries, the BBB has no fenestrations and minimal pinocytosis, so drug entry into the CNS requires either passive transcellular diffusion through the endothelial cell membranes or carrier-mediated transport. Efflux transporters — particularly P-glycoprotein (Pgp/ABCB1) and BCRP (ABCG2) — on the luminal side actively pump many compounds back into the blood, creating an additional barrier beyond simple membrane permeability.
+
+Molecular features favoring BBB penetration: moderate lipophilicity (logP 1-3) provides the driving force for passive diffusion across the endothelial lipid bilayer. Low polar surface area (TPSA < 70-80 Å²) is the strongest single predictor of BBB penetration — the tight junctions eliminate the paracellular route, so transcellular diffusion is the only passive pathway. Few hydrogen bond donors (HBD ≤ 1-2) — more restrictive than for intestinal absorption because the BBB endothelium is less permeable. Small to moderate molecular weight (MW < 450 Da). Low overall hydrogen bonding capacity. Most successful CNS drugs are small, moderately lipophilic, and have minimal polar surface area. Being a substrate of nutrient transporters (LAT1 for amino acid-like drugs, GLUT1 for glucose-like structures) can facilitate active uptake.
+
+Features associated with poor BBB penetration: high TPSA (> 90 Å²) strongly predicts exclusion from the CNS. Multiple hydrogen bond donors (HBD ≥ 3) — each additional donor roughly halves BBB permeability. Compounds that are P-glycoprotein substrates are actively effluxed from the brain — basic amines with MW > 400 and moderate lipophilicity are common Pgp substrates. Charged molecules at pH 7.4 (carboxylates, sulfonates, phosphates, quaternary amines) have very poor passive BBB penetration. High molecular weight (> 500 Da). Very high lipophilicity (logP > 5) can paradoxically reduce BBB penetration due to excessive plasma protein binding and poor aqueous solubility, which reduce the free fraction available for diffusion.
+Question: Given a drug SMILES string, predict whether it
+(A) does not cross the BBB (B) crosses the BBB
+Drug SMILES: Cc1noc(NS(=O)(=O)c2ccc(N)cc2)c1C
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 267.31 Da
+- Heavy atoms: 18, Heteroatoms: 7
+- logP (Wildman-Crippen): 1.6700
+- TPSA: 98.22 Å²
+- H-bond donors: 2, H-bond acceptors: 5
+- Rotatable bonds: 3
+- Fraction sp3 carbons (Fsp3): 0.1818
+- Molar refractivity: 67.64
+- QED (drug-likeness, 0-1): 0.8242
+- Lipinski violations: 0
+- Bertz complexity: 659.34
+- Topology: HallKierAlpha=-2.0200, Kappa1=12.4370, Kappa2=4.3380, Kappa3=2.3030, BalabanJ=2.3280, IPC=11425.1690
+- Amide bonds: 0
+- Stereocenters: 0
+- Pharmacophore features: 2 hydrophobic, 2 aromatic, 0 neg-ionizable, 0 pos-ionizable
+- Gasteiger charges: max=0.2638 (atom 6, S), min=-0.3987 (atom 13, N)
+- Charge polarization: 0.6625
+- EState indices: max=12.0350 (nucleophilic proxy), min=-3.6790 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -10.3026 eV
+- LUMO energy: -6.5675 eV
+- HOMO-LUMO gap: 3.7351 eV
+- Dipole moment: 6.4257 Debye
+- Electrophilicity index (ω): 19.0493 eV
+- Total energy: -54.349240 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- primary aromatic amine: N ([*]N)
+- sulfonamide: NS(=O)=O ([*]NS([*])(=O)=O)
+- benzene: c1ccccc1 ([*]c1ccc([*])cc1)
+- isoxazole: c1nocc1 (*c1noc([*])c1[*])
+
+[analyze_ring_systems]
+Ring Systems:
+- 2 systems:
+  - 5 membered, aromatic, 1 N, 1 O
+  - 6 membered, aromatic, no heteroatoms
+- Ring counts: 2 total, 2 aromatic, 0 aliphatic, 0 saturated
+- Heterocycles: 1
+- Aromatic atoms: 11 / 18
+- Not detected: PAH, macrocycle, spiro, bridgehead
+
+[assess_adme_properties]
+pKa Prediction:
+  Acidic sites (2): atom 5 pKa = 6.24, atom 13 pKa = 13.20
+  Basic sites (2): atom 5 pKa = 4.36, atom 13 pKa = 4.09
+Ionization at pH 7.4: neutral, charge 0
+- Dominant form: Cc1noc(NS(=O)(=O)c2ccc(N)cc2)c1C
+- Ambiguous (pKa near pH): Yes
+- Charge class distribution: neutral: 1, acid: 1
+
+LogD at pH 7.4: 0.48
+Solubility: logS = -2.46 log(mol/L)
+
+[screen_structural_alerts]
+Structural Alerts (4 categories):
+
+1. Aniline / aromatic amine
+Aromatic amines can be metabolically activated (N-hydroxylation) to reactive species that bind DNA.
+Matched alerts (2): aniline [Nc1ccccc1], analine [Nc1ccccc1]
+
+2. Reactive / unstable group
+Miscellaneous reactive or unstable functional groups flagged by medicinal chemistry filters.
+Matched alerts (1): Hetero_hetero [cNSc]
+
+3. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (3): Aromatic primary and secondary amines [cN], Aromatic amines [cN], Sulfonamides [cNS(=O)(=O)c1ccc(N)cc1]
+
+4. Genotoxic carcinogenicity / mutagenicity
+DNA-reactive motifs that cause mutations via direct genotoxic mechanisms.
+Matched alerts (4): Aromatic amine (general) [cN], Primary aromatic amine, hydroxyl amine and its derived esters or amine generating group [cN], Primary and secondary aromatic amines [c], Aromatic amines [cN]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: Cc1noc(NS(=O)(=O)c2ccc(N)cc2)c1C
+
+[predict_metabolites]
+Predicted Metabolites (SyGMa — Phase 1 + Phase 2):
+
+  1. CC(=O)Nc1ccc(S(=O)(=O)Nc2onc(C)c2C)cc1
+     Pathway: N-acetylation_(aniline) (score=0.2710)
+  2. Cc1c(CO)noc1NS(=O)(=O)c1ccc(N)cc1
+     Pathway: benzylic_hydroxylation_(c-CH3) (score=0.1530)
+  3. Cc1noc(NS(=O)(=O)c2ccc(N)cc2)c1CO
+     Pathway: benzylic_hydroxylation_(c-CH3) (score=0.1530)
+
+Summary: 54 metabolites predicted (showing top 3: 2 Phase 1, 1 Phase 2)
+
+[get_3d_properties]
+3D Polar Surface Area (ePSA):
+3D conformation based estimation of PSA: 319.05
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.2769, 0.8606) → disc-like
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=0.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=1.0) ---
+
+
+--- Sample 4 (reward=0.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=0.0) ---
+
+
+--- Sample 7 (reward=0.0) ---
+
+
+--- Sample 8 (reward=0.0) ---
+
+
+--- Sample 9 (reward=0.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=0.0) ---
+
+
+--- Sample 13 (reward=1.0) ---
+
+
+--- Sample 14 (reward=1.0) ---
+
+
+--- Sample 15 (reward=0.0) ---
+
+
+--- Sample 16 (reward=1.0) ---
+
+
+=====================================
+
+=== Group 4 (dataset_idx=3387, datasource=BBB_Martins_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: The blood-brain barrier (BBB) is formed by brain capillary endothelial cells connected by tight junctions, surrounded by pericytes and astrocyte end-feet. Unlike peripheral capillaries, the BBB has no fenestrations and minimal pinocytosis, so drug entry into the CNS requires either passive transcellular diffusion through the endothelial cell membranes or carrier-mediated transport. Efflux transporters — particularly P-glycoprotein (Pgp/ABCB1) and BCRP (ABCG2) — on the luminal side actively pump many compounds back into the blood, creating an additional barrier beyond simple membrane permeability.
+
+Molecular features favoring BBB penetration: moderate lipophilicity (logP 1-3) provides the driving force for passive diffusion across the endothelial lipid bilayer. Low polar surface area (TPSA < 70-80 Å²) is the strongest single predictor of BBB penetration — the tight junctions eliminate the paracellular route, so transcellular diffusion is the only passive pathway. Few hydrogen bond donors (HBD ≤ 1-2) — more restrictive than for intestinal absorption because the BBB endothelium is less permeable. Small to moderate molecular weight (MW < 450 Da). Low overall hydrogen bonding capacity. Most successful CNS drugs are small, moderately lipophilic, and have minimal polar surface area. Being a substrate of nutrient transporters (LAT1 for amino acid-like drugs, GLUT1 for glucose-like structures) can facilitate active uptake.
+
+Features associated with poor BBB penetration: high TPSA (> 90 Å²) strongly predicts exclusion from the CNS. Multiple hydrogen bond donors (HBD ≥ 3) — each additional donor roughly halves BBB permeability. Compounds that are P-glycoprotein substrates are actively effluxed from the brain — basic amines with MW > 400 and moderate lipophilicity are common Pgp substrates. Charged molecules at pH 7.4 (carboxylates, sulfonates, phosphates, quaternary amines) have very poor passive BBB penetration. High molecular weight (> 500 Da). Very high lipophilicity (logP > 5) can paradoxically reduce BBB penetration due to excessive plasma protein binding and poor aqueous solubility, which reduce the free fraction available for diffusion.
+Question: Given a drug SMILES string, predict whether it
+(A) does not cross the BBB (B) crosses the BBB
+Drug SMILES: Cn1c(=O)[nH]c2ncn(C)c2c1=O
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 180.17 Da
+- Heavy atoms: 13, Heteroatoms: 6
+- logP (Wildman-Crippen): -1.0400
+- TPSA: 72.68 Å²
+- H-bond donors: 1, H-bond acceptors: 3
+- Rotatable bonds: 0
+- Fraction sp3 carbons (Fsp3): 0.2857
+- Molar refractivity: 46.58
+- QED (drug-likeness, 0-1): 0.5625
+- Lipinski violations: 0
+- Bertz complexity: 574.17
+- Topology: HallKierAlpha=-1.8500, Kappa1=7.7810, Kappa2=2.3170, Kappa3=0.9150, BalabanJ=3.1580, IPC=1175.7840
+- Amide bonds: 0
+- Stereocenters: 0
+- Pharmacophore features: 0 hydrophobic, 2 aromatic, 0 neg-ionizable, 1 pos-ionizable
+- Gasteiger charges: max=0.3293 (atom 2, C), min=-0.3279 (atom 8, N)
+- Charge polarization: 0.6572
+- EState indices: max=11.5130 (nucleophilic proxy), min=-0.4480 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -10.8318 eV
+- LUMO energy: -7.3661 eV
+- HOMO-LUMO gap: 3.4657 eV
+- Dipole moment: 4.1888 Debye
+- Electrophilicity index (ω): 23.8883 eV
+- Total energy: -38.977034 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- uracil: n1c(=O)[nH]ccc1=O (*n1c(=O)[nH]c([*])c([*])c1=O)
+- purine: n1c[nH]c2ncnc2c1 (*n1c(=[*])[nH]c2ncn([*])c2c1=[*])
+
+[analyze_ring_systems]
+Ring Systems:
+- 1 system: fused (5+6 membered, aromatic, 4 N)
+- Ring counts: 2 total, 2 aromatic, 0 aliphatic, 0 saturated
+- Heterocycles: 2
+- Aromatic atoms: 9 / 13
+- Not detected: PAH, macrocycle, spiro, bridgehead
+
+[assess_adme_properties]
+pKa Prediction:
+  Acidic sites (1): atom 4 pKa = 8.52
+  Basic sites (3): atom 8 pKa = 2.42, atom 1 pKa = 2.21, atom 6 pKa = 1.97
+Ionization at pH 7.4: neutral, charge 0
+- Dominant form: Cn1c(=O)[nH]c2ncn(C)c2c1=O
+- Ambiguous (pKa near pH): Yes
+- Charge class distribution: acid: 1, neutral: 1
+
+LogD at pH 7.4: -1.07
+Solubility: logS = -1.58 log(mol/L)
+
+[screen_structural_alerts]
+Structural Alerts (1 categories):
+
+1. Pyridinium / quaternary nitrogen
+Permanent positive charge can cause non-specific binding to proteins and membranes.
+Matched alerts (1): Filter82_pyridinium [Cn1ccc[nH]c1]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: Cn1c(=O)[nH]c2ncn(C)c2c1=O
+
+[predict_metabolites]
+Predicted Metabolites (GLORYx — FAME3 SoM + reaction rules, Phase 1 + Phase 2):
+
+  1. Cn1c(=O)[nH]c2nc[nH]c2c1=O
+     Reaction: N-demethylation_(nCH3) (Phase 2, score=0.488)
+  2. Cn1c(=O)[nH]c2c(c1=O)[N+](C)([O-])C=N2
+     Reaction: N-oxidation (Phase 1, score=0.488)
+  3. Cn1c(=O)[nH]c2ncn(CO)c2c1=O
+     Reaction: aliphatic hydroxylation (Phase 1, score=0.488)
+
+[get_3d_properties]
+3D Polar Surface Area (ePSA):
+3D conformation based estimation of PSA: 206.94
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.3402, 0.6661) → intermediate
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=1.0) ---
+
+
+--- Sample 2 (reward=1.0) ---
+
+
+--- Sample 3 (reward=1.0) ---
+
+
+--- Sample 4 (reward=1.0) ---
+
+
+--- Sample 5 (reward=1.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=0.0) ---
+
+
+--- Sample 8 (reward=0.0) ---
+
+
+--- Sample 9 (reward=1.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=1.0) ---
+
+
+--- Sample 12 (reward=1.0) ---
+
+
+--- Sample 13 (reward=1.0) ---
+
+
+--- Sample 14 (reward=1.0) ---
+
+
+--- Sample 15 (reward=0.0) ---
+
+
+--- Sample 16 (reward=1.0) ---
+
+
+=====================================
+
+=== Group 5 (dataset_idx=3333, datasource=BBB_Martins_train) ===
+PROMPT: <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-03-26
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: The blood-brain barrier (BBB) is formed by brain capillary endothelial cells connected by tight junctions, surrounded by pericytes and astrocyte end-feet. Unlike peripheral capillaries, the BBB has no fenestrations and minimal pinocytosis, so drug entry into the CNS requires either passive transcellular diffusion through the endothelial cell membranes or carrier-mediated transport. Efflux transporters — particularly P-glycoprotein (Pgp/ABCB1) and BCRP (ABCG2) — on the luminal side actively pump many compounds back into the blood, creating an additional barrier beyond simple membrane permeability.
+
+Molecular features favoring BBB penetration: moderate lipophilicity (logP 1-3) provides the driving force for passive diffusion across the endothelial lipid bilayer. Low polar surface area (TPSA < 70-80 Å²) is the strongest single predictor of BBB penetration — the tight junctions eliminate the paracellular route, so transcellular diffusion is the only passive pathway. Few hydrogen bond donors (HBD ≤ 1-2) — more restrictive than for intestinal absorption because the BBB endothelium is less permeable. Small to moderate molecular weight (MW < 450 Da). Low overall hydrogen bonding capacity. Most successful CNS drugs are small, moderately lipophilic, and have minimal polar surface area. Being a substrate of nutrient transporters (LAT1 for amino acid-like drugs, GLUT1 for glucose-like structures) can facilitate active uptake.
+
+Features associated with poor BBB penetration: high TPSA (> 90 Å²) strongly predicts exclusion from the CNS. Multiple hydrogen bond donors (HBD ≥ 3) — each additional donor roughly halves BBB permeability. Compounds that are P-glycoprotein substrates are actively effluxed from the brain — basic amines with MW > 400 and moderate lipophilicity are common Pgp substrates. Charged molecules at pH 7.4 (carboxylates, sulfonates, phosphates, quaternary amines) have very poor passive BBB penetration. High molecular weight (> 500 Da). Very high lipophilicity (logP > 5) can paradoxically reduce BBB penetration due to excessive plasma protein binding and poor aqueous solubility, which reduce the free fraction available for diffusion.
+Question: Given a drug SMILES string, predict whether it
+(A) does not cross the BBB (B) crosses the BBB
+Drug SMILES: CCCCCCC(=O)OCCN1CCN(CCCN2c3ccccc3Sc3ccc(C(F)(F)F)cc32)CC1
+
+--- Precomputed Tool Outputs ---
+
+[get_molecule_profile]
+Molecular Profile:
+- Molecular weight: 549.70 Da
+- Heavy atoms: 38, Heteroatoms: 9
+- logP (Wildman-Crippen): 6.8300
+- TPSA: 36.02 Å²
+- H-bond donors: 0, H-bond acceptors: 6
+- Rotatable bonds: 12
+- Fraction sp3 carbons (Fsp3): 0.5517
+- Molar refractivity: 146.23
+- QED (drug-likeness, 0-1): 0.2134
+- Lipinski violations: 2 (MW > 500, logP > 5)
+- Bertz complexity: 1057.60
+- Topology: HallKierAlpha=-2.2300, Kappa1=28.7700, Kappa2=13.7150, Kappa3=7.8960, BalabanJ=1.2310, IPC=299076166.3020
+- Amide bonds: 0
+- Stereocenters: 0
+- Pharmacophore features: 9 hydrophobic, 2 aromatic, 0 neg-ionizable, 2 pos-ionizable
+- Gasteiger charges: max=0.4160 (atom 30, C), min=-0.4643 (atom 8, O)
+- Charge polarization: 0.8803
+- EState indices: max=13.4390 (nucleophilic proxy), min=-4.3660 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -9.5738 eV
+- LUMO energy: -7.3028 eV
+- HOMO-LUMO gap: 2.2710 eV
+- Dipole moment: 5.8119 Debye
+- Electrophilicity index (ω): 31.3543 eV
+- Total energy: -115.873470 Hartree
+
+[analyze_functional_groups]
+Functional groups (* denotes attachment points):
+- carboxylic ester: C(=O)O ([*]C(=O)O[*])
+- trifluoromethyl: C(F)(F)F ([*]C(F)(F)F)
+- piperazine: N1CCNCC1 ([*]N1CCN([*])CC1)
+- phenothiazine: N1c2ccccc2Sc2ccccc21 ([*]N1c2ccccc2Sc2ccc([*])cc21)
+
+[analyze_ring_systems]
+Ring Systems:
+- 2 systems:
+  - fused (6+6+6 membered, 2 aromatic, 1 N, 1 S)
+  - 6 membered, non-aromatic, 2 N
+- Ring counts: 4 total, 2 aromatic, 2 aliphatic, 1 saturated
+- Heterocycles: 2
+- Aromatic atoms: 12 / 38
+- Not detected: PAH, macrocycle, spiro, bridgehead
+
+[assess_adme_properties]
+pKa Prediction:
+  No acidic sites.
+  Basic sites (3): atom 14 pKa = 7.29, atom 11 pKa = 7.27, atom 18 pKa = 5.20
+Ionization at pH 7.4: base, charge 1
+- Dominant form: CCCCCCC(=O)OCCN1CC[NH+](CCCN2c3ccccc3Sc3ccc(C(F)(F)F)cc32)CC1
+- Ambiguous (pKa near pH): Yes
+- Charge class distribution: base: 3, neutral: 1
+
+LogD at pH 7.4: 6.58
+Solubility: logS = -7.06 log(mol/L)
+
+[screen_structural_alerts]
+Structural Alerts (6 categories):
+
+1. Long aliphatic chain
+Molecules with long alkyl chains (>=7 carbons) tend to be non-specific membrane disruptors with poor drug-likeness.
+Matched alerts (3): Aliphatic_long_chain [CCCC], Long aliphatic chain [CCCCCCC], Unbranched chain [CCCCCC]
+
+2. Ester / phenol ester / carbonate
+Esters can be hydrolyzed to release active metabolites; phenol esters and carbonates may indicate prodrug instability.
+Matched alerts (2): Ester [COC(C)=O], aliphatic ester, not lactones [COC(C)=O]
+
+3. Genotoxic carcinogenicity / mutagenicity
+DNA-reactive motifs that cause mutations via direct genotoxic mechanisms.
+Matched alerts (1): Aromatic amines [cN]
+
+4. Acute aquatic toxicity
+Structural features associated with acute toxicity to aquatic organisms, indicating general ecotoxicity and bioactivity.
+Matched alerts (2): Alkyl halide [FCF], Halogenated benzylic group [cCF]
+
+5. Reactive metabolite formation (idiosyncratic toxicity)
+Can form reactive metabolites via CYP metabolism that covalently modify liver proteins, triggering immune-mediated hepatotoxicity.
+Matched alerts (1): Anilines, anilides [cN(C)c1ccccc1]
+
+6. Reactive / unstable / toxic groups
+Generally reactive or unstable functional groups flagged across multiple toxicity endpoints.
+Matched alerts (5): Alkyl chains [CCCCC], Carboxylic acid esters [CCOC(C)=O], Aliphatic chain [CCCCCC], Alkyl Halides [CF], Simple anilines and phenols [c]
+
+[remove_salts]
+Canonical SMILES of the largest organic fragment after salt removal: CCCCCCC(=O)OCCN1CCN(CCCN2c3ccccc3Sc3ccc(C(F)(F)F)cc32)CC1
+
+[predict_metabolites]
+Predicted Metabolites (GLORYx — FAME3 SoM + reaction rules, Phase 1 + Phase 2):
+
+  1. CCCCCCC(=O)OCCNCCNCCCN1c2ccccc2Sc2ccc(C(F)(F)F)cc21
+     Reaction: N-dealkylation of piperazine (Phase 1, score=0.388)
+  2. CCCCCCC(=O)OCCN1CCN(C(O)CCN2c3ccccc3Sc3ccc(C(F)(F)F)cc32)CC1
+     Reaction: aliphatic hydroxylation (Phase 1, score=0.388)
+  3. OCCCN1c2ccccc2Sc2ccc(C(F)(F)F)cc21
+     Reaction: N-dealkylation_(tertiaryN-CH2-alkyl) (Phase 1, score=0.388)
+
+[get_3d_properties]
+3D Polar Surface Area (ePSA):
+3D conformation based estimation of PSA: 685.46
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.2288, 0.8751) → disc-like
+
+Please analyze the molecular structure, properties, and tool outputs provided above. Reason step by step about the key structural and physicochemical features, then put your final choice ((A) or (B)) after "Answer:"<|end|><|start|>assistant
+LABEL: (B)
+
+--- Sample 1 (reward=1.0) ---
+
+
+--- Sample 2 (reward=0.0) ---
+
+
+--- Sample 3 (reward=1.0) ---
+
+
+--- Sample 4 (reward=1.0) ---
+
+
+--- Sample 5 (reward=0.0) ---
+
+
+--- Sample 6 (reward=1.0) ---
+
+
+--- Sample 7 (reward=1.0) ---
+
+
+--- Sample 8 (reward=0.0) ---
+
+
+--- Sample 9 (reward=1.0) ---
+
+
+--- Sample 10 (reward=1.0) ---
+
+
+--- Sample 11 (reward=0.0) ---
+
+
+--- Sample 12 (reward=0.0) ---
+
+
+--- Sample 13 (reward=1.0) ---
+
+
+--- Sample 14 (reward=1.0) ---
+
+
+--- Sample 15 (reward=1.0) ---
+
+
+--- Sample 16 (reward=1.0) ---
+
+
+=====================================
+

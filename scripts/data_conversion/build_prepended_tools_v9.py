@@ -302,8 +302,8 @@ def main():
     )
     parser.add_argument(
         "--fingerprint-dir",
-        default="fingerprint_v8",
-        help="Fingerprint cache subdirectory name (reuses v8 fingerprints)",
+        default="fingerprints_with_canonicalized",
+        help="Fingerprint cache subdirectory name used by the similarity tool",
     )
     args = parser.parse_args()
 
@@ -323,7 +323,7 @@ def main():
     with open(args.cot_instruction) as f:
         cot_instruction = f.read().strip()
 
-    # Point similarity tool at fingerprint_v8 cache
+    # Point similarity tool at the configured fingerprint cache
     cache_dir = PROJECT_ROOT / "openrlhf" / "tools" / "therapeutic_tools" / "cache"
     fp_dir = cache_dir / args.fingerprint_dir
 

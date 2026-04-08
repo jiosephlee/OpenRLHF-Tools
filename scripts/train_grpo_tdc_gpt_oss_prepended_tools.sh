@@ -180,7 +180,7 @@ if [ "$MODE" = "colocated" ]; then
     VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
     ROLLOUT_BATCH_SIZE=$(( EFFECTIVE_ROLLOUT_BATCH_SIZE * ASYNC_ADVANTAGE ))
     MINI_GRADIENT_STEPS=$(( EFFECTIVE_MINI_GRADIENT_STEPS))
-    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-.69}"
+    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-.675}"
     VLLM_SYNC_BACKEND=nccl
     EVAL_STEPS="${EVAL_STEPS:-$COLO_EVAL_STEPS}"
 elif [ "$MODE" = "distributed" ]; then
@@ -263,12 +263,12 @@ if [ ! -d "$PROJECT_ROOT/openrlhf" ]; then
 fi
 
 ### DATA ###
-DATA_DIR="$PROJECT_ROOT/data/tdc/prepended_tools_v7"
+DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_prepended_tools_v8"
 # Short tag derived from dataset dir name for run naming
 DATA_DIR_BASENAME="$(basename "$DATA_DIR")"
 case "$DATA_DIR_BASENAME" in
     prepended_tools_v6)              DATA_TAG="pre-v6" ;;
-    prepended_tools_v7)              DATA_TAG="pre-v7" ;;
+    openai_format_prepended_tools_v8)              DATA_TAG="pre-v8" ;;
     openai_format_prepended_tools_v9) DATA_TAG="pre-v9" ;;
     openai_format_prepended_tools_v9_pseudo|openai_format_prepended_tools_v9_psuedo) DATA_TAG="pre-v9p" ;;
     *)                               DATA_TAG="$DATA_DIR_BASENAME" ;;

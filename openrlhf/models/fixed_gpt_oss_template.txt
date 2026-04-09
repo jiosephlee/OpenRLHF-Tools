@@ -55,7 +55,7 @@
         {%- else -%}
             {%- for variant in param_spec.oneOf -%}
                 {{- render_typescript_type(variant, required_params) -}}
-                {%- if variant.description %}
+                {%- if variant.description is defined and variant.description %}
                     {{- "// " + variant.description }}
                 {%- endif -%}
                 {%- if variant.default is defined %}
@@ -110,12 +110,16 @@
     {{- "namespace " + namespace_name + " {\n\n" }}
     {%- for tool in tools %}
         {%- set tool = tool.function %}
-        {{- "// " + tool.description + "\n" }}
+        {%- if tool.description is defined and tool.description %}
+            {{- "// " + tool.description + "\n" }}
+        {%- else %}
+            {{- "// No description provided.\n" }}
+        {%- endif %}
         {{- "type "+ tool.name + " = " }}
         {%- if tool.parameters and tool.parameters.properties %}
             {{- "(_: {\n" }}
             {%- for param_name, param_spec in tool.parameters.properties.items() %}
-                {%- if param_spec.description %}
+                {%- if param_spec.description is defined and param_spec.description %}
                     {{- "// " + param_spec.description + "\n" }}
                 {%- endif %}
                 {{- param_name }}

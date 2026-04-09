@@ -4,6 +4,7 @@ from collections import defaultdict
 from datetime import datetime
 import json
 import os
+import re
 import time
 from copy import deepcopy
 from dataclasses import dataclass, fields
@@ -24,6 +25,123 @@ from openrlhf.utils.seqlen_balancing import get_minimum_num_micro_batch_size, ge
 from openrlhf.utils.utils import zero_pad_sequences
 
 logger = init_logger(__name__)
+
+_NEIGHBOR_TOOL_KEY_PREFIX = "tool_count__find_similar_molecules"
+_NEIGHBOR_TOOL_KEY_PREFIXES = (
+    "tool_count__find_similar_molecules",
+    "tool_count__get_similar_neighbors",
+)
+_MOLECULAR_INFO_TOOL_KEYS = {
+    "tool_count__get_molecular_properties",
+}
+_KNN_REWARD_DELTA = 0.25
+_PREPENDED_NEIGHBOR_CONTEXT_RE = re.compile(
+    r"(Nearest Neighbors from Training Set:|KNN Predicted Label:\s*\([AB]\)|pseudo label from naive Morgan fingerprint KNN prediction is \([AB]\))",
+    re.IGNORECASE,
+)
+
+
+def _prompt_has_neighbor_context(prompt: str) -> bool:
+    return bool(prompt and _PREPENDED_NEIGHBOR_CONTEXT_RE.search(prompt))
+
+
+def _response_requested_neighbors(response: dict) -> bool:
+    extra_logs = response.get("extra_logs", {}) or {}
+    for key, value in extra_logs.items():
+        if not any(key.startswith(prefix) for prefix in _NEIGHBOR_TOOL_KEY_PREFIXES):
+            continue
+        if isinstance(value, torch.Tensor):
+            value = value.flatten()[0].item()
+        try:
+            if float(value) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _apply_knn_reward_shaping(
+    responses: list[dict],
+    knn_pl: str | None,
+    requested_neighbors: bool,
+) -> None:
+    """Apply reward shaping based on correctness relative to KNN pseudo-label.
+
+    +0.25 if the sample is correct and reverses the KNN pseudo-label.
+    -0.25 if the sample is correct and agrees with the KNN pseudo-label.
+    No shaping is applied when no KNN pseudo-label is available, neighbors were
+    not requested/available, or the sample is incorrect.
+    """
+    if knn_pl is None or not requested_neighbors:
+        return
+
+    for response in responses:
+        score_val = response.get("scores", None)
+        if score_val is None or float(score_val) <= 0:
+            continue
+
+        true_answer = response.get("label", "")
+        knn_agrees_with_truth = knn_pl in str(true_answer)
+        delta = -_KNN_REWARD_DELTA if knn_agrees_with_truth else _KNN_REWARD_DELTA
+        response["reward"] = float(response.get("reward", 0.0)) + delta
+
+        extra_logs = response.setdefault("extra_logs", {})
+        extra_logs["knn_reward_delta"] = extra_logs.get("knn_reward_delta", 0.0) + delta
+        if knn_agrees_with_truth:
+            extra_logs["knn_correct_stick"] = extra_logs.get("knn_correct_stick", 0) + 1
+        else:
+            extra_logs["knn_correct_reversal_bonus"] = (
+                extra_logs.get("knn_correct_reversal_bonus", 0) + 1
+            )
+
+
+def _coerce_float(value: Any) -> float:
+    if isinstance(value, torch.Tensor):
+        return float(value.flatten()[0].item())
+    return float(value)
+
+
+def _count_trace_tool_usage(response: dict) -> tuple[int, int, int]:
+    extra_logs = response.get("extra_logs", {}) or {}
+    total_tool_calls = 0
+    unique_tool_calls = 0
+    molecular_info_calls = 0
+    neighbor_calls = 0
+
+    for key, value in extra_logs.items():
+        if not key.startswith("tool_count__"):
+            continue
+        try:
+            count = _coerce_float(value)
+        except (TypeError, ValueError):
+            continue
+        if count <= 0:
+            continue
+
+        total_tool_calls += int(count)
+        unique_tool_calls += 1
+        if key in _MOLECULAR_INFO_TOOL_KEYS:
+            molecular_info_calls += int(count)
+        if any(key.startswith(prefix) for prefix in _NEIGHBOR_TOOL_KEY_PREFIXES):
+            neighbor_calls += int(count)
+
+    return total_tool_calls, unique_tool_calls, molecular_info_calls, neighbor_calls
+
+
+def _update_trace_diagnostic_bucket(bucket: dict[str, float], *, matched: bool, correct: bool) -> None:
+    if not matched:
+        return
+    bucket["count"] += 1
+    if correct:
+        bucket["correct"] += 1
+
+
+def _finalize_trace_diagnostic_bucket(bucket: dict[str, float], total_traces: int) -> tuple[float | None, float | None]:
+    if total_traces <= 0:
+        return None, None
+    pct = bucket["count"] / total_traces * 100
+    correctness = (bucket["correct"] / bucket["count"] * 100) if bucket["count"] > 0 else None
+    return pct, correctness
 
 
 def to(tensor: Union[torch.Tensor, list[torch.Tensor]], device):
@@ -949,6 +1067,7 @@ class SamplesGenerator:
         ref_to_dataset_idx = {ref: dataset_indices[i] for i, (ref, _) in enumerate(dispatches)}
         ref_to_datasource = {ref: ds_datasources[i] for i, (ref, _) in enumerate(dispatches)} if ds_datasources else {}
         ref_to_knn_pl = {ref: ds_knn_pseudo_labels[i] for i, (ref, _) in enumerate(dispatches)} if ds_knn_pseudo_labels else {}
+        ref_to_prompt = {ref: prompts[i] for i, (ref, _) in enumerate(dispatches)}
         prompts_consumed += len(prompts)
 
         # Track how many outstanding requests each engine has.
@@ -971,10 +1090,17 @@ class SamplesGenerator:
         #### end prompt group tracking ####
 
         #### KNN reversal tracking ####
+        requested_neighbors_total = 0
         knn_total = 0       # prompts with KNN pseudo-label
         knn_reversed = 0    # model prediction != KNN pseudo-label
         knn_correct_reversal = 0   # reversed AND model got the right answer
         knn_incorrect_reversal = 0  # reversed AND model got the wrong answer
+        knn_correct_stick = 0      # agreed with KNN AND model got the right answer
+        knn_incorrect_stick = 0    # agreed with KNN AND model got the wrong answer
+        total_traces = 0
+        trace_diag_two_unique = {"count": 0, "correct": 0}
+        trace_diag_three_plus = {"count": 0, "correct": 0}
+        trace_diag_two_molinfo_one_neighbor = {"count": 0, "correct": 0}
         #### end KNN tracking ####
 
         while pending_refs:
@@ -983,6 +1109,7 @@ class SamplesGenerator:
                 engine_idx = ref_to_engine.pop(ref)
                 ds_idx = ref_to_dataset_idx.pop(ref, None)
                 datasource = ref_to_datasource.pop(ref, None)
+                prompt_text = ref_to_prompt.pop(ref, "")
                 engine_pending[engine_idx] -= 1
 
 
@@ -990,6 +1117,28 @@ class SamplesGenerator:
                 # Build Experience objects for each vLLM response returned from this worker.
                 responses = ray.get(ref)
                 total_episodes += len(responses)
+                total_traces += len(responses)
+
+                for response in responses:
+                    total_tool_calls, unique_tool_calls, molecular_info_calls, neighbor_calls = _count_trace_tool_usage(
+                        response
+                    )
+                    is_correct = float(response.get("scores", 0) or 0) > 0
+                    _update_trace_diagnostic_bucket(
+                        trace_diag_two_unique,
+                        matched=unique_tool_calls >= 2,
+                        correct=is_correct,
+                    )
+                    _update_trace_diagnostic_bucket(
+                        trace_diag_three_plus,
+                        matched=total_tool_calls >= 3,
+                        correct=is_correct,
+                    )
+                    _update_trace_diagnostic_bucket(
+                        trace_diag_two_molinfo_one_neighbor,
+                        matched=(molecular_info_calls >= 2 and neighbor_calls >= 1),
+                        correct=is_correct,
+                    )
 
                 if getattr(self, "rollout_trace_run_dir", None) and not getattr(
                     self, "_has_saved_first_ever_trace", False
@@ -1015,11 +1164,16 @@ class SamplesGenerator:
                     episode_traces.append((engine_idx, responses[0]))
                 #### KNN reversal tracking per prompt group ####
                 knn_pl = ref_to_knn_pl.pop(ref, None)
-                if knn_pl is not None and responses:
+                requested_neighbors = _prompt_has_neighbor_context(prompt_text) or any(
+                    _response_requested_neighbors(response) for response in responses
+                )
+                if requested_neighbors:
+                    requested_neighbors_total += 1
+                if knn_pl is not None and responses and requested_neighbors:
                     knn_total += 1
-                    # Use majority reward to determine if model got it right
-                    rewards = [r.get("reward", 0) for r in responses]
-                    model_correct = sum(1 for r in rewards if r > 0) > len(rewards) / 2
+                    # Use pure correctness scores, not shaped rewards.
+                    scores = [float(r.get("scores", 0) or 0) for r in responses]
+                    model_correct = sum(1 for s in scores if s > 0) > len(scores) / 2
                     true_answer = responses[0].get("label", "")
                     knn_agrees_with_truth = knn_pl in str(true_answer)
                     reversed_knn = model_correct != knn_agrees_with_truth
@@ -1029,6 +1183,12 @@ class SamplesGenerator:
                             knn_correct_reversal += 1
                         else:
                             knn_incorrect_reversal += 1
+                    else:
+                        if model_correct:
+                            knn_correct_stick += 1
+                        else:
+                            knn_incorrect_stick += 1
+                _apply_knn_reward_shaping(responses, knn_pl, requested_neighbors)
                 #### end KNN tracking ####
 
                 experiences = [
@@ -1193,15 +1353,34 @@ class SamplesGenerator:
 
         self._last_generation_wall_time = time.time() - generation_start_time
 
+        two_unique_pct, two_unique_correctness = _finalize_trace_diagnostic_bucket(
+            trace_diag_two_unique, total_traces
+        )
+        three_plus_pct, three_plus_correctness = _finalize_trace_diagnostic_bucket(
+            trace_diag_three_plus, total_traces
+        )
+        two_molinfo_neighbor_pct, two_molinfo_neighbor_correctness = _finalize_trace_diagnostic_bucket(
+            trace_diag_two_molinfo_one_neighbor, total_traces
+        )
+
         #### Store KNN stats for W&B logging ####
         self._step_knn_stats = {
+            "requested_neighbors_pct": (requested_neighbors_total / prompts_consumed * 100)
+            if prompts_consumed > 0
+            else None,
+            "trace_total": total_traces,
+            "trace_pct_at_least_2_unique_tools": two_unique_pct,
+            "trace_correctness_at_least_2_unique_tools": two_unique_correctness,
+            "trace_pct_at_least_3_tool_calls": three_plus_pct,
+            "trace_correctness_at_least_3_tool_calls": three_plus_correctness,
+            "trace_pct_at_least_2_molinfo_and_1_neighbor": two_molinfo_neighbor_pct,
+            "trace_correctness_at_least_2_molinfo_and_1_neighbor": two_molinfo_neighbor_correctness,
             "knn_total": knn_total,
-            "knn_reversed": knn_reversed,
-            "knn_correct_reversal": knn_correct_reversal,
-            "knn_incorrect_reversal": knn_incorrect_reversal,
             "knn_reversal_pct": (knn_reversed / knn_total * 100) if knn_total > 0 else None,
             "knn_correct_reversal_pct": (knn_correct_reversal / knn_total * 100) if knn_total > 0 else None,
             "knn_incorrect_reversal_pct": (knn_incorrect_reversal / knn_total * 100) if knn_total > 0 else None,
+            "knn_correct_stick_pct": (knn_correct_stick / knn_total * 100) if knn_total > 0 else None,
+            "knn_incorrect_stick_pct": (knn_incorrect_stick / knn_total * 100) if knn_total > 0 else None,
         }
         #### end KNN stats ####
 

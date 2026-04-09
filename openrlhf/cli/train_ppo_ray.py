@@ -794,9 +794,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--tool_version",
         type=str,
-        choices=["v1", "v2", "v3", "v4", "v5", "v6", "v7"],
+        choices=["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10"],
         default=None,
-        help="Tool version for training (v1: RDKit+AccFG, v2: +salts, v3: +pKa/logD/ePSA, v4: +Haydn, v5: consolidated, v6: consolidated+KNN+metabolism, v7: v6+per-task similar neighbors)",
+        help="Tool version for training (v1: RDKit+AccFG, v2: +salts, v3: +pKa/logD/ePSA, "
+        "v4: +Haydn, v5: consolidated, v6: consolidated+KNN+metabolism, "
+        "v7: v6+per-task similar neighbors, v8: +task-specific metabolism, "
+        "v9: +decision tree analysis, v10: consolidated molecular summary + task-specific neighbors)",
     )
 
     # wandb parameters

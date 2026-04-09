@@ -16,6 +16,8 @@ Versions (incremental):
          dataset as base. predict_solubility is an internal subtool only.
   - v9: v8 + decision_tree_analysis (RF feature attributions from LLM4SD).
          Two dataset variants: v9 (no pseudo_label), v9_pseudo (with pseudo_label).
+  - v10: consolidated v10 tools. Replaces the v7/v8/v9 fine-grained surface
+         with get_molecular_properties plus task-specific get_similar_neighbors.
 
 Usage::
 
@@ -358,6 +360,9 @@ from openrlhf.tools.therapeutic_tools import (
     GET_3D_PROPERTIES_TOOL as _3D_PROPERTIES_SCHEMA,
     FIND_SIMILAR_MOLECULES_TOOL as _FIND_SIMILAR_SCHEMA,
     SIMILAR_MOLECULES_TASK_SCHEMAS as _SIMILAR_TASK_SCHEMAS,
+    GET_MOLECULAR_PROPERTIES_TOOL as _GET_MOLECULAR_PROPERTIES_SCHEMA,
+    V10_TASK_NEIGHBOR_TOOL_SCHEMAS as _V10_TASK_NEIGHBOR_TOOL_SCHEMAS,
+    V10_TASK_NEIGHBOR_CALLABLES as _V10_TASK_NEIGHBOR_CALLABLES,
     _FUNCTION_MAP as _ALL_CALLABLES,
 )
 
@@ -486,9 +491,31 @@ _V9_VERSION = {
 }
 
 # ---------------------------------------------------------------------------
+# v10: consolidated molecular summary + task-specific neighbor lookup
+# ---------------------------------------------------------------------------
+_V10_BASIC_SCHEMAS: List[Dict[str, Any]] = [
+    _GET_MOLECULAR_PROPERTIES_SCHEMA,
+]
+
+_V10_TASK_MAP: Dict[str, List[Dict[str, Any]]] = {
+    _task: [_schema] for _task, _schema in _V10_TASK_NEIGHBOR_TOOL_SCHEMAS.items()
+}
+
+_V10_CALLABLES: Dict[str, Callable] = {
+    "get_molecular_properties": _ALL_CALLABLES["get_molecular_properties"],
+    **_V10_TASK_NEIGHBOR_CALLABLES,
+}
+
+_V10_VERSION = {
+    "basic_schemas": _V10_BASIC_SCHEMAS,
+    "task_specific_map": _V10_TASK_MAP,
+    "callables": _V10_CALLABLES,
+}
+
+# ---------------------------------------------------------------------------
 # Public registry
 # ---------------------------------------------------------------------------
-_ALL_VERSIONS = {"v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9"}
+_ALL_VERSIONS = {"v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10"}
 
 # Keep TOOL_VERSIONS for backwards compat but populate lazily
 TOOL_VERSIONS: Dict[str, Dict[str, Any]] = {
@@ -496,6 +523,7 @@ TOOL_VERSIONS: Dict[str, Dict[str, Any]] = {
     "v7": _V7_VERSION,
     "v8": _V8_VERSION,
     "v9": _V9_VERSION,
+    "v10": _V10_VERSION,
 }
 
 
@@ -506,7 +534,7 @@ def get_version(ver: str) -> Dict[str, Any]:
             f"Unknown tool version {ver!r}. "
             f"Available: {sorted(_ALL_VERSIONS)}"
         )
-    if ver in ("v6", "v7", "v8", "v9"):
+    if ver in ("v6", "v7", "v8", "v9", "v10"):
         return TOOL_VERSIONS[ver]
     # Lazy-load legacy versions on first access
     legacy = _build_legacy_versions()

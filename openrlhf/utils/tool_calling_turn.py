@@ -242,13 +242,13 @@ class ToolCallingTurn(AgentInstanceBase):
                 format_reward = 0
             elif parse_method == "primary":
                 # Best case: harmony token-ID parser succeeded on first try
-                format_reward = 0.05
+                format_reward = 0.1
             elif parse_method == "fallback":
                 # Harmony succeeded after prepending assistant header — neutral
-                format_reward = 0.05
+                format_reward = 0.1
             elif parse_method == "regex":
                 # Had to fall back to regex — mild penalty
-                format_reward = 0.05
+                format_reward = 0.1
             else:
                 raise ValueError(f"Unknown parse method: {parse_method}")
             extra_logs["format_reward"] = format_reward
@@ -267,7 +267,7 @@ class ToolCallingTurn(AgentInstanceBase):
         # Apply an explicit penalty to discourage malformed harmony headers.
         parse_failed = action.get("parse_failed", False)
         if parse_failed:
-            parse_penalty = -0.025 if self._enable_tool_calling_rewards else 0
+            parse_penalty = 0 if self._enable_tool_calling_rewards else 0
             base_logs["format_reward"] = parse_penalty
             return {
                 "environment_feedback": "",

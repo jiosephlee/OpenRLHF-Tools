@@ -1,5 +1,5 @@
 """
-Smoke test for all 11 therapeutic tools.
+Smoke test for therapeutic tools.
 Writes full outputs to tool_outputs.txt for easy review.
 
 Run: conda run -n openrlhf python openrlhf/tools/test_all_tools.py
@@ -58,6 +58,8 @@ def main():
         remove_salts,
         evaluate_arithmetic,
         get_electronic_properties,
+        get_molecular_properties,
+        get_similar_neighbors,
         predict_metabolites,
         CONSOLIDATED_TOOLS,
         get_function_by_name,
@@ -86,6 +88,8 @@ def main():
     run_test("9. evaluate_arithmetic", evaluate_arithmetic, "2 + 3 * 4")
     run_test("10. get_electronic_properties", get_electronic_properties, ASPIRIN)
     run_test("11. predict_metabolites", predict_metabolites, ASPIRIN)
+    run_test("12. get_molecular_properties", get_molecular_properties, ASPIRIN)
+    run_test("13. get_similar_neighbors", get_similar_neighbors, ASPIRIN, "AMES", 3)
 
     # Summary
     section("SUMMARY")

@@ -26,7 +26,8 @@
 #   PRETRAIN_PATH= EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=1 TIS=1 TIS_TYPE=tis TRAIN_MAX_TOKENS_PER_GPU=40960 SMART_REPLAY=1 REDUCE_OPTIMIZER=adam_offload LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss.sh
 #   USE_LORA=1 LEARNING_RATE=2e-5 EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TRAIN_MAX_TOKENS_PER_GPU=41952 REDUCE_OPTIMIZER=none LIGER_GRPO_LOSS=0 DEQUANT=unsloth LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss.sh
 #.  EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TRAIN_MAX_TOKENS_PER_GPU=41952 REDUCE_OPTIMIZER=none LIGER_GRPO_LOSS=0 DEQUANT=unsloth LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss.sh
-#   LEARNING_RATE=9e-7 SMART_REPLAY=1 OVERSAMPLE_RATIO=2 TIS=1 TIS_TYPE=icepop DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=cispo bash train_grpo_tdc_gpt_oss.sh
+#   LEARNING_RATE=9e-6 SMART_REPLAY=1 OVERSAMPLE_RATIO=1.75 TIS=1 TIS_TYPE=icepop DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZE=none TRAIN_MAX_TOKENS_PER_GPU=16384 LIGER_GRPO_LOSS=1 LOSS_TYPE=cispo bash train_grpo_tdc_gpt_oss.sh
+#   LEARNING_RATE=9e-7 SMART_REPLAY=1 OVERSAMPLE_RATIO=1.75 TIS=1 TIS_TYPE=icepop DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZE=none USE_LORA=1 TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=cispo bash train_grpo_tdc_gpt_oss.sh
 # Distributed:
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 bash scripts/train_grpo_tdc_gpt_oss.sh
 #       
@@ -41,7 +42,7 @@
 #                                        # Reflects that colocated is synchronous and can afford more rollouts
 #                                        # before each update without the 1-step off-policy lag of async.
 #   COLO_EVAL_STEPS=32                   # Eval frequency (global steps) for colocated; distributed scales by ASYNC_ADVANTAGE
-#   TOOL_VERSION=v4                      # Tool schema version (default: v4)
+#   TOOL_VERSION=v10                     # Tool schema version (default: v10)
 #   SMART_REPLAY=1                       # Enable smart replay with max_replay_rounds=2
 #   CURRICULUM_BALANCED=1                # Enable curriculum-balanced sampling
 #   OVERSAMPLE_RATIO=1.6                 # Oversample ratio for dynamic filtering (default: 1.6)
@@ -142,7 +143,7 @@ MODE="${MODE:-colocated}"
 EFFECTIVE_ROLLOUT_BATCH_SIZE="${EFFECTIVE_ROLLOUT_BATCH_SIZE:-8}"
 EFFECTIVE_MINI_GRADIENT_STEPS="${EFFECTIVE_MINI_GRADIENT_STEPS:-2}"
 ASYNC_ADVANTAGE="${ASYNC_ADVANTAGE:-4}"
-TOOL_VERSION="${TOOL_VERSION:-v7}"
+TOOL_VERSION="${TOOL_VERSION:-v10}"
 SMART_REPLAY="${SMART_REPLAY:-0}"
 MAX_REPLAY_ROUNDS="${MAX_REPLAY_ROUNDS:-2}"
 
@@ -160,8 +161,8 @@ KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-fp8}"
 REDUCE_OPTIMIZER="${REDUCE_OPTIMIZER:-adam_offload}"
 MAX_EPOCHS="${MAX_EPOCHS:-1}"
 USE_LORA="${USE_LORA:-0}"
-LORA_RANK="${LORA_RANK:-128}"
-LORA_ALPHA="${LORA_ALPHA:-256}"
+LORA_RANK="${LORA_RANK:-256}"
+LORA_ALPHA="${LORA_ALPHA:-512}"
 VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-256}"
 VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
@@ -186,7 +187,7 @@ if [ "$MODE" = "colocated" ]; then
     VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
     ROLLOUT_BATCH_SIZE=$(( EFFECTIVE_ROLLOUT_BATCH_SIZE * ASYNC_ADVANTAGE ))
     MINI_GRADIENT_STEPS=$(( EFFECTIVE_MINI_GRADIENT_STEPS))
-    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.69}"
+    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.685}"
     VLLM_SYNC_BACKEND=nccl
     EVAL_STEPS="${EVAL_STEPS:-$COLO_EVAL_STEPS}"
 elif [ "$MODE" = "distributed" ]; then
@@ -269,7 +270,7 @@ if [ ! -d "$PROJECT_ROOT/openrlhf" ]; then
 fi 
 
 ### DATA ###
-DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v7_tools"
+DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_gpt_oss"
 # Short tag derived from dataset dir name for run naming
 # e.g. openai_format_enriched -> "enr", openai_format_v6_encourage_tool_use -> "v6etu"
 DATA_DIR_BASENAME="$(basename "$DATA_DIR")"
@@ -519,6 +520,13 @@ fi
 if [ "${UNSLOTH_MOE:-0}" = "1" ]; then
     OPTIONAL_FLAGS+=" --use_unsloth_moe_kernels"
 fi
+# KNN pseudo-labels for reversal tracking on tool-calling prompts that do not
+# inline neighbor pseudo-labels. Generate with:
+#   python scripts/build_knn_v10_pseudo_labels.py
+KNN_PL_PATH="${KNN_PL_PATH:-$PROJECT_ROOT/data/tdc/metadata/knn_v10_pseudo_labels.json}"
+if [ -f "$KNN_PL_PATH" ]; then
+    OPTIONAL_FLAGS+=" --knn_pseudo_labels_path $KNN_PL_PATH"
+fi
 
 ### TRAINING ###
 # export TORCH_DYNAMO_CACHE_SIZE_LIMIT=1024
@@ -594,6 +602,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --attn_implementation "flex_attention" \
     --length_penalty_start 5120 \
     --replace_discarded_prompts_ratio 2.0 \
+    --enable_tool_calling_rewards \
     --freeze_router \
     --aux_loss_coef 0 \
     $QUANT_FLAGS \

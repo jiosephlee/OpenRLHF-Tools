@@ -33,20 +33,36 @@ def extract_final_answer(text: str) -> str:
     Returns:
         Extracted answer (e.g., "(A)") or empty string if not found
     """
-    # Pattern 1: "Answer: (A)" or "Answer:(A)"
-    match = re.search(r"Answer:\s*\(([AB])\)", text, re.IGNORECASE)
-    if match:
-        return f"({match.group(1)})"
+    def _last_group1(pattern: str) -> str:
+        matches = list(re.finditer(pattern, text, re.IGNORECASE | re.DOTALL))
+        if not matches:
+            return ""
+        return f"({matches[-1].group(1).upper()})"
 
-    # Pattern 2: "Final answer: (B)"
-    match = re.search(r"Final\s+answer:\s*\(([AB])\)", text, re.IGNORECASE)
-    if match:
-        return f"({match.group(1)})"
+    # Prefer the last answer-style mention in the response, not the first.
+    # This avoids grabbing early reasoning like "the answer might be A".
+    answer_patterns = [
+        # "Answer: (A)", "Answer: A", "Answer: **A**"
+        r"answer\s*:\s*\**\(?\s*([AB])\s*\)?\**",
+        # "Final answer: (B)", "Final answer: B", "Final answer: **B**"
+        r"final\s+answer\s*:\s*\**\(?\s*([AB])\s*\)?\**",
+        # "assistantfinalAnswer: B" flattened GPT-OSS text
+        r"assistantfinal\s*answer\s*:\s*\**\(?\s*([AB])\s*\)?\**",
+    ]
+    for pattern in answer_patterns:
+        answer = _last_group1(pattern)
+        if answer:
+            return answer
 
-    # Pattern 3: Last occurrence of (A) or (B)
-    matches = list(re.finditer(r"\(([AB])\)", text))
-    if matches:
-        return f"({matches[-1].group(1)})"
+    # Fallback: last parenthesized label anywhere.
+    answer = _last_group1(r"\(([AB])\)")
+    if answer:
+        return answer
+
+    # Final fallback: bare trailing A/B at end of response.
+    answer = _last_group1(r"([AB])\s*$")
+    if answer:
+        return answer
 
     return ""
 

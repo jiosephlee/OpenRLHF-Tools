@@ -112,7 +112,7 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
             step_result = await agent_instance.step(states)
 
             total_reward += step_result["rewards"].item()
-            final_scores = step_result.get("scores", total_reward)
+            final_scores = step_result.get("scores")
             environment_feedback_text = step_result["environment_feedback"]
             done = step_result["done"]
             # Accumulate extra_logs across turns (sum numeric values,
@@ -180,10 +180,10 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
         # Cap the total format reward to 0.01 to prevent linear buildup.
         if "format_reward" in extra_logs:
             format_reward = extra_logs["format_reward"]
-            if format_reward > 0.25:
-                excess = format_reward - 0.25
+            if format_reward > 0.3:
+                excess = format_reward - 0.3
                 total_reward -= excess
-                extra_logs["format_reward"] = 0.25
+                extra_logs["format_reward"] = 0.3
 
         # DAPO-style overlong reward shaping: R_length ramps from 0 at length_penalty_start to -1 at max_length, clamped at -1
         if self.length_penalty_start > 0:
@@ -298,7 +298,7 @@ class SingleTurnAgentExecutor(AgentExecutorBase):
                 rewards_info = rewards_info_list[0] if rewards_info_list else None
                 if rewards_info:
                     r = rewards_info.get("rewards")
-                    s = rewards_info.get("scores") or rewards_info.get("rewards")
+                    s = rewards_info.get("scores")
                     el = rewards_info.get("extra_logs") or {}
                     
                     if isinstance(r, list):

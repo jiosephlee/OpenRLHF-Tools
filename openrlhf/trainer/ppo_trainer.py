@@ -2,6 +2,7 @@ import ctypes
 import gc
 import json
 import os
+import re
 import time
 from abc import ABC
 from collections import defaultdict
@@ -31,6 +32,12 @@ from openrlhf.utils.utils import get_tokenizer
 
 logger = init_logger(__name__)
 
+_NEIGHBOR_TOOL_KEY_PREFIX = "tool_count__find_similar_molecules"
+_PREPENDED_NEIGHBOR_CONTEXT_RE = re.compile(
+    r"(Nearest Neighbors from Training Set:|KNN Predicted Label:\s*\([AB]\)|pseudo label from naive Morgan fingerprint KNN prediction is \([AB]\))",
+    re.IGNORECASE,
+)
+
 
 def _extract_tdc_binary_choice(text: str) -> str:
     answer = extract_final_answer(text)
@@ -51,6 +58,23 @@ def _macro_f1(y_true, y_pred) -> float:
         f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
         f1_sum += f1
     return f1_sum / len(classes)
+
+
+def _prompt_has_neighbor_context(prompt: str) -> bool:
+    return bool(prompt and _PREPENDED_NEIGHBOR_CONTEXT_RE.search(prompt))
+
+
+def _sample_requested_neighbors(sample, sample_idx: int) -> bool:
+    for key, value in sample.info.items():
+        if not key.startswith(_NEIGHBOR_TOOL_KEY_PREFIX):
+            continue
+        try:
+            tool_count = int(value.flatten()[sample_idx].item())
+        except (AttributeError, IndexError, ValueError):
+            continue
+        if tool_count > 0:
+            return True
+    return False
 
 
 def prepare_datasets(strategy, tokenizer):
@@ -179,8 +203,10 @@ class BasePPOTrainer(ABC):
     def _collect_eval_tool_usage(self, all_prompts, samples_list, prompt_to_datasource):
         per_dataset_counts = defaultdict(lambda: defaultdict(int))
         per_dataset_prompts_used = defaultdict(lambda: defaultdict(int))  # prompts that used tool at least once
+        per_dataset_requested_neighbors = defaultdict(int)
         per_dataset_total_prompts = defaultdict(int)
         per_dataset_parse_stats = defaultdict(lambda: defaultdict(int))
+        sample_requested_neighbors = []
         prompt_idx = 0
         for sample in samples_list:
             batch_size = len(sample.sequences)
@@ -189,6 +215,10 @@ class BasePPOTrainer(ABC):
                     break
                 datasource = prompt_to_datasource[all_prompts[prompt_idx]]
                 per_dataset_total_prompts[datasource] += 1
+                requested_neighbors = _sample_requested_neighbors(sample, i)
+                sample_requested_neighbors.append(requested_neighbors)
+                if requested_neighbors:
+                    per_dataset_requested_neighbors[datasource] += 1
                 for key, value in sample.info.items():
                     if key.startswith("tool_count__"):
                         tool_name = key[len("tool_count__") :]
@@ -219,6 +249,7 @@ class BasePPOTrainer(ABC):
 
         # Fraction of prompts (per dataset) that used each tool at least once → 100% if every prompt used it
         per_dataset_usage_pct = {}
+        per_dataset_requested_neighbors_pct = {}
         for ds in per_dataset_total_prompts:
             n = per_dataset_total_prompts[ds]
             if n == 0:
@@ -228,11 +259,20 @@ class BasePPOTrainer(ABC):
             }
             if not per_dataset_usage_pct[ds]:
                 del per_dataset_usage_pct[ds]
+            per_dataset_requested_neighbors_pct[ds] = per_dataset_requested_neighbors[ds] / n
 
         # Convert parse stats from defaultdict to dict
         per_dataset_parse_stats = {k: dict(v) for k, v in per_dataset_parse_stats.items()}
 
-        return per_dataset_counts, per_dataset_normalized, totals, per_dataset_usage_pct, per_dataset_parse_stats
+        return (
+            per_dataset_counts,
+            per_dataset_normalized,
+            totals,
+            per_dataset_usage_pct,
+            per_dataset_parse_stats,
+            per_dataset_requested_neighbors_pct,
+            sample_requested_neighbors,
+        )
 
     def _write_eval_tool_usage(
         self,
@@ -289,6 +329,34 @@ class BasePPOTrainer(ABC):
         with open(out_path, "w") as f:
             json.dump(payload, f, indent=2, ensure_ascii=True)
         logger.info(f"[eval_metrics] Wrote per-task metrics to {out_path}")
+
+    def _write_unparseable_eval_traces(self, global_step: int, records: list[dict]) -> None:
+        """Persist eval responses where the final A/B choice could not be extracted."""
+        if not records:
+            return
+
+        run_dir = self.samples_generator.runs_dir
+        output_dir = os.path.join(run_dir, "eval_unparseable")
+        os.makedirs(output_dir, exist_ok=True)
+
+        payload = {
+            "global_step": global_step,
+            "count": len(records),
+            "records": records,
+        }
+
+        json_path = os.path.join(output_dir, f"eval_step_{global_step}.json")
+        with open(json_path, "w") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False, default=str)
+
+        jsonl_path = os.path.join(output_dir, "history.jsonl")
+        with open(jsonl_path, "a") as f:
+            for record in records:
+                f.write(json.dumps({"global_step": global_step, **record}, ensure_ascii=False, default=str) + "\n")
+
+        logger.warning(
+            f"[eval] Wrote {len(records)} unparseable prediction traces to {json_path}"
+        )
 
     def _write_final_tool_usage_plot(self):
         history = getattr(self, "_eval_tool_usage_history", [])
@@ -435,14 +503,34 @@ class BasePPOTrainer(ABC):
         if is_tdc_eval:
             labels_by_datasource = defaultdict(list)
             preds_by_datasource = defaultdict(list)
+            unparseable_records = []
             for prompt, label, sample in zip(all_prompts, all_labels, samples_list):
                 datasource = prompt_to_datasource[prompt]
-                text = self._get_response_text(sample.sequences[0])
+                action_mask = sample.action_mask[0] if sample.action_mask is not None else None
+                text = self._get_response_text(sample.sequences[0], action_mask)
                 try:
                     pred = _extract_tdc_binary_choice(text)
                 except ValueError:
                     pred = "UNPARSEABLE"
                     logger.warning(f"[eval] Unparseable prediction for {datasource}: {text[:200]!r}")
+                    unparseable_records.append(
+                        {
+                            "datasource": datasource,
+                            "label": label,
+                            "prompt": prompt,
+                            "response": text,
+                            "response_preview": text[:200],
+                            "truncated": bool(
+                                sample.info.get("truncated", torch.tensor([0])).flatten()[0].item()
+                            ),
+                            "response_length": int(
+                                sample.info.get("response_length", torch.tensor([0])).flatten()[0].item()
+                            ),
+                            "total_length": int(
+                                sample.info.get("total_length", torch.tensor([0])).flatten()[0].item()
+                            ),
+                        }
+                    )
                 labels_by_datasource[datasource].append(_extract_tdc_binary_choice(label))
                 preds_by_datasource[datasource].append(pred)
 
@@ -453,10 +541,23 @@ class BasePPOTrainer(ABC):
                 macro_f1_values.append(macro_f1)
             if macro_f1_values:
                 logs["eval_avg_macro_f1"] = sum(macro_f1_values) / len(macro_f1_values)
+            self._write_unparseable_eval_traces(global_step, unparseable_records)
 
-        per_dataset_counts, per_dataset_normalized, totals, per_dataset_usage_pct, per_dataset_parse_stats = (
-            self._collect_eval_tool_usage(all_prompts, samples_list, prompt_to_datasource)
-        )
+        (
+            per_dataset_counts,
+            per_dataset_normalized,
+            totals,
+            per_dataset_usage_pct,
+            per_dataset_parse_stats,
+            per_dataset_requested_neighbors_pct,
+            sample_requested_neighbors,
+        ) = self._collect_eval_tool_usage(all_prompts, samples_list, prompt_to_datasource)
+        for datasource, pct in per_dataset_requested_neighbors_pct.items():
+            logs[f"eval_{datasource}_requested_neighbors_pct"] = pct * 100
+        if sample_requested_neighbors:
+            logs["eval_requested_neighbors_pct"] = (
+                sum(1 for used in sample_requested_neighbors if used) / len(sample_requested_neighbors) * 100
+            )
         self._write_eval_tool_usage(
             global_step,
             per_dataset_counts,
@@ -472,10 +573,19 @@ class BasePPOTrainer(ABC):
         knn_eval_reversed = 0
         knn_eval_correct_reversal = 0
         knn_eval_incorrect_reversal = 0
+        knn_eval_correct_stick = 0
+        knn_eval_incorrect_stick = 0
         for i in range(num_prompts):
             original_prompt = all_prompts[i * n_samples_per_prompt]
             knn_pl = prompt_to_knn_pl.get(original_prompt)
             if knn_pl is None:
+                continue
+            sample_start = i * n_samples_per_prompt
+            sample_end = sample_start + n_samples_per_prompt
+            requested_neighbors = any(sample_requested_neighbors[sample_start:sample_end]) or _prompt_has_neighbor_context(
+                original_prompt
+            )
+            if not requested_neighbors:
                 continue
             knn_eval_total += 1
             true_answer = all_labels[i * n_samples_per_prompt]
@@ -489,10 +599,17 @@ class BasePPOTrainer(ABC):
                     knn_eval_correct_reversal += 1
                 else:
                     knn_eval_incorrect_reversal += 1
+            else:
+                if model_correct:
+                    knn_eval_correct_stick += 1
+                else:
+                    knn_eval_incorrect_stick += 1
         if knn_eval_total > 0:
             logs["knn_eval_reversal_pct"] = knn_eval_reversed / knn_eval_total * 100
             logs["knn_eval_correct_reversal_pct"] = knn_eval_correct_reversal / knn_eval_total * 100
             logs["knn_eval_incorrect_reversal_pct"] = knn_eval_incorrect_reversal / knn_eval_total * 100
+            logs["knn_eval_correct_stick_pct"] = knn_eval_correct_stick / knn_eval_total * 100
+            logs["knn_eval_incorrect_stick_pct"] = knn_eval_incorrect_stick / knn_eval_total * 100
             logs["knn_eval_total"] = knn_eval_total
         #### end KNN eval metrics ####
 
@@ -1626,10 +1743,9 @@ class PPOTrainer(BasePPOTrainer):
 
                 #### KNN reversal metrics ####
                 knn_stats = self.samples_generator.step_knn_stats
-                if knn_stats.get("knn_total", 0) > 0:
-                    for k, v in knn_stats.items():
-                        if v is not None:
-                            status[k] = v
+                for k, v in knn_stats.items():
+                    if v is not None:
+                        status[k] = v
                 #### end KNN metrics ####
 
                 # Merge vLLM stats into status for W&B logging.

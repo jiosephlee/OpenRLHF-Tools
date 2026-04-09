@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Update universal caches and rebuild fingerprint embeddings for v8.
+Update universal caches and rebuild fingerprint embeddings for v8-style data.
 
 Three operations:
   1. Append new SMILES to fg_cache.jsonl (functional group descriptions)
   2. Append new SMILES to tdc_metadata_consolidated.csv (RDKit descriptors)
-  3. Rebuild fingerprint embeddings from deduplicated_canonicalized/ → cache/fingerprint_v8/
+  3. Rebuild fingerprint embeddings from raw_deduplicated/ with stored canonical
+     SMILES → cache/fingerprints_with_canonicalized/
 
 Usage:
     python scripts/data_conversion/update_caches_v8.py
@@ -33,6 +34,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 CACHE_DIR = PROJECT_ROOT / "openrlhf" / "tools" / "therapeutic_tools" / "cache"
 DATA_DIR = PROJECT_ROOT / "data" / "tdc" / "deduplicated_canonicalized"
+FINGERPRINT_DATA_DIR = PROJECT_ROOT / "data" / "tdc" / "raw_deduplicated"
+FINGERPRINT_FALLBACK_DATA_DIR = PROJECT_ROOT / "data" / "tdc" / "raw"
 
 TASK_NAMES = [
     "Bioavailability_Ma", "HIA_Hou", "PAMPA_NCATS", "Pgp_Broccatelli",
@@ -264,6 +267,15 @@ def _get_generators():
     return _MORGAN_GEN, _FEAT_GEN
 
 
+def canonicalize_smiles(smiles: str) -> str | None:
+    """Canonicalize a SMILES string with RDKit."""
+    from rdkit import Chem
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    return Chem.MolToSmiles(mol, canonical=True)
+
+
 def compute_fingerprint(smiles: str) -> tuple[np.ndarray, np.ndarray] | None:
     """Compute Morgan + FeatureMorgan fingerprints. Returns (morgan, feat) or None."""
     from rdkit import Chem
@@ -276,11 +288,23 @@ def compute_fingerprint(smiles: str) -> tuple[np.ndarray, np.ndarray] | None:
     return morgan, feat
 
 
+def load_fingerprint_split(data_dir: Path, task: str, split: str) -> pd.DataFrame:
+    """Load a fingerprint source split, falling back to raw/ if needed."""
+    candidates = [
+        data_dir / task / f"{split}.csv",
+        FINGERPRINT_FALLBACK_DATA_DIR / task / f"{split}.csv",
+    ]
+    for path in candidates:
+        if path.exists():
+            return pd.read_csv(path)
+    return pd.DataFrame(columns=["Drug", "Y"])
+
+
 def build_fingerprint_task(task: str, data_dir: Path, out_dir: Path, overwrite: bool = False):
-    """Build fingerprint embeddings for a single task from canonicalized data."""
+    """Build fingerprint embeddings for a single task from original dataset SMILES."""
     out_path = out_dir / f"{task}_embeddings.npz"
     if out_path.exists() and not overwrite:
-        logger.info("%s: fingerprint_v8 exists, skipping.", task)
+        logger.info("%s: canonicalized fingerprint cache exists, skipping.", task)
         return True
 
     # Load train + val splits (train for neighbors, val for split tagging)
@@ -288,10 +312,9 @@ def build_fingerprint_task(task: str, data_dir: Path, out_dir: Path, overwrite: 
     all_labels = []
     all_splits = []
     for split in ["train", "val"]:
-        path = data_dir / task / f"{split}.csv"
-        if not path.exists():
+        df = load_fingerprint_split(data_dir, task, split)
+        if df.empty:
             continue
-        df = pd.read_csv(path)
         for _, row in df.iterrows():
             smiles = row.get("Drug")
             label = row.get("Y")
@@ -305,9 +328,9 @@ def build_fingerprint_task(task: str, data_dir: Path, out_dir: Path, overwrite: 
         logger.warning("%s: no data found, skipping.", task)
         return False
 
-    # Deduplicate (canonicalized data should already be deduped, but be safe)
+    # Deduplicate by original dataset SMILES while preserving split/label metadata.
     seen = {}
-    for i, (smi, lbl, spl) in enumerate(zip(all_smiles, all_labels, all_splits)):
+    for smi, lbl, spl in zip(all_smiles, all_labels, all_splits):
         if smi not in seen:
             seen[smi] = (lbl, spl)
 
@@ -318,17 +341,22 @@ def build_fingerprint_task(task: str, data_dir: Path, out_dir: Path, overwrite: 
     logger.info("%s: computing fingerprints for %d molecules...", task, len(unique_smiles))
 
     valid_smiles = []
+    valid_canonical_smiles = []
     morgan_list = []
     feat_list = []
     labels_list = []
     splits_list = []
 
     for smi, lbl, spl in zip(unique_smiles, unique_labels, unique_splits):
-        result = compute_fingerprint(smi)
+        canonical_smi = canonicalize_smiles(smi)
+        if canonical_smi is None:
+            continue
+        result = compute_fingerprint(canonical_smi)
         if result is None:
             continue
         morgan, feat = result
         valid_smiles.append(smi)
+        valid_canonical_smiles.append(canonical_smi)
         morgan_list.append(morgan)
         feat_list.append(feat)
         labels_list.append(lbl)
@@ -342,6 +370,7 @@ def build_fingerprint_task(task: str, data_dir: Path, out_dir: Path, overwrite: 
     np.savez(
         out_path,
         smiles=np.array(valid_smiles, dtype=object),
+        canonical_smiles=np.array(valid_canonical_smiles, dtype=object),
         morgan_fps=np.stack(morgan_list),
         feat_morgan_fps=np.stack(feat_list),
         labels=np.array(labels_list, dtype=np.int32),
@@ -380,10 +409,10 @@ def main():
         update_metadata(all_smiles, meta_path)
 
     if not args.skip_fingerprints:
-        fp_out_dir = CACHE_DIR / "fingerprint_v8"
+        fp_out_dir = CACHE_DIR / "fingerprints_with_canonicalized"
         for task in tasks:
             build_fingerprint_task(
-                task, data_dir, fp_out_dir,
+                task, FINGERPRINT_DATA_DIR, fp_out_dir,
                 overwrite=args.overwrite_fingerprints,
             )
 

@@ -237,7 +237,7 @@ def main():
     )
     parser.add_argument(
         "--fingerprint-dir",
-        default="fingerprint_v8",
+        default="fingerprints_with_canonicalized",
         help="Fingerprint cache subdirectory name (under therapeutic_tools/cache/)",
     )
     args = parser.parse_args()
@@ -256,11 +256,11 @@ def main():
     with open(args.cot_instruction) as f:
         cot_instruction = f.read().strip()
 
-    # Point similarity tool at fingerprint_v8 cache
+    # Point similarity tool at the configured fingerprint cache
     cache_dir = PROJECT_ROOT / "openrlhf" / "tools" / "therapeutic_tools" / "cache"
     fp_v8_dir = cache_dir / args.fingerprint_dir
 
-    # Monkey-patch similarity module to use fingerprint_v8 and deduplicated_canonicalized
+    # Monkey-patch similarity module to use the configured fingerprint cache and deduplicated_canonicalized
     from openrlhf.tools.therapeutic_tools import similarity as sim_module
     original_embeddings_path = sim_module._embeddings_path
     original_data_dir = sim_module._DATA_DIR

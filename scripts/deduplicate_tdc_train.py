@@ -1,96 +1,123 @@
 #!/usr/bin/env python3
-"""Deduplicate TDC raw training CSVs.
+"""Deduplicate TDC raw CSVs across train/val/test splits.
 
-For each task, reads data/tdc/raw/{task}/train.csv and:
-  1. Drops SMILES with conflicting labels (same SMILES string, different Y values)
-  2. Deduplicates same-label duplicates (keeps first occurrence)
-  3. Writes cleaned train.csv to data/tdc/raw_deduplicated/{task}/train.csv
-  4. Symlinks val.csv and test.csv (unchanged) from raw/ into raw_deduplicated/
+For each task, reads data/tdc/raw/{task}/{split}.csv and:
+  1. Drops SMILES with conflicting labels across any split
+  2. Deduplicates same-label duplicates within each split (keeps first occurrence)
+  3. Writes cleaned train/val/test CSVs to data/tdc/raw_deduplicated/{task}/
 
 Usage:
     python scripts/deduplicate_tdc_train.py
 """
 
-import pandas as pd
 from pathlib import Path
+
+import pandas as pd
 
 RAW_DIR = Path("data/tdc/raw")
 OUT_DIR = Path("data/tdc/raw_deduplicated")
+SPLITS = ["train", "val", "test"]
 
 TASKS = [
-    "AMES", "BBB_Martins", "Bioavailability_Ma",
-    "CYP2C9_Substrate_CarbonMangels", "CYP2D6_Substrate_CarbonMangels",
-    "CYP3A4_Substrate_CarbonMangels", "Carcinogens_Lagunin", "ClinTox",
-    "DILI", "HIA_Hou", "PAMPA_NCATS", "Pgp_Broccatelli",
-    "SARSCoV2_3CLPro_Diamond", "SARSCoV2_Vitro_Touret",
-    "Skin_Reaction", "hERG",
+    "AMES",
+    "BBB_Martins",
+    "Bioavailability_Ma",
+    "CYP2C9_Substrate_CarbonMangels",
+    "CYP2D6_Substrate_CarbonMangels",
+    "CYP3A4_Substrate_CarbonMangels",
+    "Carcinogens_Lagunin",
+    "ClinTox",
+    "DILI",
+    "HIA_Hou",
+    "PAMPA_NCATS",
+    "Pgp_Broccatelli",
+    "SARSCoV2_3CLPro_Diamond",
+    "SARSCoV2_Vitro_Touret",
+    "Skin_Reaction",
+    "hERG",
 ]
 
 
-def deduplicate_train(task: str) -> dict:
+def deduplicate_task(task: str) -> dict:
     raw_task_dir = RAW_DIR / task
     out_task_dir = OUT_DIR / task
     out_task_dir.mkdir(parents=True, exist_ok=True)
 
-    train_path = raw_task_dir / "train.csv"
-    if not train_path.exists():
-        print(f"  {task}: no train.csv found, skipping")
+    split_dfs: dict[str, pd.DataFrame] = {}
+    total_rows: dict[str, int] = {}
+
+    for split in SPLITS:
+        split_path = raw_task_dir / f"{split}.csv"
+        if not split_path.exists():
+            continue
+        df = pd.read_csv(split_path)
+        split_dfs[split] = df
+        total_rows[split] = len(df)
+
+    if not split_dfs:
+        print(f"  {task}: no split CSVs found, skipping")
         return {}
 
-    df = pd.read_csv(train_path)
-    n_orig = len(df)
+    combined = []
+    for split, df in split_dfs.items():
+        tagged = df.copy()
+        tagged["_split"] = split
+        combined.append(tagged)
+    merged = pd.concat(combined, ignore_index=True)
 
-    # Find SMILES with conflicting labels
-    label_counts = df.groupby("Drug")["Y"].nunique()
+    label_counts = merged.groupby("Drug")["Y"].nunique()
     conflict_smiles = set(label_counts[label_counts > 1].index)
-    n_conflicts = len(conflict_smiles)
-    n_conflict_rows = df[df["Drug"].isin(conflict_smiles)].shape[0]
 
-    # Drop conflicts
-    df_clean = df[~df["Drug"].isin(conflict_smiles)]
+    dropped_conflicts = {}
+    same_label_dupes = {}
+    final_rows = {}
 
-    # Deduplicate same-label dupes (keep first)
-    n_before_dedup = len(df_clean)
-    df_clean = df_clean.drop_duplicates(subset="Drug", keep="first")
-    n_same_label_dupes = n_before_dedup - len(df_clean)
+    for split, df in split_dfs.items():
+        cleaned = df[~df["Drug"].isin(conflict_smiles)].copy()
+        before_dedup = len(cleaned)
+        cleaned = cleaned.drop_duplicates(subset="Drug", keep="first")
 
-    # Write cleaned train
-    df_clean.to_csv(out_task_dir / "train.csv", index=False)
+        dropped_conflicts[split] = total_rows[split] - before_dedup
+        same_label_dupes[split] = before_dedup - len(cleaned)
+        final_rows[split] = len(cleaned)
 
-    # Symlink val and test (unchanged)
-    for split in ["val", "test"]:
-        src = raw_task_dir / f"{split}.csv"
-        dst = out_task_dir / f"{split}.csv"
-        if src.exists():
-            dst.unlink(missing_ok=True)
-            dst.symlink_to(src.resolve())
+        dst_path = out_task_dir / f"{split}.csv"
+        if dst_path.exists() or dst_path.is_symlink():
+            dst_path.unlink()
+        cleaned.to_csv(dst_path, index=False)
 
-    stats = {
-        "original": n_orig,
-        "conflicts": n_conflicts,
-        "conflict_rows": n_conflict_rows,
-        "same_label_dupes": n_same_label_dupes,
-        "final": len(df_clean),
+    return {
+        "original": total_rows,
+        "conflict_smiles": len(conflict_smiles),
+        "conflict_rows": dropped_conflicts,
+        "same_label_dupes": same_label_dupes,
+        "final": final_rows,
     }
-    return stats
 
 
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    print(f"{'Task':40s} {'Orig':>5s} {'Conflicts':>9s} {'ConfRows':>8s} {'Dupes':>5s} {'Final':>5s}")
-    print("-" * 75)
+    print(
+        f"{'Task':40s} {'Split':>5s} {'Orig':>6s} {'ConfSmiles':>10s} "
+        f"{'ConfRows':>8s} {'Dupes':>6s} {'Final':>6s}"
+    )
+    print("-" * 90)
 
     for task in TASKS:
-        stats = deduplicate_train(task)
+        stats = deduplicate_task(task)
         if not stats:
             continue
-        changed = " *" if stats["conflicts"] or stats["same_label_dupes"] else ""
-        print(
-            f"{task:40s} {stats['original']:5d} {stats['conflicts']:9d} "
-            f"{stats['conflict_rows']:8d} {stats['same_label_dupes']:5d} "
-            f"{stats['final']:5d}{changed}"
-        )
+
+        for split in SPLITS:
+            if split not in stats["original"]:
+                continue
+            changed = " *" if stats["conflict_rows"][split] or stats["same_label_dupes"][split] else ""
+            print(
+                f"{task:40s} {split:>5s} {stats['original'][split]:6d} "
+                f"{stats['conflict_smiles']:10d} {stats['conflict_rows'][split]:8d} "
+                f"{stats['same_label_dupes'][split]:6d} {stats['final'][split]:6d}{changed}"
+            )
 
     print("\nDone. Cleaned data in:", OUT_DIR)
 

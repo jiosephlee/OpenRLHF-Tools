@@ -26,8 +26,8 @@
 #   PRETRAIN_PATH= EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=1 TIS=1 TIS_TYPE=tis TRAIN_MAX_TOKENS_PER_GPU=40960 SMART_REPLAY=1 REDUCE_OPTIMIZER=adam_offload LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss.sh
 #   USE_LORA=1 LEARNING_RATE=2e-5 EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TRAIN_MAX_TOKENS_PER_GPU=41952 REDUCE_OPTIMIZER=none LIGER_GRPO_LOSS=0 DEQUANT=unsloth LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss.sh
 #.  EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TRAIN_MAX_TOKENS_PER_GPU=41952 REDUCE_OPTIMIZER=none LIGER_GRPO_LOSS=0 DEQUANT=unsloth LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss.sh
-#   LEARNING_RATE=9e-6 SMART_REPLAY=1 OVERSAMPLE_RATIO=1.75 TIS=1 TIS_TYPE=icepop DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZE=none TRAIN_MAX_TOKENS_PER_GPU=16384 LIGER_GRPO_LOSS=1 LOSS_TYPE=cispo bash train_grpo_tdc_gpt_oss.sh
-#   LEARNING_RATE=9e-7 SMART_REPLAY=1 OVERSAMPLE_RATIO=1.75 TIS=1 TIS_TYPE=icepop DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZE=none USE_LORA=1 TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=cispo bash train_grpo_tdc_gpt_oss.sh
+#   LEARNING_RATE=6e-7 SMART_REPLAY=1 DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=cispo bash train_grpo_tdc_gpt_oss.sh
+#   LEARNING_RATE=9e-6 SMART_REPLAY=1 DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none USE_LORA=1 TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=cispo bash train_grpo_tdc_gpt_oss.sh
 # Distributed:
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 bash scripts/train_grpo_tdc_gpt_oss.sh
 #       
@@ -46,6 +46,9 @@
 #   SMART_REPLAY=1                       # Enable smart replay with max_replay_rounds=2
 #   CURRICULUM_BALANCED=1                # Enable curriculum-balanced sampling
 #   OVERSAMPLE_RATIO=1.6                 # Oversample ratio for dynamic filtering (default: 1.6)
+#   OVERSAMPLE_RATIO_START=1.25          # Optional linear-ramp start ratio (defaults to OVERSAMPLE_RATIO)
+#   OVERSAMPLE_RATIO_END=2.5             # Optional linear-ramp end ratio (defaults to OVERSAMPLE_RATIO)
+#   OVERSAMPLE_RATIO_RAMP_STEPS=200      # Optional ramp horizon in global steps (defaults to trainer max_steps)
 
 #   LIGER_GRPO_LOSS=1                    # Enable Liger fused GRPO loss
 #   LIGER_GRPO_BACKEND=triton             # Liger backend: triton (default) or chunked
@@ -129,9 +132,16 @@ export DS_SKIP_CUDA_CHECK=1
 # Prevent corrupted torch inductor cache from crashing vLLM compilation.
 rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ ~/.cache/vllm/torch_compile_cache/ 2>/dev/null || true
 
-export VLLM_USE_FLASHINFER_MOE_FP16=1
-export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
-export VLLM_FLASHINFER_MOE_BACKEND=latency
+# export VLLM_USE_FLASHINFER_MOE_FP16=1
+# export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
+# export VLLM_FLASHINFER_MOE_BACKEND=throughput
+
+# Force Triton for BF16/unquantized GPT-OSS MoE in vLLM by removing the
+# FlashInfer FP16 MoE backends from auto-selection. Quantized FP4 paths use
+# their own backend selectors and are unaffected by this flag.
+VLLM_USE_FLASHINFER_MOE_FP16="${VLLM_USE_FLASHINFER_MOE_FP16:-0}"
+export VLLM_USE_FLASHINFER_MOE_FP16
+unset VLLM_FLASHINFER_MOE_BACKEND
 
 ### ARGS ###
 LEARNING_RATE="${LEARNING_RATE:-1e-6}"
@@ -143,9 +153,9 @@ MODE="${MODE:-colocated}"
 EFFECTIVE_ROLLOUT_BATCH_SIZE="${EFFECTIVE_ROLLOUT_BATCH_SIZE:-8}"
 EFFECTIVE_MINI_GRADIENT_STEPS="${EFFECTIVE_MINI_GRADIENT_STEPS:-2}"
 ASYNC_ADVANTAGE="${ASYNC_ADVANTAGE:-4}"
-TOOL_VERSION="${TOOL_VERSION:-v10}"
+TOOL_VERSION="${TOOL_VERSION:-v12}"
 SMART_REPLAY="${SMART_REPLAY:-0}"
-MAX_REPLAY_ROUNDS="${MAX_REPLAY_ROUNDS:-2}"
+MAX_REPLAY_ROUNDS="${MAX_REPLAY_ROUNDS:-3}"
 
 LIGER_GRPO_LOSS="${LIGER_GRPO_LOSS:-0}"
 LIGER_GRPO_BACKEND="${LIGER_GRPO_BACKEND:-triton}"
@@ -153,6 +163,9 @@ LOSS_TYPE="${LOSS_TYPE:-ppo}"
 LIGER_CHUNK_SIZE="${LIGER_CHUNK_SIZE:-1}"
 CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
 OVERSAMPLE_RATIO="${OVERSAMPLE_RATIO:-2}"
+OVERSAMPLE_RATIO_START="${OVERSAMPLE_RATIO_START:-1.75}"
+OVERSAMPLE_RATIO_END="${OVERSAMPLE_RATIO_END:-2.75}"
+OVERSAMPLE_RATIO_RAMP_STEPS="${OVERSAMPLE_RATIO_RAMP_STEPS:-100}"
 TIS="${TIS:-0}"
 TIS_TYPE="${TIS_TYPE:-tis}"
 TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
@@ -166,7 +179,7 @@ LORA_ALPHA="${LORA_ALPHA:-512}"
 VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-256}"
 VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
-VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE="${VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE:-}"
+VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE="${VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE:-1024}"
 LENGTH_PENALTY_START="${LENGTH_PENALTY_START:-0}"
 
 export TORCH_DYNAMO_CACHE_SIZE_LIMIT=1024
@@ -174,7 +187,7 @@ export TORCH_DYNAMO_RECOMPILE_LIMIT=1024
 ### UNIFIED CONSTANTS ###
 AGENT_MAX_STEPS=30
 ZERO_STAGE=2
-PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-8192}"
+PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-6144}"
 N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-16}"
 TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-8192}"
 ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.5" | bc | awk '{print int($1)}')}"
@@ -187,7 +200,7 @@ if [ "$MODE" = "colocated" ]; then
     VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
     ROLLOUT_BATCH_SIZE=$(( EFFECTIVE_ROLLOUT_BATCH_SIZE * ASYNC_ADVANTAGE ))
     MINI_GRADIENT_STEPS=$(( EFFECTIVE_MINI_GRADIENT_STEPS))
-    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.685}"
+    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.675}"
     VLLM_SYNC_BACKEND=nccl
     EVAL_STEPS="${EVAL_STEPS:-$COLO_EVAL_STEPS}"
 elif [ "$MODE" = "distributed" ]; then
@@ -270,7 +283,13 @@ if [ ! -d "$PROJECT_ROOT/openrlhf" ]; then
 fi 
 
 ### DATA ###
-DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_gpt_oss"
+if [ "$TOOL_VERSION" = "v11" ]; then
+    DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v11"
+elif [ "$TOOL_VERSION" = "v12" ]; then
+    DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v12"
+else
+    DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_gpt_oss"
+fi
 # Short tag derived from dataset dir name for run naming
 # e.g. openai_format_enriched -> "enr", openai_format_v6_encourage_tool_use -> "v6etu"
 DATA_DIR_BASENAME="$(basename "$DATA_DIR")"
@@ -281,6 +300,8 @@ case "$DATA_DIR_BASENAME" in
     openai_format_v6_encourage_tool_use) DATA_TAG="v6etu" ;;
     openai_format_v7_tools)          DATA_TAG="v7t" ;;
     openai_format_gpt_oss)           DATA_TAG="gptoss" ;;
+    openai_format_v11)               DATA_TAG="v11" ;;
+    openai_format_v12)               DATA_TAG="v12" ;;
     prepended_tools_v6)              DATA_TAG="pre-v6" ;;
     prepended_tools_v7)              DATA_TAG="pre-v7" ;;
     *)                               DATA_TAG="${DATA_DIR_BASENAME#openai_format_}" ;;
@@ -450,12 +471,16 @@ echo "----------------------------------------"
 echo "Smart Replay: $SMART_REPLAY"
 echo "Curriculum Balanced: $CURRICULUM_BALANCED"
 echo "Oversample Ratio: $OVERSAMPLE_RATIO"
+if [ -n "$OVERSAMPLE_RATIO_START" ] || [ -n "$OVERSAMPLE_RATIO_END" ]; then
+    echo "Oversample Ramp: start=${OVERSAMPLE_RATIO_START:-$OVERSAMPLE_RATIO} end=${OVERSAMPLE_RATIO_END:-$OVERSAMPLE_RATIO} steps=${OVERSAMPLE_RATIO_RAMP_STEPS:-auto}"
+fi
 
 echo "Loss Type: $LOSS_TYPE"
 echo "Liger GRPO Loss: $LIGER_GRPO_LOSS (backend=$LIGER_GRPO_BACKEND, chunk_size=$LIGER_CHUNK_SIZE)"
 echo "LoRA: USE_LORA=$USE_LORA (rank=$LORA_RANK, alpha=$LORA_ALPHA)"
 echo "TIS: $TIS (type=$TIS_TYPE, thresholds=$TIS_THRESHOLDS)"
 echo "KV Cache Dtype: ${KV_CACHE_DTYPE:-auto}"
+echo "VLLM_USE_FLASHINFER_MOE_FP16: $VLLM_USE_FLASHINFER_MOE_FP16"
 echo "VLLM_MAX_NUM_SEQS: $VLLM_MAX_NUM_SEQS"
 echo "VLLM_MAX_NUM_BATCHED_TOKENS: $VLLM_MAX_NUM_BATCHED_TOKENS"
 echo "Tool Version: $TOOL_VERSION"
@@ -495,6 +520,15 @@ if [ "$CURRICULUM_BALANCED" = "1" ]; then
     OPTIONAL_FLAGS+=" --curriculum_balanced"
 fi
 OPTIONAL_FLAGS+=" --oversample_ratio $OVERSAMPLE_RATIO"
+if [ -n "$OVERSAMPLE_RATIO_START" ]; then
+    OPTIONAL_FLAGS+=" --oversample_ratio_start $OVERSAMPLE_RATIO_START"
+fi
+if [ -n "$OVERSAMPLE_RATIO_END" ]; then
+    OPTIONAL_FLAGS+=" --oversample_ratio_end $OVERSAMPLE_RATIO_END"
+fi
+if [ -n "$OVERSAMPLE_RATIO_RAMP_STEPS" ]; then
+    OPTIONAL_FLAGS+=" --oversample_ratio_ramp_steps $OVERSAMPLE_RATIO_RAMP_STEPS"
+fi
 
 if [ "$LIGER_GRPO_LOSS" = "1" ]; then
     OPTIONAL_FLAGS+=" --use_liger_grpo_loss"
@@ -523,7 +557,14 @@ fi
 # KNN pseudo-labels for reversal tracking on tool-calling prompts that do not
 # inline neighbor pseudo-labels. Generate with:
 #   python scripts/build_knn_v10_pseudo_labels.py
-KNN_PL_PATH="${KNN_PL_PATH:-$PROJECT_ROOT/data/tdc/metadata/knn_v10_pseudo_labels.json}"
+#   python scripts/build_knn_v11_pseudo_labels.py
+if [ -z "${KNN_PL_PATH:-}" ]; then
+    if [ "$TOOL_VERSION" = "v11" ] || [ "$TOOL_VERSION" = "v12" ]; then
+        KNN_PL_PATH="$PROJECT_ROOT/data/tdc/metadata/knn_v11_pseudo_labels.json"
+    else
+        KNN_PL_PATH="$PROJECT_ROOT/data/tdc/metadata/knn_v10_pseudo_labels.json"
+    fi
+fi
 if [ -f "$KNN_PL_PATH" ]; then
     OPTIONAL_FLAGS+=" --knn_pseudo_labels_path $KNN_PL_PATH"
 fi
@@ -560,7 +601,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --rollout_batch_size $ROLLOUT_BATCH_SIZE \
     --num_episodes $MAX_EPOCHS \
     --prompt_max_len $PROMPT_MAX_LEN \
-    --generate_max_len 2048 \
+    --generate_max_len 3072 \
     --max_samples 1000000 \
     --loss_type $LOSS_TYPE \
     --use_adaptive_batch \
@@ -600,11 +641,12 @@ python -m openrlhf.cli.train_ppo_ray \
     --warmup_steps $WARMUP_STEPS \
     --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
     --attn_implementation "flex_attention" \
-    --length_penalty_start 5120 \
+    --length_penalty_start 6144 \
     --replace_discarded_prompts_ratio 2.0 \
     --enable_tool_calling_rewards \
     --freeze_router \
     --aux_loss_coef 0 \
+    --min_response_len 192 \
     $QUANT_FLAGS \
     $MODE_FLAGS \
     $OPTIONAL_FLAGS \

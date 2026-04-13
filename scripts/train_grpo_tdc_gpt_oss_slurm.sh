@@ -39,20 +39,30 @@
 #                                        # ROLLOUT and MINI, keeping ROLLOUT/MINI ratio constant across modes.
 #                                        # Reflects that colocated is synchronous and can afford more rollouts
 #                                        # before each update without the 1-step off-policy lag of async.
-#   COLO_EVAL_STEPS=32                   # Eval frequency (global steps) for colocated; distributed scales by ASYNC_ADVANTAGE
-#   TOOL_VERSION=v4                      # Tool schema version (default: v4)
-#   SMART_REPLAY=1                       # Enable smart replay with max_replay_rounds=2
+#   COLO_EVAL_STEPS=16                   # Eval frequency (global steps) for colocated; distributed scales by ASYNC_ADVANTAGE
+#   TOOL_VERSION=v10                     # Tool schema version (default: v10)
+#   SMART_REPLAY=1                       # Enable smart replay with max_replay_rounds=3
 #   CURRICULUM_BALANCED=1                # Enable curriculum-balanced sampling
+#   OVERSAMPLE_RATIO=2                   # Oversample ratio for dynamic filtering (default: 2)
+#   OVERSAMPLE_RATIO_START=1.75          # Optional linear-ramp start ratio (defaults to OVERSAMPLE_RATIO)
+#   OVERSAMPLE_RATIO_END=2.75            # Optional linear-ramp end ratio (defaults to OVERSAMPLE_RATIO)
+#   OVERSAMPLE_RATIO_RAMP_STEPS=100      # Optional ramp horizon in global steps (defaults to trainer max_steps)
 
 #   LIGER_GRPO_LOSS=1                    # Enable Liger fused GRPO loss
+#   LIGER_GRPO_BACKEND=triton             # Liger backend: triton (default) or chunked
+#   LOSS_TYPE=ppo                        # Loss type: ppo, dapo, bnpo, dr_grpo, gspo, cispo, sapo (controls ratio+reduction)
+#   LIGER_CHUNK_SIZE=1                   # Chunk size for chunked backend (1=max chunking)
 #   TIS=1                                # Enable Truncated Importance Sampling (off-policy correction)
 #   TIS_TYPE=tis                         # TIS variant: tis (default), icepop, seq-mask-tis
 #   TIS_THRESHOLDS="0.5 5.0"            # Low and high clamp thresholds (default: 0.5 5.0)
-#   GSPO=1                               # Use GSPO loss (sequence-level IS ratio) instead of PPO
 #   QAT=fp4_fake_quantize                 # QAT method (default: off). fp4_fake_quantize derives format from QUANT_METHOD
-#   KV_CACHE_DTYPE=fp8                   # KV cache dtype for vLLM (default: off, i.e. vLLM default auto)
-#   REDUCE_OPTIMIZER=adam_offload        # Optimizer: adam_offload (default) or adam_8bit
+#   KV_CACHE_DTYPE=fp8                   # KV cache dtype for vLLM (default: fp8)
+#   REDUCE_OPTIMIZER=adam_offload        # Optimizer: adam_offload (default), adam_8bit, or none
 #   MAX_EPOCHS=2                         # Training epochs (default: 1)
+#   USE_LORA=1                           # Enable LoRA (default: off); tweak LORA_RANK and LORA_ALPHA manually
+#   LORA_RANK=256                        # LoRA rank (default: 256, used when USE_LORA=1)
+#   LORA_ALPHA=512                       # LoRA alpha (default: 512, used when USE_LORA=1)
+#   UNSLOTH_MOE=1                        # Enable grouped GEMM MoE kernels (Triton A100+, grouped_mm H100+)
 #   EXTRA_ARGS="..."                     # Additional CLI flags
 #
 
@@ -62,12 +72,10 @@
 #SBATCH --error=logs/grpo-tdc-gptoss_%j.err
 #SBATCH --partition=dgx-b200
 #SBATCH --nodes=1
-#SBATCH --gpus=2
+#SBATCH --gpus=8
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=684G
-#SBATCH --gres-flags=enforce-binding
-#SBATCH --sockets-per-node=1
-#SBATCH --cpus-per-task=32
+#SBATCH --mem=1408G
+#SBATCH --cpus-per-task=112
 #SBATCH --time=00-8:00:00
 ### PARCC PARAMETERS ###
 export OMP_NUM_THREADS=16
@@ -97,8 +105,8 @@ if [ -n "$DEQUANT" ]; then
             exit 1
             ;;
     esac
-    CONDA_ENV_PATH="${CONDA_ENV_PATH:-/vast/projects/myatskar/design-documents/conda_env/openrlhf}"
-    CUDA_MODULE="${CUDA_MODULE:-cuda/12.8.1}"
+    CONDA_ENV_PATH="${CONDA_ENV_PATH:-/vast/projects/myatskar/design-documents/conda_env/openrlhf_nightly}"
+    CUDA_MODULE="${CUDA_MODULE:-cuda/13.1.0}"
 else
     # Quantized mode — FP4 QAT + weight sync
     case "$QUANT_METHOD" in
@@ -130,12 +138,20 @@ run_task() {
     QUANT_METHOD="${QUANT_METHOD:-mxfp4}"
     DEQUANT="${DEQUANT:-}"
 
+    VLLM_PRETRAIN="${VLLM_PRETRAIN:-}"
+
     if [ -n "$DEQUANT" ]; then
         case "$DEQUANT" in
             unsloth)
                 PRETRAIN_PATH="${PRETRAIN_PATH:-unsloth/gpt-oss-20b-BF16}"
-                QUANT_FLAGS=""
-                QUANT_LABEL="dequant-unsloth"
+                if [ -n "$VLLM_PRETRAIN" ]; then
+                    # Train BF16 actor, serve MXFP4 vLLM with on-the-fly quantized weight sync
+                    QUANT_FLAGS="--vllm_pretrain $VLLM_PRETRAIN --vllm_sync_fp4 mxfp4"
+                    QUANT_LABEL="dequant-unsloth-mxfp4sync"
+                else
+                    QUANT_FLAGS=""
+                    QUANT_LABEL="dequant-unsloth"
+                fi
                 ;;
             *)
                 echo "Error: DEQUANT must be 'unsloth', got '$DEQUANT'" >&2
@@ -171,52 +187,83 @@ run_task() {
     # Prevent corrupted torch inductor cache from crashing vLLM compilation.
     rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ ~/.cache/vllm/torch_compile_cache/ 2>/dev/null || true
 
+    # Force Triton for BF16/unquantized GPT-OSS MoE in vLLM by removing the
+    # FlashInfer FP16 MoE backends from auto-selection. Quantized FP4 paths use
+    # their own backend selectors and are unaffected by this flag.
+    VLLM_USE_FLASHINFER_MOE_FP16="${VLLM_USE_FLASHINFER_MOE_FP16:-0}"
+    export VLLM_USE_FLASHINFER_MOE_FP16
+    unset VLLM_FLASHINFER_MOE_BACKEND
+
     ### ARGS (override via env before sbatch) ###
     LEARNING_RATE="${LEARNING_RATE:-1e-6}"
     DEBUG_TRACES="${DEBUG_TRACES:-0}"
-    NUM_GPUS=$SLURM_GPUS_ON_NODE
+    NUM_GPUS="${SLURM_GPUS_ON_NODE:-}"
+    if [ -z "$NUM_GPUS" ] && [ -n "${SLURM_JOB_GPUS:-}" ]; then
+        NUM_GPUS=$(python3 - <<'PY'
+import os
+value = os.environ.get("SLURM_JOB_GPUS", "").strip()
+print(len([x for x in value.split(",") if x.strip()]) if value else 0)
+PY
+)
+    fi
+    if [ -z "$NUM_GPUS" ] || [ "$NUM_GPUS" = "0" ]; then
+        NUM_GPUS="$(nvidia-smi -L 2>/dev/null | wc -l)"
+    fi
 
     ### FEATURE FLAGS ###
     MODE="${MODE:-colocated}"
     EFFECTIVE_ROLLOUT_BATCH_SIZE="${EFFECTIVE_ROLLOUT_BATCH_SIZE:-8}"
     EFFECTIVE_MINI_GRADIENT_STEPS="${EFFECTIVE_MINI_GRADIENT_STEPS:-2}"
     ASYNC_ADVANTAGE="${ASYNC_ADVANTAGE:-4}"
-    TOOL_VERSION="${TOOL_VERSION:-v4}"
+    TOOL_VERSION="${TOOL_VERSION:-v10}"
     SMART_REPLAY="${SMART_REPLAY:-0}"
-    MAX_REPLAY_ROUNDS="${MAX_REPLAY_ROUNDS:-2}"
+    MAX_REPLAY_ROUNDS="${MAX_REPLAY_ROUNDS:-3}"
 
     LIGER_GRPO_LOSS="${LIGER_GRPO_LOSS:-0}"
+    LIGER_GRPO_BACKEND="${LIGER_GRPO_BACKEND:-triton}"
+    LOSS_TYPE="${LOSS_TYPE:-ppo}"
+    LIGER_CHUNK_SIZE="${LIGER_CHUNK_SIZE:-1}"
     CURRICULUM_BALANCED="${CURRICULUM_BALANCED:-0}"
+    OVERSAMPLE_RATIO="${OVERSAMPLE_RATIO:-2}"
+    OVERSAMPLE_RATIO_START="${OVERSAMPLE_RATIO_START:-1.75}"
+    OVERSAMPLE_RATIO_END="${OVERSAMPLE_RATIO_END:-2.75}"
+    OVERSAMPLE_RATIO_RAMP_STEPS="${OVERSAMPLE_RATIO_RAMP_STEPS:-100}"
     TIS="${TIS:-0}"
     TIS_TYPE="${TIS_TYPE:-tis}"
     TIS_THRESHOLDS="${TIS_THRESHOLDS:-0.5 5.0}"
-    GSPO="${GSPO:-0}"
     QAT="${QAT:-}"
-    KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-}"
+    KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-fp8}"
     REDUCE_OPTIMIZER="${REDUCE_OPTIMIZER:-adam_offload}"
     MAX_EPOCHS="${MAX_EPOCHS:-1}"
+    USE_LORA="${USE_LORA:-0}"
+    LORA_RANK="${LORA_RANK:-256}"
+    LORA_ALPHA="${LORA_ALPHA:-512}"
     VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-256}"
     VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
     EXTRA_ARGS="${EXTRA_ARGS:-}"
-    VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE="${VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE:-}"
+    VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE="${VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE:-1024}"
+    LENGTH_PENALTY_START="${LENGTH_PENALTY_START:-0}"
+
+    export TORCH_DYNAMO_CACHE_SIZE_LIMIT=1024
+    export TORCH_DYNAMO_RECOMPILE_LIMIT=1024
 
     ### UNIFIED CONSTANTS ###
     AGENT_MAX_STEPS=30
     ZERO_STAGE=2
-    PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-8192}"
-    N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-8}"
-    TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-4096}"
-    ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 2" | bc | awk '{print int($1)}')}"
+    PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-5120}"
+    N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-16}"
+    TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-8192}"
+    ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.5" | bc | awk '{print int($1)}')}"
 
-    COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-32}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
+    COLO_EVAL_STEPS="${COLO_EVAL_STEPS:-16}"  # Eval frequency for colocated; distributed multiplies by ASYNC_ADVANTAGE.
 
     ### MODE-DEPENDENT DEFAULTS ###
     if [ "$MODE" = "colocated" ]; then
         ACTOR_GPUS="${ACTOR_GPUS:-$NUM_GPUS}"
         VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
         ROLLOUT_BATCH_SIZE=$(( EFFECTIVE_ROLLOUT_BATCH_SIZE * ASYNC_ADVANTAGE ))
-        MINI_GRADIENT_STEPS=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
-        VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.7}"
+        MINI_GRADIENT_STEPS=$(( EFFECTIVE_MINI_GRADIENT_STEPS ))
+        VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.675}"
         VLLM_SYNC_BACKEND=nccl
         EVAL_STEPS="${EVAL_STEPS:-$COLO_EVAL_STEPS}"
     elif [ "$MODE" = "distributed" ]; then
@@ -247,21 +294,24 @@ run_task() {
     fi
 
     ### MODE FLAGS ###
+    OPTIMIZER_FLAG=""
+    if [ "$REDUCE_OPTIMIZER" != "none" ]; then
+        OPTIMIZER_FLAG="--$REDUCE_OPTIMIZER"
+    fi
+
     if [ "$MODE" = "colocated" ]; then
-        VLLM_SLEEP_LEVEL="${VLLM_SLEEP_LEVEL:-2}"
-        MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --vllm_sleep_level $VLLM_SLEEP_LEVEL --deepspeed_enable_sleep --$REDUCE_OPTIMIZER"
+        VLLM_SLEEP_LEVEL="${VLLM_SLEEP_LEVEL:-1}"
+        MODE_FLAGS="--colocate_all_models --vllm_enable_sleep --vllm_sleep_level $VLLM_SLEEP_LEVEL --deepspeed_enable_sleep $OPTIMIZER_FLAG"
     else
-        MODE_FLAGS="--async_train --async_queue_size 1 --$REDUCE_OPTIMIZER"
+        MODE_FLAGS="--async_train --async_queue_size 1 $OPTIMIZER_FLAG"
     fi
 
     ### WARMUP LOGIC ###
-    WARMUP_STEPS=10
-    WARM_STEPS_MULTIPLIER=$(( EFFECTIVE_MINI_GRADIENT_STEPS * ASYNC_ADVANTAGE ))
+    WARMUP_STEPS=8
+    WARM_STEPS_MULTIPLIER=$(( MINI_GRADIENT_STEPS ))
 
     ### MULTI-TASK ###
-    #TASK_NAMES=(${TASK_NAMES:-BBB_Martins})
-    #TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
-    TASK_NAMES=(BBB_Martins)
+    TASK_NAMES=(Bioavailability_Ma HIA_Hou PAMPA_NCATS Pgp_Broccatelli BBB_Martins CYP2C9_Substrate_CarbonMangels CYP2D6_Substrate_CarbonMangels CYP3A4_Substrate_CarbonMangels SARSCoV2_3CLPro_Diamond SARSCoV2_Vitro_Touret Carcinogens_Lagunin hERG ClinTox DILI Skin_Reaction AMES)
     TASK_LABEL="Base"
 
     ### W&B ###
@@ -281,7 +331,28 @@ run_task() {
     fi
 
     ### DATA ###
-    DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_gpt_oss"
+    if [ "$TOOL_VERSION" = "v11" ]; then
+        DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v11"
+    elif [ "$TOOL_VERSION" = "v12" ]; then
+        DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v12"
+    else
+        DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_gpt_oss"
+    fi
+    # Short tag derived from dataset dir name for run naming
+    DATA_DIR_BASENAME="$(basename "$DATA_DIR")"
+    case "$DATA_DIR_BASENAME" in
+        openai_format_enriched)          DATA_TAG="enr" ;;
+        openai_format_enriched_v7_tools) DATA_TAG="enr-v7t" ;;
+        openai_format_enriched_v6_tools) DATA_TAG="enr-v6t" ;;
+        openai_format_v6_encourage_tool_use) DATA_TAG="v6etu" ;;
+        openai_format_v7_tools)          DATA_TAG="v7t" ;;
+        openai_format_gpt_oss)           DATA_TAG="gptoss" ;;
+        openai_format_v11)               DATA_TAG="v11" ;;
+        openai_format_v12)               DATA_TAG="v12" ;;
+        prepended_tools_v6)              DATA_TAG="pre-v6" ;;
+        prepended_tools_v7)              DATA_TAG="pre-v7" ;;
+        *)                               DATA_TAG="${DATA_DIR_BASENAME#openai_format_}" ;;
+    esac
     mkdir -p "$PROJECT_ROOT/logs"
 
     TRAIN_PARTS=()
@@ -305,18 +376,18 @@ run_task() {
     # Build suffix tags for active features
     SUFFIX=""
     [ "$SMART_REPLAY" = "1" ] && SUFFIX+="-sr${MAX_REPLAY_ROUNDS}"
-    [ "$GSPO" = "1" ] && SUFFIX+="-gspo"
+    [ "$LOSS_TYPE" != "ppo" ] && SUFFIX+="-${LOSS_TYPE}"
     [ "$TIS" = "1" ] && SUFFIX+="-tis"
     [ "$USE_LORA" = "1" ] && SUFFIX+="-lora"
 
     if [ "$MODE" = "colocated" ]; then
         MODE_TAG="colo"
-        RUN_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
-        WANDB_GROUP="TDC-GPTOss-${QUANT_LABEL}-colo-$TASK_LABEL"
+        RUN_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-${DATA_TAG}-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
+        WANDB_GROUP="TDC-GPTOss-${QUANT_LABEL}-${DATA_TAG}-colo-$TASK_LABEL"
     else
         MODE_TAG="dist-${LAYOUT_TAG}"
-        RUN_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
-        WANDB_GROUP="TDC-GPTOss-${QUANT_LABEL}-dist-${LAYOUT_TAG}-$TASK_LABEL"
+        RUN_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-${DATA_TAG}-ep${MAX_EPOCHS}${SUFFIX}-${MODE_TAG}-${DATE_TAG}"
+        WANDB_GROUP="TDC-GPTOss-${QUANT_LABEL}-${DATA_TAG}-dist-${LAYOUT_TAG}-$TASK_LABEL"
     fi
     RUN_ID="${RUN_NAME}"
     HUB_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
@@ -376,6 +447,13 @@ run_task() {
     export VLLM_DISABLE_TELEMETRY=1
     export VLLM_ALLOW_INSECURE_SERIALIZATION=1  # vLLM v1 msgspec can't serialize torch.dtype; fall back to pickle
 
+    # Raise torch.compile recompile/cache limits for flex_attention.
+    # With adaptive batching, variable sequence lengths create many unique BlockMask
+    # shapes. The default limit (8) causes dynamo to fall back to eager, which breaks
+    # gradient checkpointing (recomputed tensors have different metadata).
+    export TORCH_DYNAMO_RECOMPILE_LIMIT=1024
+    export TORCH_DYNAMO_CACHE_SIZE_LIMIT=1024
+
     export OPENRLHF_MODEL_PATH="$PRETRAIN_PATH"
     export OPENRLHF_CHAT_PROTOCOL="$CHAT_PROTOCOL"
     export OPENRLHF_MAX_STEPS="$AGENT_MAX_STEPS"
@@ -383,6 +461,7 @@ run_task() {
     export OPENRLHF_DEBUG_LOGITS=0
     export OPENRLHF_DEBUG_NAN_GUARD=0
     export OPENRLHF_VRAM_AUDIT="${OPENRLHF_VRAM_AUDIT:-1}"
+    export OPENRLHF_SMILES_ERROR_LOG="$RUNS_DIR/smiles_errors.jsonl"
 
     ### RAY ###
     export RAY_NODE_IP_ADDRESS=$(hostname -I | awk '{print $1}')
@@ -392,17 +471,24 @@ run_task() {
     CONDA_RAY="$(which python) -m ray.scripts.scripts"
     echo "Using ray from: $(which python)"
 
+    # Clear any stale RAY_ADDRESS from the environment to prevent
+    # connecting to another user's cluster on shared nodes.
+    unset RAY_ADDRESS
+
     $CONDA_RAY stop --force 2>/dev/null || true
     rm -rf "$RAY_TMPDIR"/ray/session_* 2>/dev/null || true
 
-    echo "Starting Ray head node at $RAY_NODE_IP_ADDRESS"
+    # Use a unique port to avoid collisions with other users on the same node.
+    RAY_PORT=$(( 6379 + (RANDOM % 1000) ))
+    echo "Starting Ray head node at $RAY_NODE_IP_ADDRESS:$RAY_PORT"
     $CONDA_RAY start --head \
         --node-ip-address "$RAY_NODE_IP_ADDRESS" \
+        --port "$RAY_PORT" \
         --num-gpus "$NUM_GPUS" \
         --temp-dir "$RAY_TMPDIR"
 
     # Set explicit address immediately — avoids "multiple active Ray instances" from other users
-    export RAY_ADDRESS="$RAY_NODE_IP_ADDRESS:6379"
+    export RAY_ADDRESS="$RAY_NODE_IP_ADDRESS:$RAY_PORT"
 
     echo "Waiting for Ray..."
     RAY_READY=0
@@ -456,11 +542,17 @@ run_task() {
     echo "----------------------------------------"
     echo "Smart Replay: $SMART_REPLAY"
     echo "Curriculum Balanced: $CURRICULUM_BALANCED"
+    echo "Oversample Ratio: $OVERSAMPLE_RATIO"
+    if [ -n "$OVERSAMPLE_RATIO_START" ] || [ -n "$OVERSAMPLE_RATIO_END" ]; then
+        echo "Oversample Ramp: start=${OVERSAMPLE_RATIO_START:-$OVERSAMPLE_RATIO} end=${OVERSAMPLE_RATIO_END:-$OVERSAMPLE_RATIO} steps=${OVERSAMPLE_RATIO_RAMP_STEPS:-auto}"
+    fi
 
-    echo "Liger GRPO Loss: $LIGER_GRPO_LOSS"
+    echo "Loss Type: $LOSS_TYPE"
+    echo "Liger GRPO Loss: $LIGER_GRPO_LOSS (backend=$LIGER_GRPO_BACKEND, chunk_size=$LIGER_CHUNK_SIZE)"
+    echo "LoRA: USE_LORA=$USE_LORA (rank=$LORA_RANK, alpha=$LORA_ALPHA)"
     echo "TIS: $TIS (type=$TIS_TYPE, thresholds=$TIS_THRESHOLDS)"
-    echo "GSPO: $GSPO"
     echo "KV Cache Dtype: ${KV_CACHE_DTYPE:-auto}"
+    echo "VLLM_USE_FLASHINFER_MOE_FP16: $VLLM_USE_FLASHINFER_MOE_FP16"
     echo "VLLM_MAX_NUM_SEQS: $VLLM_MAX_NUM_SEQS"
     echo "VLLM_MAX_NUM_BATCHED_TOKENS: $VLLM_MAX_NUM_BATCHED_TOKENS"
     echo "Tool Version: $TOOL_VERSION"
@@ -499,15 +591,22 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
     if [ "$CURRICULUM_BALANCED" = "1" ]; then
         OPTIONAL_FLAGS+=" --curriculum_balanced"
     fi
+    OPTIONAL_FLAGS+=" --oversample_ratio $OVERSAMPLE_RATIO"
+    if [ -n "$OVERSAMPLE_RATIO_START" ]; then
+        OPTIONAL_FLAGS+=" --oversample_ratio_start $OVERSAMPLE_RATIO_START"
+    fi
+    if [ -n "$OVERSAMPLE_RATIO_END" ]; then
+        OPTIONAL_FLAGS+=" --oversample_ratio_end $OVERSAMPLE_RATIO_END"
+    fi
+    if [ -n "$OVERSAMPLE_RATIO_RAMP_STEPS" ]; then
+        OPTIONAL_FLAGS+=" --oversample_ratio_ramp_steps $OVERSAMPLE_RATIO_RAMP_STEPS"
+    fi
 
     if [ "$LIGER_GRPO_LOSS" = "1" ]; then
         OPTIONAL_FLAGS+=" --use_liger_grpo_loss"
     fi
     if [ "$TIS" = "1" ]; then
         OPTIONAL_FLAGS+=" --enable_vllm_is_correction --vllm_is_correction_type $TIS_TYPE --vllm_is_truncated_threshold $TIS_THRESHOLDS"
-    fi
-    if [ "$GSPO" = "1" ]; then
-        OPTIONAL_FLAGS+=" --policy_loss_type gspo"
     fi
     if [ -n "$QAT" ]; then
         OPTIONAL_FLAGS+=" --qat $QAT"
@@ -517,6 +616,29 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
     fi
     if [ -n "$VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE" ]; then
         OPTIONAL_FLAGS+=" --vllm_cudagraph_max_capture_size $VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE"
+    fi
+    if [ "$LENGTH_PENALTY_START" -gt 0 ]; then
+        OPTIONAL_FLAGS+=" --length_penalty_start $LENGTH_PENALTY_START"
+    fi
+    if [ "$USE_LORA" = "1" ]; then
+        OPTIONAL_FLAGS+=" --lora_rank $LORA_RANK --lora_alpha $LORA_ALPHA"
+    fi
+    if [ "${UNSLOTH_MOE:-0}" = "1" ]; then
+        OPTIONAL_FLAGS+=" --use_unsloth_moe_kernels"
+    fi
+    # KNN pseudo-labels for reversal tracking on tool-calling prompts that do not
+    # inline neighbor pseudo-labels. Generate with:
+    #   python scripts/build_knn_v10_pseudo_labels.py
+    #   python scripts/build_knn_v11_pseudo_labels.py
+    if [ -z "${KNN_PL_PATH:-}" ]; then
+        if [ "$TOOL_VERSION" = "v11" ] || [ "$TOOL_VERSION" = "v12" ]; then
+            KNN_PL_PATH="$PROJECT_ROOT/data/tdc/metadata/knn_v11_pseudo_labels.json"
+        else
+            KNN_PL_PATH="$PROJECT_ROOT/data/tdc/metadata/knn_v10_pseudo_labels.json"
+        fi
+    fi
+    if [ -f "$KNN_PL_PATH" ]; then
+        OPTIONAL_FLAGS+=" --knn_pseudo_labels_path $KNN_PL_PATH"
     fi
 
     ### RENAME SLURM LOGS ###
@@ -544,7 +666,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --advantage_estimator $ADVANTAGE_ESTIMATOR \
         --init_kl_coef 0 \
         --kl_estimator k1 \
-        --eps_clip_low_high 0.3 0.372 \
+        --eps_clip_low_high 0.2 0.272 \
         --remote_rm_url "$PROJECT_ROOT/openrlhf/utils/tdc_reward_model.py" \
         --save_hf_ckpt \
         --disable_ds_ckpt \
@@ -556,8 +678,12 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --rollout_batch_size $ROLLOUT_BATCH_SIZE \
         --num_episodes $MAX_EPOCHS \
         --prompt_max_len $PROMPT_MAX_LEN \
-        --generate_max_len 2048 \
+        --generate_max_len 3072 \
         --max_samples 1000000 \
+        --loss_type $LOSS_TYPE \
+        --use_adaptive_batch \
+        --train_max_tokens_per_gpu $TRAIN_MAX_TOKENS_PER_GPU \
+        --rollout_max_tokens_per_gpu $ROLLOUT_MAX_TOKENS_PER_GPU \
         --enable_prefix_caching \
         --zero_stage $ZERO_STAGE \
         --param_dtype bf16 \
@@ -576,8 +702,6 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --vllm_sync_backend $VLLM_SYNC_BACKEND \
         --top_p $TOP_P \
         --temperature $TEMPERATURE \
-        --lora_rank 64 \
-        --lora_alpha 64 \
         --agent_func_path "$AGENT_FUNC_PATH" \
         --agent_max_steps $AGENT_MAX_STEPS \
         --vllm_stop_strings "<|return|>" "<|call|>" \
@@ -594,10 +718,16 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --warmup_steps $WARMUP_STEPS \
         --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
         --attn_implementation "flex_attention" \
+        --length_penalty_start 6144 \
+        --replace_discarded_prompts_ratio 2.0 \
+        --enable_tool_calling_rewards \
+        --freeze_router \
+        --aux_loss_coef 0 \
         $QUANT_FLAGS \
         $MODE_FLAGS \
         $OPTIONAL_FLAGS \
-        $EXTRA_ARGS
+        $EXTRA_ARGS \
+        2>&1 | tee "$RUN_LOG"
 
     ### CLEANUP ###
     echo "Training complete! Stopping Ray..."

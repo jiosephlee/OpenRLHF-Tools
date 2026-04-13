@@ -4,9 +4,12 @@ Length Penalty Module for RLHF Training
 Two types of length penalty are supported:
 1. DAPO Overlong Penalty: Penalizes based on response length exceeding a threshold
 2. ProRL Stop Properly Penalty: Penalizes truncated samples (finish_reason == "length")
+3. Underlong Penalty: Penalizes responses shorter than a minimum response length
 """
 
 from typing import List
+
+import torch
 
 from openrlhf.utils.logging_utils import init_logger
 
@@ -44,6 +47,10 @@ def apply_overlong_penalty(
     for experience in experiences:
         response_lengths = experience.info["response_length"]
         batch_size = len(response_lengths)
+        overlong_penalties = experience.info.get(
+            "overlong_penalty",
+            torch.zeros_like(response_lengths, dtype=torch.float),
+        )
 
         for j in range(batch_size):
             valid_response_length = response_lengths[j].item()
@@ -53,7 +60,10 @@ def apply_overlong_penalty(
             if exceed_len > 0:
                 overlong_penalty = -exceed_len / overlong_buffer_len * overlong_penalty_factor
                 experience.rewards[j] += overlong_penalty
+                overlong_penalties[j] += float(overlong_penalty)
                 total_penalized += 1
+
+        experience.info["overlong_penalty"] = overlong_penalties
 
     return total_penalized
 
@@ -96,6 +106,57 @@ def apply_stop_properly_penalty(
     return total_truncated
 
 
+def apply_underlong_penalty(
+    experiences: List,
+    min_response_len: float,
+    underlong_penalty_factor: float = 1.0,
+) -> int:
+    """
+    Soft penalty for responses shorter than a minimum response length.
+
+    Penalizes responses with response_length < min_response_len.
+    Formula: penalty = -min(shortfall_len, min_response_len) / min_response_len * penalty_factor
+
+    This yields:
+    - 0 penalty at response_length == min_response_len
+    - linearly increasing penalty as responses get shorter
+    - maximum penalty of -underlong_penalty_factor at response_length == 0
+
+    Args:
+        experiences: List of Experience objects with rewards and info
+        min_response_len: Minimum desired response length
+        underlong_penalty_factor: Maximum penalty factor
+
+    Returns:
+        Number of samples that received penalty
+    """
+    assert min_response_len > 0, f"min_response_len must be > 0, got {min_response_len}"
+
+    total_penalized = 0
+
+    for experience in experiences:
+        response_lengths = experience.info["response_length"]
+        batch_size = len(response_lengths)
+        underlong_penalties = experience.info.get(
+            "underlong_penalty",
+            torch.zeros_like(response_lengths, dtype=torch.float),
+        )
+
+        for j in range(batch_size):
+            valid_response_length = response_lengths[j].item()
+            shortfall_len = min(min_response_len - valid_response_length, min_response_len)
+
+            if shortfall_len > 0:
+                underlong_penalty = -shortfall_len / min_response_len * underlong_penalty_factor
+                experience.rewards[j] += underlong_penalty
+                underlong_penalties[j] += float(underlong_penalty)
+                total_penalized += 1
+
+        experience.info["underlong_penalty"] = underlong_penalties
+
+    return total_penalized
+
+
 def apply_length_penalties(experiences: List, args) -> None:
     """
     Apply length penalties to experiences based on configuration.
@@ -103,6 +164,7 @@ def apply_length_penalties(experiences: List, args) -> None:
     Supports two types of penalties:
     1. DAPO Overlong Penalty (--overlong_buffer_len, --overlong_penalty_factor)
     2. ProRL Stop Properly Penalty (--stop_properly_penalty_coef)
+    3. Underlong Penalty (--min_response_len, --underlong_penalty_factor)
 
     Both can be enabled simultaneously.
 
@@ -110,6 +172,13 @@ def apply_length_penalties(experiences: List, args) -> None:
         experiences: List of Experience objects
         args: Training arguments containing penalty configuration
     """
+    # Some reward sources produce integer tensors (e.g. torch.tensor(1) from
+    # Python ints). Length penalties are fractional, so normalize to float once
+    # up front to avoid dtype cast errors during in-place updates.
+    for experience in experiences:
+        if isinstance(experience.rewards, torch.Tensor) and not torch.is_floating_point(experience.rewards):
+            experience.rewards = experience.rewards.float()
+
     total_samples = sum(len(exp.rewards) for exp in experiences)
 
     # DAPO-style overlong penalty based on response length
@@ -123,6 +192,18 @@ def apply_length_penalties(experiences: List, args) -> None:
         logger.info(
             f"[DAPO Overlong Penalty] {num_penalized}/{total_samples} samples penalized, "
             f"buffer_len={args.overlong_buffer_len}, factor={args.overlong_penalty_factor}"
+        )
+
+    # Soft underlength penalty based on response length
+    if getattr(args, "min_response_len", None) is not None:
+        num_penalized = apply_underlong_penalty(
+            experiences=experiences,
+            min_response_len=args.min_response_len,
+            underlong_penalty_factor=getattr(args, "underlong_penalty_factor", 1.0),
+        )
+        logger.info(
+            f"[Underlong Penalty] {num_penalized}/{total_samples} samples penalized, "
+            f"min_response_len={args.min_response_len}, factor={args.underlong_penalty_factor}"
         )
 
     # ProRL-style stop properly penalty based on finish_reason

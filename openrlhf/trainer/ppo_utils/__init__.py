@@ -1,5 +1,10 @@
 from .kl_controller import AdaptiveKLController, FixedKLController
-from .length_penalty import apply_length_penalties, apply_overlong_penalty, apply_stop_properly_penalty
+from .length_penalty import (
+    apply_length_penalties,
+    apply_overlong_penalty,
+    apply_stop_properly_penalty,
+    apply_underlong_penalty,
+)
 from .replay_buffer import NaiveReplayBuffer
 
 __all__ = [
@@ -9,4 +14,5 @@ __all__ = [
     "apply_length_penalties",
     "apply_overlong_penalty",
     "apply_stop_properly_penalty",
+    "apply_underlong_penalty",
 ]

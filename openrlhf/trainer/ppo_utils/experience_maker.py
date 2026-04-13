@@ -1,6 +1,6 @@
 import heapq
 import math
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime
 import json
 import os
@@ -26,17 +26,18 @@ from openrlhf.utils.utils import zero_pad_sequences
 
 logger = init_logger(__name__)
 
-_NEIGHBOR_TOOL_KEY_PREFIX = "tool_count__find_similar_molecules"
 _NEIGHBOR_TOOL_KEY_PREFIXES = (
     "tool_count__find_similar_molecules",
     "tool_count__get_similar_neighbors",
+    "tool_count__get_neighbors",
 )
-_MOLECULAR_INFO_TOOL_KEYS = {
+_MOLECULAR_INFO_TOOL_KEY_PREFIXES = (
     "tool_count__get_molecular_properties",
-}
-_KNN_REWARD_DELTA = 0.25
+    "tool_count__get_features",
+)
+_KNN_CORRECT_REVERSAL_BONUS = 0.5
 _PREPENDED_NEIGHBOR_CONTEXT_RE = re.compile(
-    r"(Nearest Neighbors from Training Set:|KNN Predicted Label:\s*\([AB]\)|pseudo label from naive Morgan fingerprint KNN prediction is \([AB]\))",
+    r"(Nearest Neighbors from Training Set:|Nearest Neighbors for task\s+'[^']+'\s+\(k=\d+\):|KNN Predicted Label:\s*\([AB]\)|pseudo label from naive Morgan fingerprint KNN prediction is \([AB]\))",
     re.IGNORECASE,
 )
 
@@ -67,32 +68,34 @@ def _apply_knn_reward_shaping(
 ) -> None:
     """Apply reward shaping based on correctness relative to KNN pseudo-label.
 
-    +0.25 if the sample is correct and reverses the KNN pseudo-label.
-    -0.25 if the sample is correct and agrees with the KNN pseudo-label.
+    +0.5 if the sample is correct and reverses the KNN pseudo-label.
     No shaping is applied when no KNN pseudo-label is available, neighbors were
-    not requested/available, or the sample is incorrect.
+    not requested/available, or the sample does not correctly reverse the KNN
+    pseudo-label.
     """
     if knn_pl is None or not requested_neighbors:
         return
 
     for response in responses:
         score_val = response.get("scores", None)
-        if score_val is None or float(score_val) <= 0:
+        if score_val is None:
             continue
 
+        is_correct = float(score_val) > 0
         true_answer = response.get("label", "")
         knn_agrees_with_truth = knn_pl in str(true_answer)
-        delta = -_KNN_REWARD_DELTA if knn_agrees_with_truth else _KNN_REWARD_DELTA
+        if not is_correct or knn_agrees_with_truth:
+            continue
+
+        delta = _KNN_CORRECT_REVERSAL_BONUS
+
         response["reward"] = float(response.get("reward", 0.0)) + delta
 
         extra_logs = response.setdefault("extra_logs", {})
         extra_logs["knn_reward_delta"] = extra_logs.get("knn_reward_delta", 0.0) + delta
-        if knn_agrees_with_truth:
-            extra_logs["knn_correct_stick"] = extra_logs.get("knn_correct_stick", 0) + 1
-        else:
-            extra_logs["knn_correct_reversal_bonus"] = (
-                extra_logs.get("knn_correct_reversal_bonus", 0) + 1
-            )
+        extra_logs["knn_correct_reversal_bonus"] = (
+            extra_logs.get("knn_correct_reversal_bonus", 0) + 1
+        )
 
 
 def _coerce_float(value: Any) -> float:
@@ -120,7 +123,7 @@ def _count_trace_tool_usage(response: dict) -> tuple[int, int, int]:
 
         total_tool_calls += int(count)
         unique_tool_calls += 1
-        if key in _MOLECULAR_INFO_TOOL_KEYS:
+        if any(key.startswith(prefix) for prefix in _MOLECULAR_INFO_TOOL_KEY_PREFIXES):
             molecular_info_calls += int(count)
         if any(key.startswith(prefix) for prefix in _NEIGHBOR_TOOL_KEY_PREFIXES):
             neighbor_calls += int(count)
@@ -430,6 +433,7 @@ class SamplesGenerator:
         self._missed_indices: set = set()
         self._step_missed_count = 0
         self._episode_missed_count = 0
+        self._step_oversample_ratio = float(getattr(self.args, "oversample_ratio", 1.0))
         # Store reference to original dataset for index lookups during replay.
         self._original_dataset = prompts_dataloader.dataset if prompts_dataloader is not None else None
         #### end oversampling ####
@@ -439,6 +443,33 @@ class SamplesGenerator:
         self.eval_traces_dir = os.path.join(self.runs_dir, "eval_traces")
         os.makedirs(self.eval_traces_dir, exist_ok=True)
         #### end easy/hard tracking ####
+
+    def _get_current_oversample_ratio(self, requested_ratio: float, global_step: Optional[int]) -> float:
+        """Return the active oversample ratio for this step.
+
+        When a start/end ramp is configured, interpolate linearly over
+        ``oversample_ratio_ramp_steps`` (or ``max_steps`` by default).
+        Otherwise return the requested static ratio unchanged.
+        """
+        start = getattr(self.args, "oversample_ratio_start", None)
+        end = getattr(self.args, "oversample_ratio_end", None)
+        if start is None and end is None:
+            return requested_ratio
+
+        if start is None:
+            start = requested_ratio
+        if end is None:
+            end = requested_ratio
+
+        ramp_steps = getattr(self.args, "oversample_ratio_ramp_steps", None)
+        if ramp_steps is None:
+            ramp_steps = getattr(self.args, "max_steps", None)
+        if ramp_steps is None or ramp_steps <= 1:
+            return float(end)
+
+        step = max(0, int(global_step or 0))
+        progress = min(step / max(ramp_steps - 1, 1), 1.0)
+        return float(start + (end - start) * progress)
 
     def _to_jsonable(self, value):
         if isinstance(value, torch.Tensor):
@@ -904,6 +935,23 @@ class SamplesGenerator:
     #### end oversampling ####
 
     @property
+    def step_effective_prompts_consumed(self) -> int:
+        """Prompts that actually completed filtering, excluding oversample cancellations."""
+        return max(self._step_prompts_consumed - self._step_missed_count, 0)
+
+    @property
+    def step_filter_pass_rate(self) -> float:
+        """Pass rate normalized to exclude prompts missed due to oversampling."""
+        effective_prompts = self.step_effective_prompts_consumed
+        if effective_prompts == 0:
+            return 0.0
+        return self.args.rollout_batch_size / effective_prompts * 100
+
+    @property
+    def step_oversample_ratio(self) -> float:
+        return self._step_oversample_ratio
+
+    @property
     def episode_filter_stats(self) -> dict:
         """Per-episode filtering stats for W&B logging."""
         return {
@@ -952,6 +1000,12 @@ class SamplesGenerator:
         oversample_ratio = generate_kwargs.pop(
             "oversample_ratio", getattr(self.args, "oversample_ratio", 1.0)
         )
+        if generate_kwargs.pop("_apply_oversample_ramp", True):
+            oversample_ratio = self._get_current_oversample_ratio(
+                oversample_ratio,
+                generate_kwargs.get("global_step", trace_step_idx),
+            )
+        self._step_oversample_ratio = float(oversample_ratio)
         #### end oversampling ####
         experiences, prompts_consumed, exhausted, prompt_groups, easy_ex, hard_ex = self._generate_vllm(
             dataloader_iter=self._dataloader_iter,
@@ -995,7 +1049,7 @@ class SamplesGenerator:
 
         filter_pass_rate = None
         if self.args.dynamic_filtering and prompts_consumed:
-            filter_pass_rate = self.args.rollout_batch_size / prompts_consumed * 100
+            filter_pass_rate = self.step_filter_pass_rate
 
         if exhausted:
             self._dataloader_iter = None
@@ -1067,6 +1121,7 @@ class SamplesGenerator:
         ref_to_dataset_idx = {ref: dataset_indices[i] for i, (ref, _) in enumerate(dispatches)}
         ref_to_datasource = {ref: ds_datasources[i] for i, (ref, _) in enumerate(dispatches)} if ds_datasources else {}
         ref_to_knn_pl = {ref: ds_knn_pseudo_labels[i] for i, (ref, _) in enumerate(dispatches)} if ds_knn_pseudo_labels else {}
+        ref_to_label = {ref: labels[i] for i, (ref, _) in enumerate(dispatches)}
         ref_to_prompt = {ref: prompts[i] for i, (ref, _) in enumerate(dispatches)}
         prompts_consumed += len(prompts)
 
@@ -1089,8 +1144,16 @@ class SamplesGenerator:
         step_hard_example = None
         #### end prompt group tracking ####
 
+        #### Oversample label bias tracking ####
+        bias_accepted_labels = []
+        bias_skipped_labels = []  # early-termination cancelled
+        bias_easy_labels = []     # filtered too-easy
+        bias_hard_labels = []     # filtered too-hard
+        #### end oversample label bias tracking ####
+
         #### KNN reversal tracking ####
         requested_neighbors_total = 0
+        processed_prompt_groups = 0  # prompt groups that actually returned (excludes cancelled)
         knn_total = 0       # prompts with KNN pseudo-label
         knn_reversed = 0    # model prediction != KNN pseudo-label
         knn_correct_reversal = 0   # reversed AND model got the right answer
@@ -1109,6 +1172,7 @@ class SamplesGenerator:
                 engine_idx = ref_to_engine.pop(ref)
                 ds_idx = ref_to_dataset_idx.pop(ref, None)
                 datasource = ref_to_datasource.pop(ref, None)
+                ref_label = ref_to_label.pop(ref, None)
                 prompt_text = ref_to_prompt.pop(ref, "")
                 engine_pending[engine_idx] -= 1
 
@@ -1116,6 +1180,7 @@ class SamplesGenerator:
 
                 # Build Experience objects for each vLLM response returned from this worker.
                 responses = ray.get(ref)
+                processed_prompt_groups += 1
                 total_episodes += len(responses)
                 total_traces += len(responses)
 
@@ -1209,6 +1274,8 @@ class SamplesGenerator:
                         # Too easy — drop; do NOT add to replay
                         filtered_count += 1
                         self._step_too_easy_count += 1
+                        if ref_label is not None:
+                            bias_easy_labels.append(ref_label)
                         self._episode_easy_count += 1
                         if ds_idx is not None:
                             self._discarded_easy_indices.add(ds_idx)
@@ -1229,6 +1296,8 @@ class SamplesGenerator:
                         # Too hard — queue index for replay
                         filtered_count += 1
                         self._step_too_hard_count += 1
+                        if ref_label is not None:
+                            bias_hard_labels.append(ref_label)
                         self._episode_hard_count += 1
                         if ds_idx is not None:
                             self._discarded_hard_indices.add(ds_idx)
@@ -1255,6 +1324,8 @@ class SamplesGenerator:
                 # Accept experiences and stop once enough have been gathered.
                 if experiences:
                     accepted_experiences.extend(experiences)
+                    if ref_label is not None:
+                        bias_accepted_labels.append(ref_label)
                     # Track per-prompt group size for variable-size ERL groups.
                     if not hasattr(self, "_current_step_group_sizes"):
                         self._current_step_group_sizes = []
@@ -1279,6 +1350,9 @@ class SamplesGenerator:
                                 self._missed_indices.add(missed_idx)
                                 self._step_missed_count += 1
                                 self._episode_missed_count += 1
+                            cancel_label = ref_to_label.get(cancel_ref)
+                            if cancel_label is not None:
+                                bias_skipped_labels.append(cancel_label)
                         logger.info(
                             f"[Oversample] Early termination: {accepted_prompt_groups} accepted, "
                             f"cancelled {len(cancelled_refs)} in-flight, "
@@ -1345,6 +1419,7 @@ class SamplesGenerator:
                             pending_refs.append(new_ref)
                             ref_to_engine[new_ref] = new_engine_idx
                             ref_to_dataset_idx[new_ref] = new_ds_indices[j]
+                            ref_to_label[new_ref] = new_labels[j]
                             if new_ds_datasources:
                                 ref_to_datasource[new_ref] = new_ds_datasources[j] if j < len(new_ds_datasources) else "unknown"
                             engine_pending[new_engine_idx] += 1
@@ -1365,8 +1440,8 @@ class SamplesGenerator:
 
         #### Store KNN stats for W&B logging ####
         self._step_knn_stats = {
-            "requested_neighbors_pct": (requested_neighbors_total / prompts_consumed * 100)
-            if prompts_consumed > 0
+            "requested_neighbors_pct": (requested_neighbors_total / processed_prompt_groups * 100)
+            if processed_prompt_groups > 0
             else None,
             "trace_total": total_traces,
             "trace_pct_at_least_2_unique_tools": two_unique_pct,
@@ -1379,10 +1454,21 @@ class SamplesGenerator:
             "knn_reversal_pct": (knn_reversed / knn_total * 100) if knn_total > 0 else None,
             "knn_correct_reversal_pct": (knn_correct_reversal / knn_total * 100) if knn_total > 0 else None,
             "knn_incorrect_reversal_pct": (knn_incorrect_reversal / knn_total * 100) if knn_total > 0 else None,
-            "knn_correct_stick_pct": (knn_correct_stick / knn_total * 100) if knn_total > 0 else None,
+            "knn_stick_pct": ((knn_correct_stick + knn_incorrect_stick) / knn_total * 100) if knn_total > 0 else None,
             "knn_incorrect_stick_pct": (knn_incorrect_stick / knn_total * 100) if knn_total > 0 else None,
         }
         #### end KNN stats ####
+
+        #### Oversample label bias: write per-step JSONL record ####
+        if getattr(self, "runs_dir", None):
+            try:
+                self._write_oversample_label_bias(
+                    step_idx, bias_accepted_labels, bias_skipped_labels,
+                    bias_easy_labels, bias_hard_labels,
+                )
+            except Exception as e:
+                logger.warning(f"[OversampleBias] Failed to write label bias record: {e}")
+        #### end oversample label bias ####
 
         if smart_replay and not exhausted_during_refill:
             logger.info(
@@ -1404,6 +1490,37 @@ class SamplesGenerator:
             #### end oversampling ####
 
         return accepted_experiences, prompts_consumed, exhausted, step_prompt_groups, step_easy_example, step_hard_example
+
+    @staticmethod
+    def _label_bias_stats(labels: list) -> dict:
+        """Compute majority-label percentage for a list of label strings."""
+        if not labels:
+            return {"count": 0, "majority_label": None, "majority_pct": None, "distribution": {}}
+        counts = Counter(labels)
+        majority_label, majority_count = counts.most_common(1)[0]
+        return {
+            "count": len(labels),
+            "majority_label": majority_label,
+            "majority_pct": round(majority_count / len(labels) * 100, 2),
+            "distribution": dict(counts),
+        }
+
+    def _write_oversample_label_bias(
+        self, step_idx: int,
+        accepted: list, skipped: list, easy: list, hard: list,
+    ):
+        """Append one JSONL record per step to oversample_label_bias.jsonl."""
+        bias_path = os.path.join(self.runs_dir, "oversample_label_bias.jsonl")
+        record = {
+            "global_step": step_idx,
+            "accepted": self._label_bias_stats(accepted),
+            "skipped_early_term": self._label_bias_stats(skipped),
+            "filtered_easy": self._label_bias_stats(easy),
+            "filtered_hard": self._label_bias_stats(hard),
+            "all_dispatched": self._label_bias_stats(accepted + skipped + easy + hard),
+        }
+        with open(bias_path, "a") as f:
+            f.write(json.dumps(record) + "\n")
 
     def _dispatch_prompts_to_vllm(self, prompts: List[str], labels: List[str], **generate_kwargs) -> List:
         """Send prompts to rollout executors and return Ray object refs."""
@@ -1494,8 +1611,15 @@ class SamplesGenerator:
             rollout_log_probs = None
 
         # Collect simple stats about lengths and clipping.
+        # For multi-turn tool use, action_mask can contain multiple disjoint
+        # assistant spans separated by tool-feedback tokens. Measuring from the
+        # first action token to the last would incorrectly count those tool
+        # outputs as part of the model response length. Use the mask sum so
+        # response_length tracks only generated assistant tokens, and keep the
+        # legacy span metric separately as completion_length.
+        response_length = action_tokens
         ones_indices = torch.where(action_mask)[0]
-        response_length = (ones_indices[-1] - ones_indices[0] + 1).item() if len(ones_indices) else 0
+        completion_length = (ones_indices[-1] - ones_indices[0] + 1).item() if len(ones_indices) else 0
         total_length = attention_mask.float().sum()
         is_clipped = total_length >= truncate_length
 
@@ -1504,6 +1628,7 @@ class SamplesGenerator:
 
         info = {
             "response_length": torch.tensor([response_length]),
+            "completion_length": torch.tensor([completion_length]),
             "total_length": torch.tensor([total_length]),
             "response_clip_ratio": torch.tensor([is_clipped]),
             "truncated": torch.tensor([is_truncated]),

@@ -188,8 +188,14 @@ def train(args):
     else:
         reward_model = None
 
+    eval_only = getattr(args, "eval_only", False)
+
     # Select trainer by mode
-    if args.async_train:
+    if eval_only:
+        if args.async_train:
+            print("[Warning] --eval_only ignores --async_train and uses the synchronous PPO trainer.")
+        from openrlhf.trainer.ppo_trainer import PPOTrainer
+    elif args.async_train:
         from openrlhf.trainer.ppo_trainer_async import PPOTrainerAsync as PPOTrainer
     else:
         from openrlhf.trainer.ppo_trainer import PPOTrainer
@@ -214,6 +220,8 @@ def train(args):
 
     # training update steps
     max_steps = ray.get(ppo_trainer.get_max_steps.remote())
+    if eval_only and max_steps == 0:
+        max_steps = 1
 
     # init actor/reference/reward model
     refs = []
@@ -231,6 +239,10 @@ def train(args):
         # TODO: use first reward model as critic model
         refs.extend(critic_model.async_init_model_from_pretrained(strategy, args.critic_pretrain, max_steps))
         ray.get(refs)
+
+    if eval_only:
+        ray.get(ppo_trainer.run_eval_only.remote())
+        return
 
     # train actor and critic model
     ray.get(ppo_trainer.fit.remote())
@@ -391,6 +403,13 @@ if __name__ == "__main__":
         default=False,
         help="Run only the initial step-0 evaluation (if eval_dataset is set) and exit. "
         "Useful for benchmarking evaluation speed and efficiency reports without running training.",
+    )
+    parser.add_argument(
+        "--eval_only",
+        action="store_true",
+        default=False,
+        help="Run evaluation only and exit without saving or pushing a checkpoint. "
+        "Unlike --skip_training, this does not continue into the post-fit save/upload path.",
     )
     parser.add_argument("--save_steps", type=int, default=-1)
     parser.add_argument("--logging_steps", type=int, default=1)
@@ -693,6 +712,18 @@ if __name__ == "__main__":
     )
     parser.add_argument("--overlong_penalty_factor", type=float, default=1, help="overlong penalty factor")
     parser.add_argument(
+        "--min_response_len",
+        type=float,
+        default=None,
+        help="Apply a soft penalty when response_length falls below this threshold.",
+    )
+    parser.add_argument(
+        "--underlong_penalty_factor",
+        type=float,
+        default=1,
+        help="Maximum penalty factor for underlength responses.",
+    )
+    parser.add_argument(
         "--stop_properly_penalty_coef",
         type=float,
         default=None,
@@ -733,7 +764,7 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="Enable format/parse shaping rewards for tool-calling turns. "
-        "When off (default), all tool-calling rewards (format_reward, parse_failed penalty) are zeroed.",
+        "When off (default), all tool-calling rewards (tool_calling_reward, parse_failed penalty) are zeroed.",
     )
     parser.add_argument(
         "--vllm_stop_strings",
@@ -794,12 +825,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--tool_version",
         type=str,
-        choices=["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10"],
+        choices=["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12"],
         default=None,
         help="Tool version for training (v1: RDKit+AccFG, v2: +salts, v3: +pKa/logD/ePSA, "
         "v4: +Haydn, v5: consolidated, v6: consolidated+KNN+metabolism, "
         "v7: v6+per-task similar neighbors, v8: +task-specific metabolism, "
-        "v9: +decision tree analysis, v10: consolidated molecular summary + task-specific neighbors)",
+        "v9: +decision tree analysis, v10: consolidated molecular summary + task-specific neighbors, "
+        "v11: generalized features + task-specific fingerprint neighbors, "
+        "v12: v11 with granular physicochemical property features)",
     )
 
     # wandb parameters
@@ -839,6 +872,27 @@ if __name__ == "__main__":
         default=1.5,
         help="Oversample ratio for Phase 1 of the LeftOverPrompts sweep. "
         "Phase 2 always uses 1.0 (no oversampling). Default 1.5.",
+    )
+    parser.add_argument(
+        "--oversample_ratio_start",
+        type=float,
+        default=None,
+        help="Optional starting oversample ratio for a linear ramp across training steps. "
+        "Defaults to --oversample_ratio when omitted.",
+    )
+    parser.add_argument(
+        "--oversample_ratio_end",
+        type=float,
+        default=None,
+        help="Optional final oversample ratio for a linear ramp across training steps. "
+        "Defaults to --oversample_ratio when omitted.",
+    )
+    parser.add_argument(
+        "--oversample_ratio_ramp_steps",
+        type=int,
+        default=None,
+        help="Number of global steps over which to linearly ramp oversample ratio. "
+        "Defaults to the trainer's computed max_steps when omitted.",
     )
     parser.add_argument(
         "--replace_discarded_prompts_ratio",
@@ -1039,6 +1093,11 @@ if __name__ == "__main__":
     if args.eval_dataset:
         assert args.remote_rm_url, "`--eval_dataset` is only supported with `--remote_rm_url`."
 
+    if args.eval_only:
+        assert args.eval_dataset, "`--eval_only` requires `--eval_dataset`."
+    elif not args.prompt_data:
+        raise ValueError("Training requires --prompt_data. Use --eval_only for eval-only runs.")
+
     if args.use_kl_loss:
         if args.kl_estimator not in ["k2", "k3"]:
             print(f"Recommend setting {args.kl_estimator} to 'k2' or 'k3' when using KL as a loss")
@@ -1054,6 +1113,20 @@ if __name__ == "__main__":
     assert args.oversample_ratio >= 1.0, f"--oversample_ratio must be >= 1.0, got {args.oversample_ratio}"
     if args.oversample_ratio > 1.0:
         assert args.dynamic_filtering, "--oversample_ratio > 1.0 requires --dynamic_filtering"
+    if args.oversample_ratio_start is not None:
+        assert args.oversample_ratio_start >= 1.0, (
+            f"--oversample_ratio_start must be >= 1.0, got {args.oversample_ratio_start}"
+        )
+    if args.oversample_ratio_end is not None:
+        assert args.oversample_ratio_end >= 1.0, (
+            f"--oversample_ratio_end must be >= 1.0, got {args.oversample_ratio_end}"
+        )
+    if args.oversample_ratio_start is not None or args.oversample_ratio_end is not None:
+        assert args.dynamic_filtering, "--oversample_ratio_start/--oversample_ratio_end require --dynamic_filtering"
+    if args.oversample_ratio_ramp_steps is not None:
+        assert args.oversample_ratio_ramp_steps > 0, (
+            f"--oversample_ratio_ramp_steps must be > 0, got {args.oversample_ratio_ramp_steps}"
+        )
     #### end oversample ratio validation ####
 
     if args.dynamic_filtering:

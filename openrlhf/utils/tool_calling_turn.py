@@ -22,6 +22,7 @@ from transformers import AutoTokenizer
 from openrlhf.utils.tool_versions import get_version
 from openrlhf.utils.agent import AgentInstanceBase, MultiTurnAgentExecutor
 from openrlhf.utils.chat_protocol import GLMFlashProtocol, GPTOSSProtocol, InternS1Protocol, Qwen3Protocol, Qwen3CoderProtocol
+from openrlhf.utils.tdc_reward_model import extract_final_answer
 
 
 # ---------------------------------------------------------------------------
@@ -186,13 +187,30 @@ class ToolCallingTurn(AgentInstanceBase):
         ver_cfg = get_version(tool_version)
         self.tools: Dict[str, Callable] = dict(ver_cfg["callables"])
 
+        # Task-aware minority-class bonus: alias → minority label.
+        # Keyed by the suffix in get_neighbors_<alias> tool names.
+        self._minority_label_by_alias: Dict[str, str] = {
+            "ames": "A", "bbb": "A", "bioavail": "A", "cyp3a4": "A",
+            "hia": "A", "pampa": "A", "pgp": "A", "skin": "A", "herg": "A",
+            "cyp2c9": "B", "cyp2d6": "B", "carcinogens": "B",
+            "clintox": "B", "dili": "B", "sarscov2_3cl": "B", "sarscov2_vitro": "B",
+        }
+        self._minority_label: Optional[str] = None  # set per-rollout in reset()
+
     # ------------------------------------------------------------------
     # AgentInstanceBase interface
     # ------------------------------------------------------------------
 
+    _NEIGHBOR_TOOL_RE = re.compile(r"get_neighbors_(\w+)")
+
     async def reset(self, states: Dict[str, Any], **kwargs) -> Dict[str, str]:
         """Passthrough — prompt is already chat-templated by preprocessing."""
-        return {"observation": states.get("observation", "")}
+        obs = states.get("observation", "")
+        # Detect task from the prompt's get_neighbors_<alias> tool definition
+        m = self._NEIGHBOR_TOOL_RE.search(obs)
+        if m:
+            self._minority_label = self._minority_label_by_alias.get(m.group(1))
+        return {"observation": obs}
 
     async def step(self, state_dict: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         """Parse tool calls, execute, return upstream-contract dict."""
@@ -231,33 +249,40 @@ class ToolCallingTurn(AgentInstanceBase):
             feedback = self.protocol.render_tool_feedback(tool_msgs)
             feedback_token_ids = self.protocol.render_tool_feedback_token_ids(tool_msgs)
 
-            #### small reward for well-formatted tool calls (harmony > regex > unparsed) ####
+            #### small tool-calling reward (parsed tool call > unparsed) ####
             # parse_method is only set by GPTOSSProtocol; None means a
             # non-GPT-OSS protocol parsed successfully — no bonus/penalty.
             parse_method = action.get("parse_method")
             if not self._enable_tool_calling_rewards:
-                format_reward = 0
+                tool_calling_reward = 0
             elif parse_method is None:
-                # Non-GPT-OSS protocol: no format shaping
-                format_reward = 0
-            elif parse_method == "primary":
-                # Best case: harmony token-ID parser succeeded on first try
-                format_reward = 0.1
-            elif parse_method == "fallback":
-                # Harmony succeeded after prepending assistant header — neutral
-                format_reward = 0.1
-            elif parse_method == "regex":
-                # Had to fall back to regex — mild penalty
-                format_reward = 0.1
+                # Non-GPT-OSS protocol: no tool-calling shaping
+                tool_calling_reward = 0
+            elif parse_method in ("primary", "fallback", "regex"):
+                # Per-call reward interpolated by feature selectivity:
+                # 1 feature → 0.1,  all 21 features → 0.05, linear interp.
+                tool_calling_reward = 0
+                for tc in tool_calls:
+                    args = tc.get("arguments", {})
+                    fn_list = args.get("feature_names")
+                    if fn_list is not None and isinstance(fn_list, list):
+                        n = max(1, min(len(fn_list), 21))
+                        # lerp: reward = 0.1 - 0.05 * (n - 1) / 20
+                        call_reward = 0.1 - 0.05 * (n - 1) / 20
+                    else:
+                        # Non-feature tool call (e.g. get_neighbors without features) → full 0.1
+                        call_reward = 0.1
+                    tool_calling_reward += call_reward
+                    extra_logs["tool_reward_per_call_last"] = round(call_reward, 4)
             else:
                 raise ValueError(f"Unknown parse method: {parse_method}")
-            extra_logs["format_reward"] = format_reward
-            #### end small reward for well-formatted tool calls ####
+            extra_logs["tool_calling_reward"] = tool_calling_reward
+            #### end small tool-calling reward ####
 
             return {
                 "environment_feedback": feedback,
                 "environment_feedback_token_ids": feedback_token_ids,
-                "rewards": torch.tensor(format_reward),
+                "rewards": torch.tensor(tool_calling_reward),
                 "done": False,
                 "scores": 0.0,
                 "extra_logs": extra_logs,
@@ -268,7 +293,7 @@ class ToolCallingTurn(AgentInstanceBase):
         parse_failed = action.get("parse_failed", False)
         if parse_failed:
             parse_penalty = 0 if self._enable_tool_calling_rewards else 0
-            base_logs["format_reward"] = parse_penalty
+            base_logs["tool_calling_reward"] = parse_penalty
             return {
                 "environment_feedback": "",
                 "rewards": torch.tensor(parse_penalty),
@@ -329,46 +354,22 @@ class ToolCallingTurn(AgentInstanceBase):
         return result, duration
 
     _ANSWER_RE = re.compile(r"Answer\s*:\s*\(?\s*([A-Za-z])\s*\)?")
-    _PAREN_ANSWER_RE = re.compile(r"\(\s*([A-Za-z])\s*\)")
 
     def _default_reward_fn(self, generated_text: str, label: Optional[str]) -> float:
-        """Default reward: 1.0 iff the model's Answer: (X) matches the label."""
+        """Default reward: 1.0 iff the model's Answer: (X) matches the label.
+
+        Adds a +0.1 minority-class bonus when the model correctly predicts
+        the minority label for this task (detected from the prompt's
+        get_neighbors_<alias> tool name in reset()).  This counteracts
+        majority-class collapse on imbalanced TDC tasks.
+        """
         if not label:
             return 0.0
 
-        # Prefer the post-think region when present; fall back to full text
-        # if the answer is inside the <think> block (common with Qwen3.5).
-        think_end = generated_text.find("</think>")
-        if think_end != -1:
-            answer_region = generated_text[think_end:]
-        else:
-            answer_region = generated_text
-
-        match = self._ANSWER_RE.search(answer_region)
-        # If nothing found in post-think region, search the full text
-        # (models like Qwen3.5 may place Answer: inside the <think> block).
-        if not match and think_end != -1:
-            match = self._ANSWER_RE.search(generated_text)
-        if match:
-            pred = match.group(1).upper()
-        else:
-            # GPT-OSS frequently emits bare "(A)"/"(B)" without "Answer:" prefix.
-            # Search post-think first, then fall back to full text.
-            search_regions = [answer_region] if think_end == -1 else [answer_region, generated_text]
-            pred = None
-            for region in search_regions:
-                paren_matches = self._PAREN_ANSWER_RE.findall(region)
-                if paren_matches:
-                    pred = paren_matches[-1].upper()
-                    break
-            if pred is None:
-                for region in search_regions:
-                    stripped = region.strip()
-                    if len(stripped) == 1 and stripped.isalpha():
-                        pred = stripped.upper()
-                        break
-            if pred is None:
-                return 0.0
+        predicted = extract_final_answer(generated_text)
+        if not predicted:
+            return 0.0
+        pred = predicted.strip().strip("()").upper()
 
         # Extract letter from label too (handles "A", "(A)", "Answer: (A)", etc.)
         label_match = self._ANSWER_RE.search(label)
@@ -378,7 +379,15 @@ class ToolCallingTurn(AgentInstanceBase):
             # Bare letter like "A" or "(A)"
             gold = label.strip().strip("()").upper()
 
-        return 1.0 if pred == gold else 0.0
+        if pred != gold:
+            return 0.0
+
+        # Correct prediction — add minority-class bonus when the gold
+        # label matches the task's minority class.
+        reward = 1.0
+        if self._minority_label and gold == self._minority_label:
+            reward += 0.1
+        return reward
 
 
 # ---------------------------------------------------------------------------

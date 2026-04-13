@@ -48,6 +48,7 @@ class GenerateSamplesActor:
 
         tokenizer = get_tokenizer(pretrain, None, "left", strategy, use_fast=not strategy.args.disable_fast_tokenizer)
         self.prompts_dataloader, self.eval_dataloader, self.max_steps = prepare_datasets(strategy, tokenizer)
+        strategy.args.max_steps = self.max_steps
         self.generate_kwargs = generate_kwargs
 
         self.samples_generator = SamplesGenerator(
@@ -148,6 +149,7 @@ class GenerateSamplesActor:
                     # Capture per-step filtering stats before they're reset by the next generate_samples call.
                     step_too_easy_pct = self.samples_generator.step_too_easy_pct
                     step_too_hard_pct = self.samples_generator.step_too_hard_pct
+                    step_missed_pct = self.samples_generator.step_missed_pct
                 finally:
                     ray.get(self.vllm_lock.release.remote())
 
@@ -158,7 +160,17 @@ class GenerateSamplesActor:
                         "total_consumed_prompts": total_consumed_prompts,
                         "data_loader_state_dict": self.prompts_dataloader.state_dict(),
                     }
-                    self.rollout_queue.put((rollout_samples, client_states, filter_pass_rate, step_too_easy_pct, step_too_hard_pct), block=True)
+                    self.rollout_queue.put(
+                        (
+                            rollout_samples,
+                            client_states,
+                            filter_pass_rate,
+                            step_too_easy_pct,
+                            step_too_hard_pct,
+                            step_missed_pct,
+                        ),
+                        block=True,
+                    )
                     if prompts_consumed:
                         pbar.update(prompts_consumed)
                 else:
@@ -216,6 +228,7 @@ class GenerateSamplesActor:
                     total_consumed_prompts += prompts_consumed
                     step_too_easy_pct = self.samples_generator.step_too_easy_pct
                     step_too_hard_pct = self.samples_generator.step_too_hard_pct
+                    step_missed_pct = self.samples_generator.step_missed_pct
                 finally:
                     ray.get(self.vllm_lock.release.remote())
 
@@ -226,8 +239,14 @@ class GenerateSamplesActor:
                         "data_loader_state_dict": {},  # ephemeral, not resumable
                     }
                     self.rollout_queue.put(
-                        (rollout_samples, client_states, filter_pass_rate,
-                         step_too_easy_pct, step_too_hard_pct),
+                        (
+                            rollout_samples,
+                            client_states,
+                            filter_pass_rate,
+                            step_too_easy_pct,
+                            step_too_hard_pct,
+                            step_missed_pct,
+                        ),
                         block=True,
                     )
                 else:
@@ -308,7 +327,14 @@ class TrainingActor(BasePPOTrainer):
             if payload == "done":
                 break
 
-            rollout_samples, client_states, filter_pass_rate, step_too_easy_pct, step_too_hard_pct = payload
+            (
+                rollout_samples,
+                client_states,
+                filter_pass_rate,
+                step_too_easy_pct,
+                step_too_hard_pct,
+                step_missed_pct,
+            ) = payload
 
             # Batch consumed => free one token to allow generator to produce next batch.
             self.rollout_slots.put(None, block=True)
@@ -319,6 +345,8 @@ class TrainingActor(BasePPOTrainer):
                 status["dynamic_filtering_pass_rate"] = filter_pass_rate
                 status["too_easy_pct"] = step_too_easy_pct
                 status["too_hard_pct"] = step_too_hard_pct
+            if getattr(self.args, "oversample_ratio", 1.0) > 1.0:
+                status["oversample/missed_pct"] = step_missed_pct
 
             log_status = {k: v for k, v in status.items() if k not in ["generated_samples"]}
             logger.info(f"✨ Global step {global_step}: {log_status}")

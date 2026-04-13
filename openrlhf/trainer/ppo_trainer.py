@@ -32,9 +32,13 @@ from openrlhf.utils.utils import get_tokenizer
 
 logger = init_logger(__name__)
 
-_NEIGHBOR_TOOL_KEY_PREFIX = "tool_count__find_similar_molecules"
+_NEIGHBOR_TOOL_KEY_PREFIXES = (
+    "tool_count__find_similar_molecules",
+    "tool_count__get_similar_neighbors",
+    "tool_count__get_neighbors",
+)
 _PREPENDED_NEIGHBOR_CONTEXT_RE = re.compile(
-    r"(Nearest Neighbors from Training Set:|KNN Predicted Label:\s*\([AB]\)|pseudo label from naive Morgan fingerprint KNN prediction is \([AB]\))",
+    r"(Nearest Neighbors from Training Set:|Nearest Neighbors for task\s+'[^']+'\s+\(k=\d+\):|KNN Predicted Label:\s*\([AB]\)|pseudo label from naive Morgan fingerprint KNN prediction is \([AB]\))",
     re.IGNORECASE,
 )
 
@@ -64,9 +68,16 @@ def _prompt_has_neighbor_context(prompt: str) -> bool:
     return bool(prompt and _PREPENDED_NEIGHBOR_CONTEXT_RE.search(prompt))
 
 
+def _tool_version_number(tool_version: Optional[str]) -> int:
+    if not tool_version:
+        return 0
+    match = re.search(r"(\d+)", str(tool_version))
+    return int(match.group(1)) if match else 0
+
+
 def _sample_requested_neighbors(sample, sample_idx: int) -> bool:
     for key, value in sample.info.items():
-        if not key.startswith(_NEIGHBOR_TOOL_KEY_PREFIX):
+        if not any(key.startswith(prefix) for prefix in _NEIGHBOR_TOOL_KEY_PREFIXES):
             continue
         try:
             tool_count = int(value.flatten()[sample_idx].item())
@@ -80,21 +91,25 @@ def _sample_requested_neighbors(sample, sample_idx: int) -> bool:
 def prepare_datasets(strategy, tokenizer):
     args = strategy.args
 
-    # prepare datasets
-    train_data = blending_datasets(
-        args.prompt_data,
-        args.prompt_data_probs,
-        strategy,
-        args.seed,
-        max_count=args.max_samples,
-        dataset_split=args.prompt_split,
-    )
+    prompts_dataloader = None
+    prompts_dataset = None
+    if getattr(args, "prompt_data", None):
+        train_data = blending_datasets(
+            args.prompt_data,
+            args.prompt_data_probs,
+            strategy,
+            args.seed,
+            max_count=args.max_samples,
+            dataset_split=args.prompt_split,
+        )
 
-    # Create train dataset
-    train_data = train_data.select(range(min(args.max_samples, len(train_data))))
-    prompts_dataset = PromptDataset(train_data, tokenizer, strategy, input_template=args.input_template)
-    shuffle = not getattr(args, "curriculum_balanced", False)
-    prompts_dataloader = strategy.setup_dataloader(prompts_dataset, 1, True, shuffle, prompts_dataset.collate_fn)
+        # Create train dataset
+        train_data = train_data.select(range(min(args.max_samples, len(train_data))))
+        prompts_dataset = PromptDataset(train_data, tokenizer, strategy, input_template=args.input_template)
+        shuffle = not getattr(args, "curriculum_balanced", False)
+        prompts_dataloader = strategy.setup_dataloader(prompts_dataset, 1, True, shuffle, prompts_dataset.collate_fn)
+    else:
+        logger.info("No prompt_data provided; skipping training dataset preparation.")
 
     # Create eval dataset if eval data exists
     if getattr(args, "eval_dataset", None):
@@ -110,9 +125,12 @@ def prepare_datasets(strategy, tokenizer):
     else:
         eval_dataloader = None
 
-    max_steps = (
-        len(prompts_dataset) * args.n_samples_per_prompt // args.train_batch_size * args.num_episodes * args.max_epochs
-    )
+    if prompts_dataset is None:
+        max_steps = 0
+    else:
+        max_steps = (
+            len(prompts_dataset) * args.n_samples_per_prompt // args.train_batch_size * args.num_episodes * args.max_epochs
+        )
     return prompts_dataloader, eval_dataloader, max_steps
 
 
@@ -358,6 +376,68 @@ class BasePPOTrainer(ABC):
             f"[eval] Wrote {len(records)} unparseable prediction traces to {json_path}"
         )
 
+    def _write_knn_eval_reversal_traces(self, global_step: int, traces_by_dataset: dict[str, list[dict]]) -> None:
+        """Persist a small sample of correct KNN reversals for offline inspection."""
+        if not traces_by_dataset:
+            return
+
+        run_dir = self.samples_generator.runs_dir
+        output_dir = os.path.join(run_dir, "knn_eval_reversals")
+        os.makedirs(output_dir, exist_ok=True)
+
+        payload = {
+            "global_step": global_step,
+            "per_dataset": traces_by_dataset,
+        }
+
+        json_path = os.path.join(output_dir, f"eval_step_{global_step}.json")
+        with open(json_path, "w") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False, default=str)
+
+        jsonl_path = os.path.join(output_dir, "history.jsonl")
+        with open(jsonl_path, "a") as f:
+            for datasource, records in traces_by_dataset.items():
+                for record in records:
+                    f.write(
+                        json.dumps(
+                            {"global_step": global_step, "datasource": datasource, **record},
+                            ensure_ascii=False,
+                            default=str,
+                        )
+                        + "\n"
+                    )
+
+        total_records = sum(len(records) for records in traces_by_dataset.values())
+        logger.info(
+            f"[knn_eval_reversals] Wrote {total_records} correct-reversal traces to {json_path}"
+        )
+
+    def _write_tool_heavy_eval_traces(self, global_step: int, records: list[dict]) -> None:
+        """Persist a small sample of v10+ eval traces that used many tools."""
+        if not records:
+            return
+
+        run_dir = self.samples_generator.runs_dir
+        output_dir = os.path.join(run_dir, "tool_heavy_eval")
+        os.makedirs(output_dir, exist_ok=True)
+
+        payload = {
+            "global_step": global_step,
+            "count": len(records),
+            "records": records,
+        }
+
+        json_path = os.path.join(output_dir, f"eval_step_{global_step}.json")
+        with open(json_path, "w") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False, default=str)
+
+        jsonl_path = os.path.join(output_dir, "history.jsonl")
+        with open(jsonl_path, "a") as f:
+            for record in records:
+                f.write(json.dumps({"global_step": global_step, **record}, ensure_ascii=False, default=str) + "\n")
+
+        logger.info(f"[tool_heavy_eval] Wrote {len(records)} traces to {json_path}")
+
     def _write_final_tool_usage_plot(self):
         history = getattr(self, "_eval_tool_usage_history", [])
         if not history:
@@ -526,6 +606,9 @@ class BasePPOTrainer(ABC):
                             "response_length": int(
                                 sample.info.get("response_length", torch.tensor([0])).flatten()[0].item()
                             ),
+                            "completion_length": int(
+                                sample.info.get("completion_length", torch.tensor([0])).flatten()[0].item()
+                            ),
                             "total_length": int(
                                 sample.info.get("total_length", torch.tensor([0])).flatten()[0].item()
                             ),
@@ -575,9 +658,66 @@ class BasePPOTrainer(ABC):
         knn_eval_incorrect_reversal = 0
         knn_eval_correct_stick = 0
         knn_eval_incorrect_stick = 0
+        knn_correct_reversal_traces = defaultdict(list)
+        tool_heavy_eval_records = []
+        collect_tool_heavy_traces = _tool_version_number(getattr(self.args, "tool_version", None)) >= 10
         for i in range(num_prompts):
             original_prompt = all_prompts[i * n_samples_per_prompt]
             knn_pl = prompt_to_knn_pl.get(original_prompt)
+            datasource = prompt_to_datasource.get(original_prompt, "unknown")
+            true_answer = all_labels[i * n_samples_per_prompt]
+            chunk_scores = scores[i]
+
+            if collect_tool_heavy_traces:
+                for j in range(n_samples_per_prompt):
+                    exp = samples_list[i * n_samples_per_prompt + j]
+                    tool_call_count = int(exp.info.get("tool_call_count", torch.tensor([0])).flatten()[0].item())
+                    if tool_call_count <= 2:
+                        continue
+                    if len(tool_heavy_eval_records) >= 10:
+                        break
+
+                    per_tool_counts = {}
+                    for key, value in exp.info.items():
+                        if not key.startswith("tool_count__"):
+                            continue
+                        try:
+                            tool_count = int(value.flatten()[0].item())
+                        except (AttributeError, IndexError, ValueError):
+                            continue
+                        if tool_count > 0:
+                            per_tool_counts[key[len("tool_count__") :]] = tool_count
+
+                    action_mask = exp.action_mask[0] if exp.action_mask is not None else None
+                    response_text = self._get_response_text(exp.sequences[0], action_mask)
+                    try:
+                        model_pred = _extract_tdc_binary_choice(response_text)
+                    except ValueError:
+                        model_pred = "UNPARSEABLE"
+
+                    tool_heavy_eval_records.append(
+                        {
+                            "datasource": datasource,
+                            "sample_index_within_prompt": j,
+                            "prompt": original_prompt,
+                            "true_label": true_answer,
+                            "model_pred": model_pred,
+                            "score": float(chunk_scores[j].item()),
+                            "tool_call_count": tool_call_count,
+                            "per_tool_counts": dict(sorted(per_tool_counts.items())),
+                            "response": response_text,
+                            "response_preview": response_text[:200],
+                            "response_length": int(
+                                exp.info.get("response_length", torch.tensor([0])).flatten()[0].item()
+                            ),
+                            "total_length": int(
+                                exp.info.get("total_length", torch.tensor([0])).flatten()[0].item()
+                            ),
+                        }
+                    )
+                if len(tool_heavy_eval_records) >= 10:
+                    collect_tool_heavy_traces = False
+
             if knn_pl is None:
                 continue
             sample_start = i * n_samples_per_prompt
@@ -588,8 +728,6 @@ class BasePPOTrainer(ABC):
             if not requested_neighbors:
                 continue
             knn_eval_total += 1
-            true_answer = all_labels[i * n_samples_per_prompt]
-            chunk_scores = scores[i]
             model_correct = chunk_scores.max().item() > 0
             knn_agrees_with_truth = knn_pl in str(true_answer)
             reversed_knn = model_correct != knn_agrees_with_truth
@@ -597,6 +735,38 @@ class BasePPOTrainer(ABC):
                 knn_eval_reversed += 1
                 if model_correct:
                     knn_eval_correct_reversal += 1
+                    if len(knn_correct_reversal_traces[datasource]) < 2:
+                        chosen_idx = next(
+                            (j for j in range(n_samples_per_prompt) if chunk_scores[j].item() > 0),
+                            chunk_scores.argmax().item(),
+                        )
+                        exp = samples_list[sample_start + chosen_idx]
+                        action_mask = exp.action_mask[0] if exp.action_mask is not None else None
+                        response_text = self._get_response_text(exp.sequences[0], action_mask)
+                        try:
+                            model_pred = _extract_tdc_binary_choice(response_text)
+                        except ValueError:
+                            model_pred = "UNPARSEABLE"
+                        knn_correct_reversal_traces[datasource].append(
+                            {
+                                "prompt": original_prompt,
+                                "true_label": _extract_tdc_binary_choice(true_answer),
+                                "knn_pseudo_label": str(knn_pl),
+                                "model_pred": model_pred,
+                                "response": response_text,
+                                "response_preview": response_text[:200],
+                                "requested_neighbors": requested_neighbors,
+                                "response_length": int(
+                                    exp.info.get("response_length", torch.tensor([0])).flatten()[0].item()
+                                ),
+                                "completion_length": int(
+                                    exp.info.get("completion_length", torch.tensor([0])).flatten()[0].item()
+                                ),
+                                "total_length": int(
+                                    exp.info.get("total_length", torch.tensor([0])).flatten()[0].item()
+                                ),
+                            }
+                        )
                 else:
                     knn_eval_incorrect_reversal += 1
             else:
@@ -611,6 +781,11 @@ class BasePPOTrainer(ABC):
             logs["knn_eval_correct_stick_pct"] = knn_eval_correct_stick / knn_eval_total * 100
             logs["knn_eval_incorrect_stick_pct"] = knn_eval_incorrect_stick / knn_eval_total * 100
             logs["knn_eval_total"] = knn_eval_total
+        self._write_knn_eval_reversal_traces(
+            global_step,
+            {ds: records for ds, records in sorted(knn_correct_reversal_traces.items()) if records},
+        )
+        self._write_tool_heavy_eval_traces(global_step, tool_heavy_eval_records)
         #### end KNN eval metrics ####
 
         # Log to wandb/tensorboard
@@ -722,6 +897,7 @@ class BasePPOTrainer(ABC):
             logger.info(
                 f"[trace] step={global_step} reward={sample0[1]:.3f} "
                 f"response_len={float(experiences[0].info['response_length'][0]):.0f} "
+                f"completion_len={float(experiences[0].info.get('completion_length', experiences[0].info['response_length'])[0]):.0f} "
                 f"total_len={float(experiences[0].info['total_length'][0]):.0f} "
                 f"preview={sample_preview!r}"
             )
@@ -1076,6 +1252,7 @@ class PPOTrainer(BasePPOTrainer):
         # Tokenizer is shared across the sample generator and trainer to avoid duplicated loads.
         tokenizer = get_tokenizer(pretrain, None, "left", strategy, use_fast=not strategy.args.disable_fast_tokenizer)
         self.prompts_dataloader, self.eval_dataloader, self.max_steps = prepare_datasets(strategy, tokenizer)
+        strategy.args.max_steps = self.max_steps
 
         # get eval and save steps
         if strategy.args.eval_steps == -1:
@@ -1107,6 +1284,38 @@ class PPOTrainer(BasePPOTrainer):
 
     def get_max_steps(self):
         return self.max_steps
+
+    def run_eval_only(self, global_step: int = 0) -> None:
+        if not self.eval_dataloader:
+            raise ValueError("eval_only requires --eval_dataset.")
+
+        checkpoint_states = self.init_checkpoint_states()
+        if checkpoint_states["global_step"] > 0:
+            global_step = checkpoint_states["global_step"]
+            state_dict = checkpoint_states["data_loader_state_dict"]
+            if state_dict and self.prompts_dataloader is not None:
+                self.prompts_dataloader.load_state_dict(state_dict)
+
+        # Make eval-only use the actor as the source of truth for vLLM weights.
+        # This is required for PEFT/LoRA adapter repos where vLLM may be
+        # initialized from the base model via --vllm_pretrain.
+        self.broadcast_to_vllm()
+
+        eval_generate_kwargs = self.generate_kwargs.copy()
+        eval_generate_kwargs["temperature"] = self.args.eval_temperature
+        eval_generate_kwargs["n_samples_per_prompt"] = self.args.eval_n_samples_per_prompt
+
+        logger.info("Running eval-only pass.")
+        self.evaluate(global_step, **eval_generate_kwargs)
+
+        self.samples_generator.flush_timeseries_to_disk(global_step=global_step)
+        self._write_run_summary(global_step)
+        self._write_scheduler_timeseries_plot()
+        self._write_final_tool_usage_plot()
+        if self.wandb_logger:
+            self.wandb_logger.close()
+        if self.tensorboard_logger:
+            self.tensorboard_logger.close()
 
     #### Oversampling: LeftOverPrompts phase ####
     def _run_leftover_phase(self, episode: int, global_step: int, total_consumed_prompts: int) -> int:
@@ -1180,6 +1389,7 @@ class PPOTrainer(BasePPOTrainer):
                 self.samples_generator.generate_samples(
                     global_step=global_step, log_step_trace=log_step_trace,
                     oversample_ratio=oversample_ratio,
+                    _apply_oversample_ramp=False,
                     _skip_clear_replay=True,  # preserve replay indices
                     **self.generate_kwargs,
                 )
@@ -1189,6 +1399,17 @@ class PPOTrainer(BasePPOTrainer):
             if is_exhausted:
                 if rollout_samples:
                     status, global_step = self.train_step(rollout_samples, global_step)
+                    if self.args.dynamic_filtering:
+                        status["dynamic_filtering_pass_rate"] = filter_pass_rate
+                        status["too_easy_pct"] = self.samples_generator.step_too_easy_pct
+                        status["too_hard_pct"] = self.samples_generator.step_too_hard_pct
+                        status["oversample_ratio"] = self.samples_generator.step_oversample_ratio
+                    if (
+                        getattr(self.args, "oversample_ratio", 1.0) > 1.0
+                        or getattr(self.args, "oversample_ratio_start", None) is not None
+                        or getattr(self.args, "oversample_ratio_end", None) is not None
+                    ):
+                        status["oversample/missed_pct"] = self.samples_generator.step_missed_pct
                     log_status = {k: v for k, v in status.items() if k not in ["generated_samples"]}
                     logger.info(f"✨ Global step {global_step} [{phase_tag}-partial]: {log_status}")
                     client_states = {
@@ -1205,6 +1426,15 @@ class PPOTrainer(BasePPOTrainer):
             status, global_step = self.train_step(rollout_samples, global_step)
             if self.args.dynamic_filtering:
                 status["dynamic_filtering_pass_rate"] = filter_pass_rate
+                status["too_easy_pct"] = self.samples_generator.step_too_easy_pct
+                status["too_hard_pct"] = self.samples_generator.step_too_hard_pct
+                status["oversample_ratio"] = self.samples_generator.step_oversample_ratio
+            if (
+                getattr(self.args, "oversample_ratio", 1.0) > 1.0
+                or getattr(self.args, "oversample_ratio_start", None) is not None
+                or getattr(self.args, "oversample_ratio_end", None) is not None
+            ):
+                status["oversample/missed_pct"] = self.samples_generator.step_missed_pct
             status[f"leftover/phase"] = 1 if "p1" in phase_tag else 2
 
             log_status = {k: v for k, v in status.items() if k not in ["generated_samples"]}
@@ -1295,6 +1525,15 @@ class PPOTrainer(BasePPOTrainer):
                 status, global_step = self.train_step(rollout_samples, global_step)
                 if self.args.dynamic_filtering:
                     status["dynamic_filtering_pass_rate"] = filter_pass_rate
+                    status["too_easy_pct"] = self.samples_generator.step_too_easy_pct
+                    status["too_hard_pct"] = self.samples_generator.step_too_hard_pct
+                    status["oversample_ratio"] = self.samples_generator.step_oversample_ratio
+                if (
+                    getattr(self.args, "oversample_ratio", 1.0) > 1.0
+                    or getattr(self.args, "oversample_ratio_start", None) is not None
+                    or getattr(self.args, "oversample_ratio_end", None) is not None
+                ):
+                    status["oversample/missed_pct"] = self.samples_generator.step_missed_pct
                 status["replay/round"] = replay_round + 1
 
                 log_status = {k: v for k, v in status.items() if k not in ["generated_samples"]}
@@ -1641,10 +1880,12 @@ class PPOTrainer(BasePPOTrainer):
         if global_step:
             self.broadcast_to_vllm()
             state_dict = checkpoint_states["data_loader_state_dict"]
-            if state_dict:
+            if state_dict and self.prompts_dataloader is not None:
                 self.prompts_dataloader.load_state_dict(state_dict)
 
         # Log dataloader ordering for validation before training begins.
+        if self.prompts_dataloader is None:
+            raise ValueError("Training requires --prompt_data.")
         self._log_dataloader_order()
 
         # Evaluate at step 0 (before any training) unless resuming from a checkpoint.
@@ -1708,6 +1949,17 @@ class PPOTrainer(BasePPOTrainer):
                         status, global_step = self.train_step(rollout_samples, global_step)
                         train_wall_sec = time.time() - train_start_time
                         last_train_end_time = time.time()
+                        if self.args.dynamic_filtering:
+                            status["dynamic_filtering_pass_rate"] = filter_pass_rate
+                            status["too_easy_pct"] = self.samples_generator.step_too_easy_pct
+                            status["too_hard_pct"] = self.samples_generator.step_too_hard_pct
+                            status["oversample_ratio"] = self.samples_generator.step_oversample_ratio
+                        if (
+                            getattr(self.args, "oversample_ratio", 1.0) > 1.0
+                            or getattr(self.args, "oversample_ratio_start", None) is not None
+                            or getattr(self.args, "oversample_ratio_end", None) is not None
+                        ):
+                            status["oversample/missed_pct"] = self.samples_generator.step_missed_pct
                         log_status = {k: v for k, v in status.items() if k not in ["generated_samples"]}
                         logger.info(f"✨ Global step {global_step} [partial-batch]: {log_status}")
                         client_states = {
@@ -1734,10 +1986,14 @@ class PPOTrainer(BasePPOTrainer):
                     status["dynamic_filtering_pass_rate"] = filter_pass_rate
                     status["too_easy_pct"] = self.samples_generator.step_too_easy_pct
                     status["too_hard_pct"] = self.samples_generator.step_too_hard_pct
+                    status["oversample_ratio"] = self.samples_generator.step_oversample_ratio
 
                 #### Oversampling: telemetry ####
-                if getattr(self.args, "oversample_ratio", 1.0) > 1.0:
-                    status["oversample/missed_count"] = self.samples_generator._step_missed_count
+                if (
+                    getattr(self.args, "oversample_ratio", 1.0) > 1.0
+                    or getattr(self.args, "oversample_ratio_start", None) is not None
+                    or getattr(self.args, "oversample_ratio_end", None) is not None
+                ):
                     status["oversample/missed_pct"] = self.samples_generator.step_missed_pct
                 #### end oversampling ####
 

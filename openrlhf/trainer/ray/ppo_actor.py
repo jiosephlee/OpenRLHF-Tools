@@ -342,6 +342,7 @@ class ActorPPOTrainer(ABC):
                     "reward": status["reward"],
                     "return": status["return"],
                     "gen_len": status["response_length"],
+                    "comp_len": status.get("completion_length", status["response_length"]),
                     "tot_len": status["total_length"],
                     "kl": status["kl"],
                     "act_lr": status["actor_lr"],
@@ -771,6 +772,7 @@ class ActorPPOTrainer(ABC):
 class PolicyModelActor(BaseModelActor):
     def init_model_from_pretrained(self, strategy: DeepspeedStrategy, pretrain, max_steps=None, vllm_engines=None):
         args = strategy.args
+        eval_only = getattr(args, "eval_only", False)
         self.save_hf_ckpt = args.save_hf_ckpt
         self.disable_ds_ckpt = args.disable_ds_ckpt
         self.vllm_engines = vllm_engines
@@ -869,40 +871,45 @@ class PolicyModelActor(BaseModelActor):
         else:
             ema_model = None
 
-        # configure optimizer
-        actor_optim = strategy.create_optimizer(
-            actor, lr=args.actor_learning_rate, betas=strategy.args.adam_betas, weight_decay=args.l2
-        )
+        actor_optim = None
+        actor_scheduler = None
+        if not eval_only:
+            # configure optimizer
+            actor_optim = strategy.create_optimizer(
+                actor, lr=args.actor_learning_rate, betas=strategy.args.adam_betas, weight_decay=args.l2
+            )
 
-        # The scheduler is stepped once per optimizer step inside ppo_train().
-        # With dynamic batch (or without), each ppo_train() call runs
-        # (rollout_batch_size * n_samples_per_prompt / train_batch_size) optimizer steps,
-        # but only 1 global_step is logged. So total scheduler steps = max_steps * steps_per_ppo_train.
-        steps_per_ppo_train = max(1, args.rollout_batch_size * args.n_samples_per_prompt // args.train_batch_size)
-        total_scheduler_steps = max_steps * steps_per_ppo_train
+            # The scheduler is stepped once per optimizer step inside ppo_train().
+            # With dynamic batch (or without), each ppo_train() call runs
+            # (rollout_batch_size * n_samples_per_prompt / train_batch_size) optimizer steps,
+            # but only 1 global_step is logged. So total scheduler steps = max_steps * steps_per_ppo_train.
+            steps_per_ppo_train = max(1, args.rollout_batch_size * args.n_samples_per_prompt // args.train_batch_size)
+            total_scheduler_steps = max_steps * steps_per_ppo_train
 
-        warmup_multiplier = getattr(args, "warm_steps_multiplier_for_correction", steps_per_ppo_train)
-        raw_warmup = getattr(args, "warmup_steps", None)
-        if raw_warmup:
-            # warmup_steps is in global-step (outer) units; multiply by correction factor for scheduler steps
-            num_warmup_steps = int(raw_warmup * warmup_multiplier)
+            warmup_multiplier = getattr(args, "warm_steps_multiplier_for_correction", steps_per_ppo_train)
+            raw_warmup = getattr(args, "warmup_steps", None)
+            if raw_warmup:
+                # warmup_steps is in global-step (outer) units; multiply by correction factor for scheduler steps
+                num_warmup_steps = int(raw_warmup * warmup_multiplier)
+            else:
+                num_warmup_steps = math.ceil(total_scheduler_steps * args.lr_warmup_ratio)
+
+            strategy.print(
+                f"[Scheduler] lr_scheduler={args.lr_scheduler}, "
+                f"outer_max_steps={max_steps}, steps_per_ppo_train={steps_per_ppo_train}, "
+                f"total_scheduler_steps={total_scheduler_steps}, "
+                f"warm_steps_multiplier={warmup_multiplier}, "
+                f"num_warmup_steps={num_warmup_steps} ({raw_warmup or num_warmup_steps // steps_per_ppo_train} global steps)"
+            )
+            actor_scheduler = get_scheduler(
+                args.lr_scheduler,
+                actor_optim,
+                num_warmup_steps=num_warmup_steps,
+                num_training_steps=total_scheduler_steps,
+                scheduler_specific_kwargs={"min_lr": args.actor_learning_rate * 0.1},
+            )
         else:
-            num_warmup_steps = math.ceil(total_scheduler_steps * args.lr_warmup_ratio)
-
-        strategy.print(
-            f"[Scheduler] lr_scheduler={args.lr_scheduler}, "
-            f"outer_max_steps={max_steps}, steps_per_ppo_train={steps_per_ppo_train}, "
-            f"total_scheduler_steps={total_scheduler_steps}, "
-            f"warm_steps_multiplier={warmup_multiplier}, "
-            f"num_warmup_steps={num_warmup_steps} ({raw_warmup or num_warmup_steps // steps_per_ppo_train} global steps)"
-        )
-        actor_scheduler = get_scheduler(
-            args.lr_scheduler,
-            actor_optim,
-            num_warmup_steps=num_warmup_steps,
-            num_training_steps=total_scheduler_steps,
-            scheduler_specific_kwargs={"min_lr": args.actor_learning_rate * 0.1},
-        )
+            strategy.print("[eval_only] Skipping actor optimizer/scheduler initialization.")
 
         if args.gradient_checkpointing:
             actor.gradient_checkpointing_enable(
@@ -910,10 +917,15 @@ class PolicyModelActor(BaseModelActor):
             )
 
         # prepare models/optimizers...
-        self.actor, self.actor_optim, self.actor_scheduler = strategy.prepare(
-            (actor, actor_optim, actor_scheduler),
-            is_rlhf=True,
-        )
+        if eval_only:
+            self.actor = strategy.prepare(actor, is_rlhf=True)
+            self.actor_optim = None
+            self.actor_scheduler = None
+        else:
+            self.actor, self.actor_optim, self.actor_scheduler = strategy.prepare(
+                (actor, actor_optim, actor_scheduler),
+                is_rlhf=True,
+            )
 
         if ema_model:
             ema_model._offload = True

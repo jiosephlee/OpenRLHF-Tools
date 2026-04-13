@@ -177,13 +177,13 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
         if total_calls > 0 and "tool_time_total" in extra_logs:
             extra_logs["tool_time_avg"] = extra_logs["tool_time_total"] / total_calls
 
-        # Cap the total format reward to 0.01 to prevent linear buildup.
-        if "format_reward" in extra_logs:
-            format_reward = extra_logs["format_reward"]
-            if format_reward > 0.3:
-                excess = format_reward - 0.3
+        # Cap the total tool-calling reward to 0.3 to prevent linear buildup.
+        if "tool_calling_reward" in extra_logs:
+            tool_calling_reward = extra_logs["tool_calling_reward"]
+            if tool_calling_reward > 0.3:
+                excess = tool_calling_reward - 0.3
                 total_reward -= excess
-                extra_logs["format_reward"] = 0.3
+                extra_logs["tool_calling_reward"] = 0.3
 
         # DAPO-style overlong reward shaping: R_length ramps from 0 at length_penalty_start to -1 at max_length, clamped at -1
         if self.length_penalty_start > 0:

@@ -7,6 +7,7 @@ This module provides:
 - Extensible design for adding new protocols (Qwen3, Claude, etc.)
 """
 
+import os
 import re
 import json
 import importlib
@@ -16,6 +17,23 @@ from typing import Any, Dict, List, Optional
 from openrlhf.utils.logging_utils import init_logger
 
 logger = init_logger(__name__)
+
+_HARMONY_ENCODING = None
+
+
+def _get_harmony_encoding():
+    """Load the Harmony encoder once per process.
+
+    Tool-calling rollouts can render thousands of tool feedback messages per
+    training run. Re-importing and re-loading the encoder on every turn adds
+    avoidable Python overhead on the hot path.
+    """
+    global _HARMONY_ENCODING
+    if _HARMONY_ENCODING is None:
+        from openai_harmony import HarmonyEncodingName, load_harmony_encoding
+
+        _HARMONY_ENCODING = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+    return _HARMONY_ENCODING
 
 
 class ChatProtocol(ABC):
@@ -747,37 +765,39 @@ class GPTOSSProtocol(ChatProtocol):
         return feedback
 
     def render_tool_feedback_token_ids(self, tool_results: List[Dict[str, str]]) -> Optional[List[int]]:
-        """Canonical token IDs for tool feedback via harmony encoder.
+        """Token IDs for tool feedback.
 
-        Uses ``openai_harmony``'s ``encoding.render(msg)`` to produce the exact
-        token IDs the model was trained with, avoiding the lossy text → HF
-        tokenize round-trip for special tokens like ``<|start|>``, ``<|end|>``.
+        Default to the Hugging Face tokenizer path. We observed Ray worker
+        crashes from the Rust ``tiktoken`` stack used by ``openai_harmony``
+        during GPT-OSS rollout feedback rendering. The cached GPT-OSS HF
+        tokenizer already encodes the harmony special tokens correctly, so
+        using it here is the safer training default.
+
+        Set ``OPENRLHF_USE_HARMONY_FEEDBACK_IDS=1`` to opt back into the
+        harmony renderer for comparison/debugging.
         """
-        from openai_harmony import (
-            load_harmony_encoding,
-            HarmonyEncodingName,
-            Role,
-            Author,
-            Message,
-        )
+        if os.environ.get("OPENRLHF_USE_HARMONY_FEEDBACK_IDS") == "1":
+            from openai_harmony import Author, Message, Role
 
-        encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+            encoding = _get_harmony_encoding()
 
-        token_ids: List[int] = []
-        for tr in tool_results:
-            msg = (
-                Message.from_author_and_content(
-                    Author.new(Role.TOOL, f"functions.{tr['name']}"),
-                    tr["content"],
+            token_ids: List[int] = []
+            for tr in tool_results:
+                msg = (
+                    Message.from_author_and_content(
+                        Author.new(Role.TOOL, f"functions.{tr['name']}"),
+                        tr["content"],
+                    )
+                    .with_channel("commentary")
+                    .with_recipient("assistant")
                 )
-                .with_channel("commentary")
-                .with_recipient("assistant")
-            )
-            token_ids.extend(encoding.render(msg))
+                token_ids.extend(encoding.render(msg))
 
-        # Append <|start|>assistant generation prompt
-        token_ids.extend(self._assistant_header_ids)
-        return token_ids
+            token_ids.extend(self._assistant_header_ids)
+            return token_ids
+
+        feedback_text = self.render_tool_feedback(tool_results)
+        return self.tokenizer.encode(feedback_text, add_special_tokens=False)
 
 
 # Export public API

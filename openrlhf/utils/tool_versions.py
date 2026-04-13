@@ -363,6 +363,16 @@ from openrlhf.tools.therapeutic_tools import (
     GET_MOLECULAR_PROPERTIES_TOOL as _GET_MOLECULAR_PROPERTIES_SCHEMA,
     V10_TASK_NEIGHBOR_TOOL_SCHEMAS as _V10_TASK_NEIGHBOR_TOOL_SCHEMAS,
     V10_TASK_NEIGHBOR_CALLABLES as _V10_TASK_NEIGHBOR_CALLABLES,
+    GET_FEATURES_TOOL as _GET_FEATURES_SCHEMA,
+    GET_NEIGHBORS_TOOL as _GET_NEIGHBORS_SCHEMA,
+    V11_TASK_NEIGHBOR_TOOL_SCHEMAS as _V11_TASK_NEIGHBOR_TOOL_SCHEMAS,
+    V11_TASK_NEIGHBOR_CALLABLES as _V11_TASK_NEIGHBOR_CALLABLES,
+    V12_GET_FEATURES_TOOL as _V12_GET_FEATURES_SCHEMA,
+    V12_GET_NEIGHBORS_TOOL as _V12_GET_NEIGHBORS_SCHEMA,
+    V12_TASK_NEIGHBOR_TOOL_SCHEMAS as _V12_TASK_NEIGHBOR_TOOL_SCHEMAS,
+    V12_TASK_NEIGHBOR_CALLABLES as _V12_TASK_NEIGHBOR_CALLABLES,
+    v12_get_features as _V12_GET_FEATURES_CALLABLE,
+    v12_get_neighbors as _V12_GET_NEIGHBORS_CALLABLE,
     _FUNCTION_MAP as _ALL_CALLABLES,
 )
 
@@ -513,9 +523,55 @@ _V10_VERSION = {
 }
 
 # ---------------------------------------------------------------------------
+# v11: generalized get_features + get_neighbors (task as parameter)
+# ---------------------------------------------------------------------------
+_V11_BASIC_SCHEMAS: List[Dict[str, Any]] = [
+    _GET_FEATURES_SCHEMA,
+]
+
+_V11_TASK_MAP: Dict[str, List[Dict[str, Any]]] = {
+    _task: [_schema] for _task, _schema in _V11_TASK_NEIGHBOR_TOOL_SCHEMAS.items()
+}
+
+_V11_CALLABLES: Dict[str, Callable] = {
+    "get_features": _ALL_CALLABLES["get_features"],
+    "get_neighbors": _ALL_CALLABLES["get_neighbors"],
+    **_V11_TASK_NEIGHBOR_CALLABLES,
+}
+
+_V11_VERSION = {
+    "basic_schemas": _V11_BASIC_SCHEMAS,
+    "task_specific_map": _V11_TASK_MAP,
+    "callables": _V11_CALLABLES,
+}
+
+# ---------------------------------------------------------------------------
+# v12: v11 structure with granular physicochemical property features
+# ---------------------------------------------------------------------------
+_V12_BASIC_SCHEMAS: List[Dict[str, Any]] = [
+    _V12_GET_FEATURES_SCHEMA,
+]
+
+_V12_TASK_MAP: Dict[str, List[Dict[str, Any]]] = {
+    _task: [_schema] for _task, _schema in _V12_TASK_NEIGHBOR_TOOL_SCHEMAS.items()
+}
+
+_V12_CALLABLES: Dict[str, Callable] = {
+    "get_features": _V12_GET_FEATURES_CALLABLE,
+    "get_neighbors": _V12_GET_NEIGHBORS_CALLABLE,
+    **_V12_TASK_NEIGHBOR_CALLABLES,
+}
+
+_V12_VERSION = {
+    "basic_schemas": _V12_BASIC_SCHEMAS,
+    "task_specific_map": _V12_TASK_MAP,
+    "callables": _V12_CALLABLES,
+}
+
+# ---------------------------------------------------------------------------
 # Public registry
 # ---------------------------------------------------------------------------
-_ALL_VERSIONS = {"v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10"}
+_ALL_VERSIONS = {"v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12"}
 
 # Keep TOOL_VERSIONS for backwards compat but populate lazily
 TOOL_VERSIONS: Dict[str, Dict[str, Any]] = {
@@ -524,6 +580,8 @@ TOOL_VERSIONS: Dict[str, Dict[str, Any]] = {
     "v8": _V8_VERSION,
     "v9": _V9_VERSION,
     "v10": _V10_VERSION,
+    "v11": _V11_VERSION,
+    "v12": _V12_VERSION,
 }
 
 
@@ -534,7 +592,7 @@ def get_version(ver: str) -> Dict[str, Any]:
             f"Unknown tool version {ver!r}. "
             f"Available: {sorted(_ALL_VERSIONS)}"
         )
-    if ver in ("v6", "v7", "v8", "v9", "v10"):
+    if ver in ("v6", "v7", "v8", "v9", "v10", "v11", "v12"):
         return TOOL_VERSIONS[ver]
     # Lazy-load legacy versions on first access
     legacy = _build_legacy_versions()

@@ -92,6 +92,13 @@ def train(args):
                 f"and {args.vllm_num_engines * args.vllm_tensor_parallel_size}"
             )
 
+        # Resolve hidden instruction: @filepath reads from file
+        if args.hidden_instruction and args.hidden_instruction.startswith("@"):
+            hi_path = args.hidden_instruction[1:]
+            with open(hi_path) as f:
+                args.hidden_instruction = f.read().strip()
+            strategy.print(f"[hidden_instruction] Loaded from {hi_path}: {args.hidden_instruction[:100]!r}...")
+
         vllm_pretrain = args.vllm_pretrain if args.vllm_pretrain else args.pretrain
         vllm_engines = create_vllm_engines(
             args.vllm_num_engines,
@@ -126,6 +133,7 @@ def train(args):
             erl_max_memory=args.erl_max_memory,
             erl_max_reflection_tokens=args.erl_max_reflection_tokens,
             language_model_only=args.language_model_only,
+            hidden_instruction=args.hidden_instruction,
         )
 
     actor_model = RayActorGroup(
@@ -724,6 +732,18 @@ if __name__ == "__main__":
         help="Maximum penalty factor for underlength responses.",
     )
     parser.add_argument(
+        "--knn_correct_reversal_bonus",
+        type=float,
+        default=0.25,
+        help="Reward bonus applied when a correct answer reverses the KNN pseudo-label.",
+    )
+    parser.add_argument(
+        "--knn_correct_stick_delta",
+        type=float,
+        default=-0.15,
+        help="Reward delta applied when a correct answer agrees with the KNN pseudo-label.",
+    )
+    parser.add_argument(
         "--stop_properly_penalty_coef",
         type=float,
         default=None,
@@ -825,14 +845,24 @@ if __name__ == "__main__":
     parser.add_argument(
         "--tool_version",
         type=str,
-        choices=["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12"],
+        choices=["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13"],
         default=None,
         help="Tool version for training (v1: RDKit+AccFG, v2: +salts, v3: +pKa/logD/ePSA, "
         "v4: +Haydn, v5: consolidated, v6: consolidated+KNN+metabolism, "
         "v7: v6+per-task similar neighbors, v8: +task-specific metabolism, "
         "v9: +decision tree analysis, v10: consolidated molecular summary + task-specific neighbors, "
         "v11: generalized features + task-specific fingerprint neighbors, "
-        "v12: v11 with granular physicochemical property features)",
+        "v12: v11 with granular physicochemical property features, "
+        "v13: v12 plus top-20 SFT-backed RDKit descriptor names)",
+    )
+
+    parser.add_argument(
+        "--hidden_instruction",
+        type=str,
+        default=None,
+        help="Hidden instruction text (or @filepath to read from file) appended to the user "
+        "prompt during vLLM rollout generation but stripped from the token sequence before "
+        "training. Forces the model to internalize the behavior without seeing the instruction.",
     )
 
     # wandb parameters

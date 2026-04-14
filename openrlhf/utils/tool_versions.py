@@ -373,6 +373,12 @@ from openrlhf.tools.therapeutic_tools import (
     V12_TASK_NEIGHBOR_CALLABLES as _V12_TASK_NEIGHBOR_CALLABLES,
     v12_get_features as _V12_GET_FEATURES_CALLABLE,
     v12_get_neighbors as _V12_GET_NEIGHBORS_CALLABLE,
+    V13_GET_FEATURES_TOOL as _V13_GET_FEATURES_SCHEMA,
+    V13_GET_NEIGHBORS_TOOL as _V13_GET_NEIGHBORS_SCHEMA,
+    V13_TASK_NEIGHBOR_TOOL_SCHEMAS as _V13_TASK_NEIGHBOR_TOOL_SCHEMAS,
+    V13_TASK_NEIGHBOR_CALLABLES as _V13_TASK_NEIGHBOR_CALLABLES,
+    v13_get_features as _V13_GET_FEATURES_CALLABLE,
+    v13_get_neighbors as _V13_GET_NEIGHBORS_CALLABLE,
     _FUNCTION_MAP as _ALL_CALLABLES,
 )
 
@@ -569,9 +575,32 @@ _V12_VERSION = {
 }
 
 # ---------------------------------------------------------------------------
+# v13: v12 structure with top-20 SFT-backed RDKit descriptor additions
+# ---------------------------------------------------------------------------
+_V13_BASIC_SCHEMAS: List[Dict[str, Any]] = [
+    _V13_GET_FEATURES_SCHEMA,
+]
+
+_V13_TASK_MAP: Dict[str, List[Dict[str, Any]]] = {
+    _task: [_schema] for _task, _schema in _V13_TASK_NEIGHBOR_TOOL_SCHEMAS.items()
+}
+
+_V13_CALLABLES: Dict[str, Callable] = {
+    "get_features": _V13_GET_FEATURES_CALLABLE,
+    "get_neighbors": _V13_GET_NEIGHBORS_CALLABLE,
+    **_V13_TASK_NEIGHBOR_CALLABLES,
+}
+
+_V13_VERSION = {
+    "basic_schemas": _V13_BASIC_SCHEMAS,
+    "task_specific_map": _V13_TASK_MAP,
+    "callables": _V13_CALLABLES,
+}
+
+# ---------------------------------------------------------------------------
 # Public registry
 # ---------------------------------------------------------------------------
-_ALL_VERSIONS = {"v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12"}
+_ALL_VERSIONS = {"v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13"}
 
 # Keep TOOL_VERSIONS for backwards compat but populate lazily
 TOOL_VERSIONS: Dict[str, Dict[str, Any]] = {
@@ -582,6 +611,7 @@ TOOL_VERSIONS: Dict[str, Dict[str, Any]] = {
     "v10": _V10_VERSION,
     "v11": _V11_VERSION,
     "v12": _V12_VERSION,
+    "v13": _V13_VERSION,
 }
 
 
@@ -592,7 +622,7 @@ def get_version(ver: str) -> Dict[str, Any]:
             f"Unknown tool version {ver!r}. "
             f"Available: {sorted(_ALL_VERSIONS)}"
         )
-    if ver in ("v6", "v7", "v8", "v9", "v10", "v11", "v12"):
+    if ver in ("v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13"):
         return TOOL_VERSIONS[ver]
     # Lazy-load legacy versions on first access
     legacy = _build_legacy_versions()

@@ -40,7 +40,7 @@
 #                                        # Reflects that colocated is synchronous and can afford more rollouts
 #                                        # before each update without the 1-step off-policy lag of async.
 #   COLO_EVAL_STEPS=16                   # Eval frequency (global steps) for colocated; distributed scales by ASYNC_ADVANTAGE
-#   TOOL_VERSION=v10                     # Tool schema version (default: v10)
+#   TOOL_VERSION=v10                     # Tool schema version
 #   SMART_REPLAY=1                       # Enable smart replay with max_replay_rounds=3
 #   CURRICULUM_BALANCED=1                # Enable curriculum-balanced sampling
 #   OVERSAMPLE_RATIO=2                   # Oversample ratio for dynamic filtering (default: 2)
@@ -215,7 +215,7 @@ PY
     EFFECTIVE_ROLLOUT_BATCH_SIZE="${EFFECTIVE_ROLLOUT_BATCH_SIZE:-8}"
     EFFECTIVE_MINI_GRADIENT_STEPS="${EFFECTIVE_MINI_GRADIENT_STEPS:-2}"
     ASYNC_ADVANTAGE="${ASYNC_ADVANTAGE:-4}"
-    TOOL_VERSION="${TOOL_VERSION:-v10}"
+    TOOL_VERSION="${TOOL_VERSION:-v12}"
     SMART_REPLAY="${SMART_REPLAY:-0}"
     MAX_REPLAY_ROUNDS="${MAX_REPLAY_ROUNDS:-3}"
 
@@ -243,6 +243,10 @@ PY
     EXTRA_ARGS="${EXTRA_ARGS:-}"
     VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE="${VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE:-1024}"
     LENGTH_PENALTY_START="${LENGTH_PENALTY_START:-0}"
+    MIN_RESPONSE_LEN="${MIN_RESPONSE_LEN:-}"
+    UNDERLONG_PENALTY_FACTOR="${UNDERLONG_PENALTY_FACTOR:-1}"
+    KNN_CORRECT_REVERSAL_BONUS="${KNN_CORRECT_REVERSAL_BONUS:-0.25}"
+    KNN_CORRECT_STICK_DELTA="${KNN_CORRECT_STICK_DELTA:--0.15}"
 
     export TORCH_DYNAMO_CACHE_SIZE_LIMIT=1024
     export TORCH_DYNAMO_RECOMPILE_LIMIT=1024
@@ -331,12 +335,16 @@ PY
     fi
 
     ### DATA ###
-    if [ "$TOOL_VERSION" = "v11" ]; then
-        DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v11"
-    elif [ "$TOOL_VERSION" = "v12" ]; then
-        DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v12"
-    else
-        DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_gpt_oss"
+    if [ -z "${DATA_DIR:-}" ]; then
+        if [ "$TOOL_VERSION" = "v11" ]; then
+            DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v11"
+        elif [ "$TOOL_VERSION" = "v12" ]; then
+            DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v12_minority_oversampled"
+        elif [ "$TOOL_VERSION" = "v13" ]; then
+            DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v13"
+        else
+            DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_gpt_oss"
+        fi
     fi
     # Short tag derived from dataset dir name for run naming
     DATA_DIR_BASENAME="$(basename "$DATA_DIR")"
@@ -349,6 +357,8 @@ PY
         openai_format_gpt_oss)           DATA_TAG="gptoss" ;;
         openai_format_v11)               DATA_TAG="v11" ;;
         openai_format_v12)               DATA_TAG="v12" ;;
+        openai_format_v12_minority_oversampled) DATA_TAG="v12-mos" ;;
+        openai_format_v13)               DATA_TAG="v13" ;;
         prepended_tools_v6)              DATA_TAG="pre-v6" ;;
         prepended_tools_v7)              DATA_TAG="pre-v7" ;;
         *)                               DATA_TAG="${DATA_DIR_BASENAME#openai_format_}" ;;
@@ -556,6 +566,12 @@ PY
     echo "VLLM_MAX_NUM_SEQS: $VLLM_MAX_NUM_SEQS"
     echo "VLLM_MAX_NUM_BATCHED_TOKENS: $VLLM_MAX_NUM_BATCHED_TOKENS"
     echo "Tool Version: $TOOL_VERSION"
+    echo "KNN Reward Shaping: reversal_bonus=$KNN_CORRECT_REVERSAL_BONUS stick_delta=$KNN_CORRECT_STICK_DELTA"
+    if [ -n "$MIN_RESPONSE_LEN" ]; then
+        echo "Underlong Penalty: min_response_len=$MIN_RESPONSE_LEN factor=$UNDERLONG_PENALTY_FACTOR"
+    else
+        echo "Underlong Penalty: disabled"
+    fi
     echo "----------------------------------------"
     echo "Runs Dir: $RUNS_DIR"
     echo "W&B: project=$WANDB_PROJECT group=$WANDB_GROUP run=$RUN_ID"
@@ -590,6 +606,9 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
     fi
     if [ "$CURRICULUM_BALANCED" = "1" ]; then
         OPTIONAL_FLAGS+=" --curriculum_balanced"
+    fi
+    if [ -n "$MIN_RESPONSE_LEN" ]; then
+        OPTIONAL_FLAGS+=" --min_response_len $MIN_RESPONSE_LEN --underlong_penalty_factor $UNDERLONG_PENALTY_FACTOR"
     fi
     OPTIONAL_FLAGS+=" --oversample_ratio $OVERSAMPLE_RATIO"
     if [ -n "$OVERSAMPLE_RATIO_START" ]; then
@@ -631,7 +650,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
     #   python scripts/build_knn_v10_pseudo_labels.py
     #   python scripts/build_knn_v11_pseudo_labels.py
     if [ -z "${KNN_PL_PATH:-}" ]; then
-        if [ "$TOOL_VERSION" = "v11" ] || [ "$TOOL_VERSION" = "v12" ]; then
+        if [ "$TOOL_VERSION" = "v11" ] || [ "$TOOL_VERSION" = "v12" ] || [ "$TOOL_VERSION" = "v13" ]; then
             KNN_PL_PATH="$PROJECT_ROOT/data/tdc/metadata/knn_v11_pseudo_labels.json"
         else
             KNN_PL_PATH="$PROJECT_ROOT/data/tdc/metadata/knn_v10_pseudo_labels.json"
@@ -723,6 +742,8 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --enable_tool_calling_rewards \
         --freeze_router \
         --aux_loss_coef 0 \
+        --knn_correct_reversal_bonus $KNN_CORRECT_REVERSAL_BONUS \
+        --knn_correct_stick_delta $KNN_CORRECT_STICK_DELTA \
         $QUANT_FLAGS \
         $MODE_FLAGS \
         $OPTIONAL_FLAGS \

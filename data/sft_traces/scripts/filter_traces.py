@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Filter SFT traces to those that only cite v13-supported descriptors.
+"""Filter SFT traces to those that only cite v13-supported tool evidence.
 
 A trace is kept iff every descriptor referenced by the narrative
 (`Looking at <NAME> = ...`) is in the v13 allowed set:
 
     set(v13.FEATURE_NAMES) | {KNN_mean_label, KNN_min_dist, KNN_mean_dist}
+
+Additionally, a kept trace must contain at least one tool-backed signal:
+either a cited descriptor or a parsable nearest-neighbor block. This excludes
+one-step "base rate only" narratives that slipped through the descriptor-only
+filter but cannot be rewritten into a tool-calling trace.
 
 Whole traces are dropped (per plan: preserves narrative coherence). Per-task
 counts and top blocking descriptors are reported.
@@ -39,14 +44,22 @@ KNN_NAMES = {"KNN_mean_label", "KNN_min_dist", "KNN_mean_dist"}
 ALLOWED = set(v13.FEATURE_NAMES) | KNN_NAMES
 
 DESCRIPTOR_PATTERN = re.compile(r"Looking at ([A-Za-z_][A-Za-z0-9_]*)\s*=")
+NEIGHBOR_LINE_PATTERN = re.compile(
+    r"Looking at the similar molecules:\s*(.+?)\s*Labels:\s*([^.]+)\.",
+    re.DOTALL,
+)
 
 
 def cited_descriptors(text: str) -> list[str]:
     return DESCRIPTOR_PATTERN.findall(text)
 
 
-def is_kept(descriptors: list[str]) -> bool:
-    return all(d in ALLOWED for d in descriptors)
+def has_tool_evidence(text: str, descriptors: list[str]) -> bool:
+    return bool(descriptors) or bool(NEIGHBOR_LINE_PATTERN.search(text))
+
+
+def is_kept(text: str, descriptors: list[str]) -> bool:
+    return has_tool_evidence(text, descriptors) and all(d in ALLOWED for d in descriptors)
 
 
 def process_file(path: str, out_path: str | None) -> dict:
@@ -62,7 +75,7 @@ def process_file(path: str, out_path: str | None) -> dict:
             d = json.loads(line)
             text = d["messages"][-1]["content"]
             cited = cited_descriptors(text)
-            if is_kept(cited):
+            if is_kept(text, cited):
                 n_kept += 1
                 if out_path is not None:
                     kept_lines.append(line)

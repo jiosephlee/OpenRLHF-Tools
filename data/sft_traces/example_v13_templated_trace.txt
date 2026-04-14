@@ -1,0 +1,106 @@
+Example v13 parsed + templated trace
+Source formatted trace: data/sft_traces/traces_v13_formatted/AMES.jsonl
+Source tool map: data/tdc/metadata/tools_per_task_v13.json
+Model/template used: openai/gpt-oss-20b via AutoTokenizer.apply_chat_template(..., tools=...)
+
+========================================================================
+SECTION 1: Parsed formatted trace JSON
+========================================================================
+
+{
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a pharmaceutical research assistant. Think step by step about the molecular properties and answer the question. When you have a final answer, state it clearly as: Answer: (A) or Answer: (B)\n\nAvailable features for the get_features and get_neighbors tools: molecular_weight, heavy_atom_count, heteroatom_count, logp, tpsa, h_bond_donors, h_bond_acceptors, rotatable_bonds, fraction_csp3, molar_refractivity, complexity, electronic, functional_groups, ring_systems, 3d_properties, structural_alerts, metabolites, pka, ionization, logd, solubility, BCUT2D_MRLOW, MinPartialCharge, qed, VSA_EState4, SMR_VSA5, SMR_VSA7, MaxAbsPartialCharge, BCUT2D_MWHI, BCUT2D_LOGPLOW, MinAbsPartialCharge, VSA_EState3, SlogP_VSA8, MaxPartialCharge, BCUT2D_MRHI, BCUT2D_LOGPHI, FpDensityMorgan3, SlogP_VSA5, MinAbsEStateIndex, VSA_EState7, VSA_EState8"
+    },
+    {
+      "role": "user",
+      "content": "Instructions: Answer the following question about drug properties.\nContext: Mutagenicity means the ability of a drug to induce genetic alterations. Drugs that can cause damage to the DNA can result in cell death or other severe adverse effects. Nowadays, the most widely used assay for testing the mutagenicity of compounds is the Ames experiment which was invented by a professor named Ames. The Ames test is a short-term bacterial reverse mutation assay detecting a large number of compounds which can induce genetic damage and frameshift mutations.\nQuestion: Given a drug SMILES string, predict whether it\n(A) is not mutagenic (B) is mutagenic\nDrug SMILES: CC[C@@]12O[C@]1(C(=O)OC)C(=O)N[C@]2(C)O"
+    },
+    {
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "id": "call_9a5004588394",
+          "type": "function",
+          "function": {
+            "name": "get_neighbors_ames",
+            "arguments": "{\"smiles\": \"CC[C@@]12O[C@]1(C(=O)OC)C(=O)N[C@]2(C)O\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_9a5004588394",
+      "name": "get_neighbors_ames",
+      "content": "Nearest Neighbors for task 'AMES' (k=3):\n\n1. COC(=O)[C@]12O[C@@]1(C)[C@@](C)(O)OC2=O (similarity: 0.4190, label: positive)\n\n2. COC(=O)C12OC1(C)C(C)(O)OC2=O (similarity: 0.4190, label: positive)\n\n3. CC[C@@]12O[C@]1(C(=O)OC)C(=O)O[C@H]2C (similarity: 0.4130, label: positive)"
+    },
+    {
+      "role": "assistant",
+      "content": "Starting from the base rate: log-odds = -0.007, P(B) = 0.498.\nLooking at the similar molecules: COC(=O)[C@]12O[C@@]1(C)[C@@](C)(O)OC2=O (similarity: 0.419); COC(=O)C12OC1(C)C(C)(O)OC2=O (similarity: 0.419); CC[C@@]12O[C@]1(C(=O)OC)C(=O)O[C@H]2C (similarity: 0.413). Labels: positive, positive, positive. Log-odds update: +0.109 (toward (positive / active / has property)). Running log-odds: +0.102, P(B) = 0.526.\nLooking further at KNN_mean_label = 1.0000. Log-odds update: +1.956 (toward (positive / active / has property)). Running log-odds: +2.058, P(B) = 0.887.\nBased on all the evidence, my final prediction is (B) positive / active / has property with 88.7% confidence (P(B) = 0.887).\n\nAnswer: (B)"
+    }
+  ],
+  "metadata": {
+    "task": "AMES",
+    "smiles": "CC[C@@]12O[C@]1(C(=O)OC)C(=O)N[C@]2(C)O",
+    "true_label": 1,
+    "tree_index": 103,
+    "tree_confidence": 0.9991,
+    "n_steps": 3,
+    "n_correct_trees": 526,
+    "val_index": 4
+  }
+}
+
+========================================================================
+SECTION 2: Rendered gpt-oss chat template text
+========================================================================
+
+<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-04-14
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|># Instructions
+
+You are a pharmaceutical research assistant. Think step by step about the molecular properties and answer the question. When you have a final answer, state it clearly as: Answer: (A) or Answer: (B)
+
+Available features for the get_features and get_neighbors tools: molecular_weight, heavy_atom_count, heteroatom_count, logp, tpsa, h_bond_donors, h_bond_acceptors, rotatable_bonds, fraction_csp3, molar_refractivity, complexity, electronic, functional_groups, ring_systems, 3d_properties, structural_alerts, metabolites, pka, ionization, logd, solubility, BCUT2D_MRLOW, MinPartialCharge, qed, VSA_EState4, SMR_VSA5, SMR_VSA7, MaxAbsPartialCharge, BCUT2D_MWHI, BCUT2D_LOGPLOW, MinAbsPartialCharge, VSA_EState3, SlogP_VSA8, MaxPartialCharge, BCUT2D_MRHI, BCUT2D_LOGPHI, FpDensityMorgan3, SlogP_VSA5, MinAbsEStateIndex, VSA_EState7, VSA_EState8
+
+# Tools
+
+## functions
+
+namespace functions {
+
+// Return requested molecular features for a SMILES string. Use this to inspect properties such as polarity, lipophilicity, charge, ring structure, complexity, or specific named descriptors.
+type get_features = (_: {
+// Input molecule as a SMILES string.
+smiles: string,
+// List of feature names to return for the molecule.
+feature_names: string[],
+}) => any;
+
+// Find nearest neighbors from the AMES training set with labels, similarity scores, and optionally compute selected molecular features for each neighbor.
+type get_neighbors_ames = (_: {
+// Input molecule as a SMILES string.
+smiles: string,
+// Optional list of feature categories or RDKit descriptor names to compute for each neighbor.
+feature_names?: string[],
+// Whether to include task labels for neighbors. Default true.
+include_labels?: boolean,
+}) => any;
+
+} // namespace functions<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: Mutagenicity means the ability of a drug to induce genetic alterations. Drugs that can cause damage to the DNA can result in cell death or other severe adverse effects. Nowadays, the most widely used assay for testing the mutagenicity of compounds is the Ames experiment which was invented by a professor named Ames. The Ames test is a short-term bacterial reverse mutation assay detecting a large number of compounds which can induce genetic damage and frameshift mutations.
+Question: Given a drug SMILES string, predict whether it
+(A) is not mutagenic (B) is mutagenic
+Drug SMILES: CC[C@@]12O[C@]1(C(=O)OC)C(=O)N[C@]2(C)O<|end|><|start|>assistant to=functions.get_neighbors_ames<|channel|>commentary json<|message|>"{\"smiles\": \"CC[C@@]12O[C@]1(C(=O)OC)C(=O)N[C@]2(C)O\"}"<|call|><|start|>functions.get_neighbors_ames to=assistant<|channel|>commentary<|message|>"Nearest Neighbors for task 'AMES' (k=3):\n\n1. COC(=O)[C@]12O[C@@]1(C)[C@@](C)(O)OC2=O (similarity: 0.4190, label: positive)\n\n2. COC(=O)C12OC1(C)C(C)(O)OC2=O (similarity: 0.4190, label: positive)\n\n3. CC[C@@]12O[C@]1(C(=O)OC)C(=O)O[C@H]2C (similarity: 0.4130, label: positive)"<|end|><|start|>assistant<|channel|>final<|message|>Starting from the base rate: log-odds = -0.007, P(B) = 0.498.
+Looking at the similar molecules: COC(=O)[C@]12O[C@@]1(C)[C@@](C)(O)OC2=O (similarity: 0.419); COC(=O)C12OC1(C)C(C)(O)OC2=O (similarity: 0.419); CC[C@@]12O[C@]1(C(=O)OC)C(=O)O[C@H]2C (similarity: 0.413). Labels: positive, positive, positive. Log-odds update: +0.109 (toward (positive / active / has property)). Running log-odds: +0.102, P(B) = 0.526.
+Looking further at KNN_mean_label = 1.0000. Log-odds update: +1.956 (toward (positive / active / has property)). Running log-odds: +2.058, P(B) = 0.887.
+Based on all the evidence, my final prediction is (B) positive / active / has property with 88.7% confidence (P(B) = 0.887).
+
+Answer: (B)<|return|>

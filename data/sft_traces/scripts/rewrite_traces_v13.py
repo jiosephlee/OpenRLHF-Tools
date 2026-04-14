@@ -115,6 +115,15 @@ def render_neighbors_minimal(neighbors: list[dict], task: str) -> str:
     return "\n".join(lines)
 
 
+def build_system_message(original: str, task: str) -> str:
+    _ = task
+    feature_line = (
+        "Available features for the get_features and get_neighbors tools: "
+        + ", ".join(v13.FEATURE_NAMES)
+    )
+    return f"{original}\n\n{feature_line}"
+
+
 def rewrite_trace(rec: dict) -> dict | None:
     """Transform one trace dict into the v13 multi-turn tool-calling format."""
     msgs = rec["messages"]
@@ -171,7 +180,7 @@ def rewrite_trace(rec: dict) -> dict | None:
             "function": {
                 "name": nbr_tool,
                 "arguments": json.dumps(
-                    {"smiles": smiles, "num_neighbors": len(neighbors)},
+                    {"smiles": smiles},
                     ensure_ascii=False,
                 ),
             },
@@ -192,7 +201,7 @@ def rewrite_trace(rec: dict) -> dict | None:
         return None
 
     new_messages: list[dict] = [
-        {"role": "system", "content": system_msg["content"]},
+        {"role": "system", "content": build_system_message(system_msg["content"], task)},
         {"role": "user", "content": user_msg["content"]},
         {"role": "assistant", "tool_calls": tool_calls},
         *tool_results,

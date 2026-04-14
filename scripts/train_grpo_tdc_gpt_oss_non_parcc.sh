@@ -236,7 +236,13 @@ if [ ! -d "$PROJECT_ROOT/openrlhf" ]; then
 fi
 
 ### DATA ###
-DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_gpt_oss"
+DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v10"
+if [ ! -d "$DATA_DIR" ]; then
+    LEGACY_V10_DIR="$PROJECT_ROOT/data/tdc/openai_format_gpt_oss"
+    if [ -d "$LEGACY_V10_DIR" ]; then
+        DATA_DIR="$LEGACY_V10_DIR"
+    fi
+fi
 mkdir -p "$PROJECT_ROOT/logs"
 
 TRAIN_PARTS=()

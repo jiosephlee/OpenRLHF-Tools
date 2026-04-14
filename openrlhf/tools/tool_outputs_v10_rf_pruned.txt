@@ -1,0 +1,86 @@
+V10 Tool Output Review (RF-pruned variant)
+Example molecule: aspirin
+SMILES: CC(=O)Oc1ccccc1C(=O)O
+
+=== get_molecular_properties ===
+Molecular Profile:
+- Molecular weight: 180.16 Da
+- Heavy atoms: 13, Heteroatoms: 4
+- logP (Wildman-Crippen): 1.31
+- TPSA: 63.60 Å²
+- H-bond donors: 1, H-bond acceptors: 3
+- Rotatable bonds: 2
+- Fraction sp3 carbons (Fsp3): 0.11
+- Molar refractivity: 44.71
+- QED (drug-likeness, 0-1): 0.55
+- Bertz complexity: 343.22
+- Topology: HallKierAlpha=-1.84, Kappa1=9.25, Kappa2=3.71, Kappa3=2.30, BalabanJ=3.04
+- Amide bonds: 0
+- Stereocenters: 0
+- Pharmacophore features: 1 hydrophobic, 1 aromatic, 1 neg-ionizable, 0 pos-ionizable
+
+Functional groups:
+- carboxylic acid
+- carboxylic ester
+- benzene
+
+Ring Systems:
+- 1 system: 6 membered, aromatic, no heteroatoms
+- Ring counts: 1 total, 1 aromatic, 0 aliphatic, 0 saturated
+- Heterocycles: 0
+- Aromatic atoms: 6 / 13
+- Not detected: PAH, macrocycle, spiro, bridgehead
+
+pKa Summary (via ML, MolGpKa):
+- Acidic pKa values: 3.39
+Ionization at pH 7.4 (via SMARTS table, Dimorphite-DL): acid, charge -1
+- Dominant form: CC(=O)Oc1ccccc1C(=O)[O-]
+- Ambiguous (pKa near pH): No
+
+LogD at pH 7.4: -2.70
+Solubility: logS = -1.46 log(mol/L)
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.4627, 0.6583) → intermediate
+
+Structural Alerts (5 categories):
+
+1. Ester / phenol ester / carbonate
+Esters can be hydrolyzed to release active metabolites; phenol esters and carbonates may indicate prodrug instability.
+Matched alerts (3): phenol_ester [CC(=O)Oc1ccccc1], Phenylester [O=COc1ccccc1], Ester [cOC(C)=O]
+
+2. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (2): Phenyl esters [CC(=O)Oc1ccccc1], Esters of aromatic alcohols and their thio and aza analogues [cOC(C)=O]
+
+3. Electrophilic agents
+Electrophilic centers that can react with biological nucleophiles (protein thiols, DNA bases).
+Matched alerts (1): Acetates [cOC=O]
+
+4. Reactive metabolite formation (idiosyncratic toxicity)
+Can form reactive metabolites via CYP metabolism that covalently modify liver proteins, triggering immune-mediated hepatotoxicity.
+Matched alerts (1): Carboxylic acids [cC(=O)O]
+
+5. Reactive / unstable / toxic groups
+Generally reactive or unstable functional groups flagged across multiple toxicity endpoints.
+Matched alerts (1): Carboxylic acid esters [ccOC(C)=O]
+
+Predicted Metabolites:
+
+  1. CC(=O)Oc1ccccc1C(=O)OC1OC(C(=O)O)C(O)C(O)C1O
+     Reaction: O-glucuronidation_(aromatic_carboxyl) (Phase 2, score=0.612)
+
+=== get_similar_neighbors ===
+Similar Neighbors for task 'AMES' based on fingerprint (weighted Tanimoto)
+
+KNN Metrics (train, leave-one-out):
+- global -> accuracy=0.802, F1=0.801
+- local (27 nearest neighbors) -> accuracy=0.852, F1=0.786
+
+Nearest Neighbors from Training Set:
+1. CC(=O)Oc1ccccc1C(=O)Oc1ccccc1C(=O)O (similarity: 0.8429, label: A)
+2. O=C(O)c1ccccc1C(=O)O (similarity: 0.5203, label: A)
+3. CC(=O)Nc1ccc(OC(=O)c2ccccc2OC(C)=O)cc1 (similarity: 0.4880, label: A)
+
+Contrastive Example:
+- O=C(O)c1ccccc1[N+](=O)[O-] (similarity: 0.3833, label: B)

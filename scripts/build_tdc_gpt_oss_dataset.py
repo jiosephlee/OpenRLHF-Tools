@@ -7,7 +7,7 @@ This builder:
   2. Uses data/tdc/metadata/prompts.json for prompt templates
   3. Strips the trailing "Answer:" from each template
   4. Appends data/tdc/metadata/cot_instruction_refined_tools.txt verbatim
-  5. Writes OpenAI-style JSONL records to data/tdc/openai_format_gpt_oss
+  5. Writes OpenAI-style JSONL records to data/tdc/openai_format_v10
 
 Usage:
     python scripts/build_tdc_gpt_oss_dataset.py --all
@@ -26,7 +26,7 @@ from typing import Iterable
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_RAW_DIR = PROJECT_ROOT / "data" / "tdc" / "deduplicated_canonicalized"
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "tdc" / "openai_format_gpt_oss"
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "tdc" / "openai_format_v10"
 DEFAULT_PROMPTS_PATH = PROJECT_ROOT / "data" / "tdc" / "metadata" / "prompts.json"
 DEFAULT_COT_PATH = (
     PROJECT_ROOT / "data" / "tdc" / "metadata" / "cot_instruction_refined_tools.txt"

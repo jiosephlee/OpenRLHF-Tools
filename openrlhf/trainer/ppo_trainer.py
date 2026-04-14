@@ -342,6 +342,14 @@ class BasePPOTrainer(ABC):
             "per_task": per_task,
             "avg_accuracy": logs.get("eval_avg_pass1"),
             "avg_macro_f1": logs.get("eval_avg_macro_f1"),
+            "knn_eval": {
+                "total": logs.get("knn_eval_total", 0),
+                "reversal_pct": logs.get("knn_eval_reversal_pct"),
+                "correct_reversal_pct": logs.get("knn_eval_correct_reversal_pct"),
+                "incorrect_reversal_pct": logs.get("knn_eval_incorrect_reversal_pct"),
+                "correct_stick_pct": logs.get("knn_eval_correct_stick_pct"),
+                "incorrect_stick_pct": logs.get("knn_eval_incorrect_stick_pct"),
+            },
         }
         out_path = os.path.join(output_dir, f"eval_step_{global_step}.json")
         with open(out_path, "w") as f:
@@ -376,17 +384,20 @@ class BasePPOTrainer(ABC):
             f"[eval] Wrote {len(records)} unparseable prediction traces to {json_path}"
         )
 
-    def _write_knn_eval_reversal_traces(self, global_step: int, traces_by_dataset: dict[str, list[dict]]) -> None:
+    def _write_knn_eval_reversal_traces(
+        self,
+        global_step: int,
+        traces_by_dataset: dict[str, list[dict]],
+        summary: dict[str, int],
+    ) -> None:
         """Persist a small sample of correct KNN reversals for offline inspection."""
-        if not traces_by_dataset:
-            return
-
         run_dir = self.samples_generator.runs_dir
         output_dir = os.path.join(run_dir, "knn_eval_reversals")
         os.makedirs(output_dir, exist_ok=True)
 
         payload = {
             "global_step": global_step,
+            "summary": summary,
             "per_dataset": traces_by_dataset,
         }
 
@@ -408,9 +419,7 @@ class BasePPOTrainer(ABC):
                     )
 
         total_records = sum(len(records) for records in traces_by_dataset.values())
-        logger.info(
-            f"[knn_eval_reversals] Wrote {total_records} correct-reversal traces to {json_path}"
-        )
+        logger.info(f"[knn_eval_reversals] Wrote {total_records} correct-reversal traces to {json_path}")
 
     def _write_tool_heavy_eval_traces(self, global_step: int, records: list[dict]) -> None:
         """Persist a small sample of v10+ eval traces that used many tools."""
@@ -649,8 +658,6 @@ class BasePPOTrainer(ABC):
             per_dataset_usage_pct,
             per_dataset_parse_stats,
         )
-        self._write_eval_metrics(global_step, global_metrics, logs, n_samples_per_prompt)
-
         #### KNN eval metrics ####
         knn_eval_total = 0
         knn_eval_reversed = 0
@@ -659,6 +666,7 @@ class BasePPOTrainer(ABC):
         knn_eval_correct_stick = 0
         knn_eval_incorrect_stick = 0
         knn_correct_reversal_traces = defaultdict(list)
+        max_knn_reversal_traces_per_dataset = 1
         tool_heavy_eval_records = []
         collect_tool_heavy_traces = _tool_version_number(getattr(self.args, "tool_version", None)) >= 10
         for i in range(num_prompts):
@@ -735,7 +743,7 @@ class BasePPOTrainer(ABC):
                 knn_eval_reversed += 1
                 if model_correct:
                     knn_eval_correct_reversal += 1
-                    if len(knn_correct_reversal_traces[datasource]) < 2:
+                    if len(knn_correct_reversal_traces[datasource]) < max_knn_reversal_traces_per_dataset:
                         chosen_idx = next(
                             (j for j in range(n_samples_per_prompt) if chunk_scores[j].item() > 0),
                             chunk_scores.argmax().item(),
@@ -780,13 +788,22 @@ class BasePPOTrainer(ABC):
             logs["knn_eval_incorrect_reversal_pct"] = knn_eval_incorrect_reversal / knn_eval_total * 100
             logs["knn_eval_correct_stick_pct"] = knn_eval_correct_stick / knn_eval_total * 100
             logs["knn_eval_incorrect_stick_pct"] = knn_eval_incorrect_stick / knn_eval_total * 100
-            logs["knn_eval_total"] = knn_eval_total
+        logs["knn_eval_total"] = knn_eval_total
         self._write_knn_eval_reversal_traces(
             global_step,
             {ds: records for ds, records in sorted(knn_correct_reversal_traces.items()) if records},
+            {
+                "knn_eval_total": knn_eval_total,
+                "knn_eval_reversed": knn_eval_reversed,
+                "knn_eval_correct_reversal": knn_eval_correct_reversal,
+                "knn_eval_incorrect_reversal": knn_eval_incorrect_reversal,
+                "knn_eval_correct_stick": knn_eval_correct_stick,
+                "knn_eval_incorrect_stick": knn_eval_incorrect_stick,
+            },
         )
         self._write_tool_heavy_eval_traces(global_step, tool_heavy_eval_records)
         #### end KNN eval metrics ####
+        self._write_eval_metrics(global_step, global_metrics, logs, n_samples_per_prompt)
 
         # Log to wandb/tensorboard
         if self.wandb_logger:

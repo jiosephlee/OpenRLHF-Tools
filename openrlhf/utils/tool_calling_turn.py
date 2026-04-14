@@ -146,7 +146,19 @@ class ToolCallingTurn(AgentInstanceBase):
       - ``render_tool_feedback``: produce the bridge text between turns
     """
 
-    def __init__(self, hf_tokenizer=None, reward_fn=None, enable_tool_calling_rewards=True):
+    def __init__(
+        self,
+        hf_tokenizer=None,
+        reward_fn=None,
+        enable_tool_calling_rewards=True,
+        tool_calling_reward_until_step: int = -1,
+        tool_calling_reward_mode: str = "auto",
+        tool_calling_reward_naive_per_call: float = 0.1,
+        tool_calling_reward_feature_single: float = 0.1,
+        tool_calling_reward_feature_full: float = 0.05,
+        tool_calling_reward_feature_max_count: int = 21,
+        current_global_step: int = -1,
+    ):
         # ---- tokenizer (needed by protocol parsers) ----
         if hf_tokenizer is not None:
             self.tokenizer = hf_tokenizer
@@ -161,6 +173,13 @@ class ToolCallingTurn(AgentInstanceBase):
         # Falls back to _default_reward_fn (A/B letter extraction) when None.
         self._reward_fn = reward_fn
         self._enable_tool_calling_rewards = enable_tool_calling_rewards
+        self._tool_calling_reward_until_step = int(tool_calling_reward_until_step)
+        self._tool_calling_reward_mode = tool_calling_reward_mode
+        self._tool_calling_reward_naive_per_call = tool_calling_reward_naive_per_call
+        self._tool_calling_reward_feature_single = tool_calling_reward_feature_single
+        self._tool_calling_reward_feature_full = tool_calling_reward_feature_full
+        self._tool_calling_reward_feature_max_count = max(1, int(tool_calling_reward_feature_max_count))
+        self._current_global_step = int(current_global_step)
 
         # ---- protocol (parse + feedback only, not initial rendering) ----
         protocol_name = os.environ.get("OPENRLHF_CHAT_PROTOCOL", "glm_flash")
@@ -186,31 +205,15 @@ class ToolCallingTurn(AgentInstanceBase):
             )
         ver_cfg = get_version(tool_version)
         self.tools: Dict[str, Callable] = dict(ver_cfg["callables"])
-
-        # Task-aware minority-class bonus: alias → minority label.
-        # Keyed by the suffix in get_neighbors_<alias> tool names.
-        self._minority_label_by_alias: Dict[str, str] = {
-            "ames": "A", "bbb": "A", "bioavail": "A", "cyp3a4": "A",
-            "hia": "A", "pampa": "A", "pgp": "A", "skin": "A", "herg": "A",
-            "cyp2c9": "B", "cyp2d6": "B", "carcinogens": "B",
-            "clintox": "B", "dili": "B", "sarscov2_3cl": "B", "sarscov2_vitro": "B",
-        }
-        self._minority_label: Optional[str] = None  # set per-rollout in reset()
+        self.tool_version = tool_version
 
     # ------------------------------------------------------------------
     # AgentInstanceBase interface
     # ------------------------------------------------------------------
 
-    _NEIGHBOR_TOOL_RE = re.compile(r"get_neighbors_(\w+)")
-
     async def reset(self, states: Dict[str, Any], **kwargs) -> Dict[str, str]:
         """Passthrough — prompt is already chat-templated by preprocessing."""
-        obs = states.get("observation", "")
-        # Detect task from the prompt's get_neighbors_<alias> tool definition
-        m = self._NEIGHBOR_TOOL_RE.search(obs)
-        if m:
-            self._minority_label = self._minority_label_by_alias.get(m.group(1))
-        return {"observation": obs}
+        return {"observation": states.get("observation", "")}
 
     async def step(self, state_dict: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         """Parse tool calls, execute, return upstream-contract dict."""
@@ -253,27 +256,22 @@ class ToolCallingTurn(AgentInstanceBase):
             # parse_method is only set by GPTOSSProtocol; None means a
             # non-GPT-OSS protocol parsed successfully — no bonus/penalty.
             parse_method = action.get("parse_method")
-            if not self._enable_tool_calling_rewards:
+            reward_disabled_by_step = (
+                self._tool_calling_reward_until_step >= 0
+                and self._current_global_step >= self._tool_calling_reward_until_step
+            )
+
+            if not self._enable_tool_calling_rewards or reward_disabled_by_step:
                 tool_calling_reward = 0
             elif parse_method is None:
                 # Non-GPT-OSS protocol: no tool-calling shaping
                 tool_calling_reward = 0
             elif parse_method in ("primary", "fallback", "regex"):
-                # Per-call reward interpolated by feature selectivity:
-                # 1 feature → 0.1,  all 21 features → 0.05, linear interp.
-                tool_calling_reward = 0
+                tool_calling_reward = 0.0
+                resolved_mode = self._resolve_tool_calling_reward_mode()
                 for tc in tool_calls:
-                    args = tc.get("arguments", {})
-                    fn_list = args.get("feature_names")
-                    if fn_list is not None and isinstance(fn_list, list):
-                        n = max(1, min(len(fn_list), 21))
-                        # lerp: reward = 0.1 - 0.05 * (n - 1) / 20
-                        call_reward = 0.1 - 0.05 * (n - 1) / 20
-                    else:
-                        # Non-feature tool call (e.g. get_neighbors without features) → full 0.1
-                        call_reward = 0.1
+                    call_reward = self._compute_tool_call_reward(tc, resolved_mode)
                     tool_calling_reward += call_reward
-                    extra_logs["tool_reward_per_call_last"] = round(call_reward, 4)
             else:
                 raise ValueError(f"Unknown parse method: {parse_method}")
             extra_logs["tool_calling_reward"] = tool_calling_reward
@@ -353,16 +351,35 @@ class ToolCallingTurn(AgentInstanceBase):
             _write_smiles_error_log(tool_name, arguments, error_str)
         return result, duration
 
+    def _resolve_tool_calling_reward_mode(self) -> str:
+        mode = (self._tool_calling_reward_mode or "auto").strip().lower()
+        if mode != "auto":
+            return mode
+        # Backwards compatibility: v10 used naive per-tool rewards.
+        return "naive" if self.tool_version == "v10" else "feature_aware"
+
+    def _compute_tool_call_reward(self, tool_call: Dict[str, Any], mode: str) -> float:
+        if mode == "naive":
+            return float(self._tool_calling_reward_naive_per_call)
+        if mode == "feature_aware":
+            args = tool_call.get("arguments", {})
+            fn_list = args.get("feature_names")
+            if fn_list is not None and isinstance(fn_list, list):
+                n = max(1, min(len(fn_list), self._tool_calling_reward_feature_max_count))
+                if self._tool_calling_reward_feature_max_count == 1:
+                    return float(self._tool_calling_reward_feature_single)
+                span = self._tool_calling_reward_feature_single - self._tool_calling_reward_feature_full
+                return float(
+                    self._tool_calling_reward_feature_single
+                    - span * (n - 1) / (self._tool_calling_reward_feature_max_count - 1)
+                )
+            return float(self._tool_calling_reward_naive_per_call)
+        raise ValueError(f"Unknown tool calling reward mode: {mode}")
+
     _ANSWER_RE = re.compile(r"Answer\s*:\s*\(?\s*([A-Za-z])\s*\)?")
 
     def _default_reward_fn(self, generated_text: str, label: Optional[str]) -> float:
-        """Default reward: 1.0 iff the model's Answer: (X) matches the label.
-
-        Adds a +0.1 minority-class bonus when the model correctly predicts
-        the minority label for this task (detected from the prompt's
-        get_neighbors_<alias> tool name in reset()).  This counteracts
-        majority-class collapse on imbalanced TDC tasks.
-        """
+        """Default reward: 1.0 iff the model's Answer: (X) matches the label."""
         if not label:
             return 0.0
 
@@ -382,20 +399,39 @@ class ToolCallingTurn(AgentInstanceBase):
         if pred != gold:
             return 0.0
 
-        # Correct prediction — add minority-class bonus when the gold
-        # label matches the task's minority class.
-        reward = 1.0
-        if self._minority_label and gold == self._minority_label:
-            reward += 0.1
-        return reward
+        return 1.0
 
 
 # ---------------------------------------------------------------------------
 # Executor (required name for vllm_engine._load_agent_executor)
 # ---------------------------------------------------------------------------
 class AgentExecutor(MultiTurnAgentExecutor):
-    def __init__(self, reward_fn=None, length_penalty_start: int = 0, enable_tool_calling_rewards: bool = True, **kwargs):
-        super().__init__(ToolCallingTurn, reward_fn=reward_fn, length_penalty_start=length_penalty_start, enable_tool_calling_rewards=enable_tool_calling_rewards, **kwargs)
+    def __init__(
+        self,
+        reward_fn=None,
+        length_penalty_start: int = 0,
+        enable_tool_calling_rewards: bool = True,
+        tool_calling_reward_until_step: int = -1,
+        tool_calling_reward_mode: str = "auto",
+        tool_calling_reward_naive_per_call: float = 0.1,
+        tool_calling_reward_feature_single: float = 0.1,
+        tool_calling_reward_feature_full: float = 0.05,
+        tool_calling_reward_feature_max_count: int = 21,
+        **kwargs,
+    ):
+        super().__init__(
+            ToolCallingTurn,
+            reward_fn=reward_fn,
+            length_penalty_start=length_penalty_start,
+            enable_tool_calling_rewards=enable_tool_calling_rewards,
+            tool_calling_reward_until_step=tool_calling_reward_until_step,
+            tool_calling_reward_mode=tool_calling_reward_mode,
+            tool_calling_reward_naive_per_call=tool_calling_reward_naive_per_call,
+            tool_calling_reward_feature_single=tool_calling_reward_feature_single,
+            tool_calling_reward_feature_full=tool_calling_reward_feature_full,
+            tool_calling_reward_feature_max_count=tool_calling_reward_feature_max_count,
+            **kwargs,
+        )
 
 
 __all__ = ["ToolCallingTurn", "AgentExecutor"]

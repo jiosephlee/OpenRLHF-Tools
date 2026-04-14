@@ -122,6 +122,12 @@ def train(args):
             tool_version=args.tool_version,
             length_penalty_start=args.length_penalty_start,
             enable_tool_calling_rewards=args.enable_tool_calling_rewards,
+            tool_calling_reward_until_step=args.tool_calling_reward_until_step,
+            tool_calling_reward_mode=args.tool_calling_reward_mode,
+            tool_calling_reward_naive_per_call=args.tool_calling_reward_naive_per_call,
+            tool_calling_reward_feature_single=args.tool_calling_reward_feature_single,
+            tool_calling_reward_feature_full=args.tool_calling_reward_feature_full,
+            tool_calling_reward_feature_max_count=args.tool_calling_reward_feature_max_count,
             reduce_cuda_graph=args.optimal_flags_b200_gpt_oss,
             vllm_cudagraph_max_capture_size=args.vllm_cudagraph_max_capture_size,
             kv_cache_dtype=args.kv_cache_dtype,
@@ -785,6 +791,46 @@ if __name__ == "__main__":
         default=False,
         help="Enable format/parse shaping rewards for tool-calling turns. "
         "When off (default), all tool-calling rewards (tool_calling_reward, parse_failed penalty) are zeroed.",
+    )
+    parser.add_argument(
+        "--tool_calling_reward_until_step",
+        type=int,
+        default=-1,
+        help="Apply tool-calling rewards only for global_step < this cutoff. "
+        "Example: 32 enables them for steps 0-31 and disables them at step 32+.",
+    )
+    parser.add_argument(
+        "--tool_calling_reward_mode",
+        type=str,
+        default="auto",
+        choices=["auto", "naive", "feature_aware"],
+        help="Tool-calling reward mode. "
+        "'auto' preserves backwards compatibility by using naive per-call rewards for v10 "
+        "and feature-aware rewards for newer tool versions.",
+    )
+    parser.add_argument(
+        "--tool_calling_reward_naive_per_call",
+        type=float,
+        default=0.1,
+        help="Reward assigned per successful tool call in naive mode, and for non-feature tool calls in feature-aware mode.",
+    )
+    parser.add_argument(
+        "--tool_calling_reward_feature_single",
+        type=float,
+        default=0.1,
+        help="Feature-aware reward when exactly one feature is requested.",
+    )
+    parser.add_argument(
+        "--tool_calling_reward_feature_full",
+        type=float,
+        default=0.05,
+        help="Feature-aware reward when the maximum configured number of features is requested.",
+    )
+    parser.add_argument(
+        "--tool_calling_reward_feature_max_count",
+        type=int,
+        default=21,
+        help="Maximum feature count used to interpolate feature-aware rewards.",
     )
     parser.add_argument(
         "--vllm_stop_strings",

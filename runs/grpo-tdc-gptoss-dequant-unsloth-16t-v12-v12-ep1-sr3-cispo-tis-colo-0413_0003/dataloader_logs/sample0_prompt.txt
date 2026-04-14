@@ -1,0 +1,44 @@
+<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-04-13
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|># Instructions
+
+You are a chemist analyzing drug molecules. Available features for the get_features and get_neighbors tools: molecular_weight, heavy_atom_count, heteroatom_count, logp, tpsa, h_bond_donors, h_bond_acceptors, rotatable_bonds, fraction_csp3, molar_refractivity, complexity, electronic, functional_groups, ring_systems, 3d_properties, structural_alerts, metabolites, pka, ionization, logd, solubility
+
+# Tools
+
+## functions
+
+namespace functions {
+
+// Compute selected molecular features for a given SMILES string. Pass a list of feature names to select which analyses to run.
+type get_features = (_: {
+// Input molecule as a SMILES string.
+smiles: string,
+// List of feature categories to compute.
+feature_names: string[]
+}) => any;
+
+// Find nearest neighbors from the ClinTox training set with labels, similarity scores, and optionally compute selected molecular features for each neighbor.
+type get_neighbors_clintox = (_: {
+// Input molecule as a SMILES string.
+smiles: string,
+// Optional list of feature categories to compute for each neighbor.
+feature_names?: string[],
+// Number of nearest neighbors to return. Default 5.
+num_neighbors?: number,
+// Whether to include task labels for neighbors. Default true.
+include_labels?: boolean
+}) => any;
+
+} // namespace functions<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: Humans are exposed to a variety of chemicals through food, household products, and medicines, some of which can be toxic, leading to over 30% of promising pharmaceuticals failing in human trials due to toxicity. Toxic drugs can be identified from clinical trials that failed due to toxicity, while non-toxic drugs can be identified from FDA approval status or from clinical trials that report no toxicity.
+Question: Given a drug SMILES string, predict whether it
+(A) is not toxic (B) is toxic
+Drug SMILES: O=C([O-])[C@@H](O)[C@@H](O)[C@H](O)[C@@H](O)C(=O)[O-]
+Answer:
+Please think step by step and use the relevant tools in your analysis. Then put your final choice, (A) or (B), after "Answer:"<|end|><|start|>assistant

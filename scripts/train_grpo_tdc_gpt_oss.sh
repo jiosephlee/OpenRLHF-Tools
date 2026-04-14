@@ -26,8 +26,8 @@
 #   PRETRAIN_PATH= EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=1 TIS=1 TIS_TYPE=tis TRAIN_MAX_TOKENS_PER_GPU=40960 SMART_REPLAY=1 REDUCE_OPTIMIZER=adam_offload LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss.sh
 #   USE_LORA=1 LEARNING_RATE=2e-5 EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TRAIN_MAX_TOKENS_PER_GPU=41952 REDUCE_OPTIMIZER=none LIGER_GRPO_LOSS=0 DEQUANT=unsloth LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss.sh
 #.  EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TRAIN_MAX_TOKENS_PER_GPU=41952 REDUCE_OPTIMIZER=none LIGER_GRPO_LOSS=0 DEQUANT=unsloth LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss.sh
-#   LEARNING_RATE=6e-7 SMART_REPLAY=1 DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=cispo bash train_grpo_tdc_gpt_oss.sh
-#   LEARNING_RATE=9e-6 SMART_REPLAY=1 DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none USE_LORA=1 TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=cispo bash train_grpo_tdc_gpt_oss.sh
+#   TOOL_VERSION=v12 TIS=1 TIS_TYPE=icepop LEARNING_RATE=7e-7 SMART_REPLAY=1 DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=cispo bash train_grpo_tdc_gpt_oss.sh
+#   TOOL_VERSION=v12 TIS=1 TIS_TYPE=icepop LEARNING_RATE=9e-6 SMART_REPLAY=1 DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none USE_LORA=1 TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=cispo bash train_grpo_tdc_gpt_oss.sh
 # Distributed:
 #   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 bash scripts/train_grpo_tdc_gpt_oss.sh
 #       
@@ -184,7 +184,7 @@ LENGTH_PENALTY_START="${LENGTH_PENALTY_START:-0}"
 MIN_RESPONSE_LEN="${MIN_RESPONSE_LEN:-}"
 UNDERLONG_PENALTY_FACTOR="${UNDERLONG_PENALTY_FACTOR:-1}"
 KNN_CORRECT_REVERSAL_BONUS="${KNN_CORRECT_REVERSAL_BONUS:-0.25}"
-KNN_CORRECT_STICK_DELTA="${KNN_CORRECT_STICK_DELTA:--0.15}"
+KNN_CORRECT_STICK_DELTA="${KNN_CORRECT_STICK_DELTA:-0}"
 
 export TORCH_DYNAMO_CACHE_SIZE_LIMIT=1024
 export TORCH_DYNAMO_RECOMPILE_LIMIT=1024
@@ -288,14 +288,22 @@ fi
 
 ### DATA ###
 if [ -z "${DATA_DIR:-}" ]; then
-    if [ "$TOOL_VERSION" = "v11" ]; then
+    if [ "$TOOL_VERSION" = "v10" ]; then
+        DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v10"
+    elif [ "$TOOL_VERSION" = "v11" ]; then
         DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v11"
     elif [ "$TOOL_VERSION" = "v12" ]; then
         DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v12_minority_oversampled"
     elif [ "$TOOL_VERSION" = "v13" ]; then
         DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v13"
     else
-        DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_gpt_oss"
+        DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v10"
+    fi
+fi
+if [ ! -d "$DATA_DIR" ] && [ "$TOOL_VERSION" = "v10" ]; then
+    LEGACY_V10_DIR="$PROJECT_ROOT/data/tdc/openai_format_gpt_oss"
+    if [ -d "$LEGACY_V10_DIR" ]; then
+        DATA_DIR="$LEGACY_V10_DIR"
     fi
 fi
 # Short tag derived from dataset dir name for run naming
@@ -307,6 +315,7 @@ case "$DATA_DIR_BASENAME" in
     openai_format_enriched_v6_tools) DATA_TAG="enr-v6t" ;;
     openai_format_v6_encourage_tool_use) DATA_TAG="v6etu" ;;
     openai_format_v7_tools)          DATA_TAG="v7t" ;;
+    openai_format_v10)               DATA_TAG="v10" ;;
     openai_format_gpt_oss)           DATA_TAG="gptoss" ;;
     openai_format_v11)               DATA_TAG="v11" ;;
     openai_format_v12)               DATA_TAG="v12" ;;
@@ -663,6 +672,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --length_penalty_start 6144 \
     --replace_discarded_prompts_ratio 2.0 \
     --enable_tool_calling_rewards \
+    --tool_calling_reward_until_step 12 \
     --freeze_router \
     --aux_loss_coef 0 \
     --knn_correct_reversal_bonus $KNN_CORRECT_REVERSAL_BONUS \

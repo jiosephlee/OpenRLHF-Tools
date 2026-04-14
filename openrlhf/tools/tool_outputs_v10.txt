@@ -1,0 +1,104 @@
+V10 Tool Output Review
+Example molecule: aspirin
+SMILES: CC(=O)Oc1ccccc1C(=O)O
+
+=== get_molecular_properties ===
+Molecular Profile:
+- Molecular weight: 180.16 Da
+- Heavy atoms: 13, Heteroatoms: 4
+- logP (Wildman-Crippen): 1.3100
+- TPSA: 63.60 Å²
+- H-bond donors: 1, H-bond acceptors: 3
+- Rotatable bonds: 2
+- Fraction sp3 carbons (Fsp3): 0.1111
+- Molar refractivity: 44.71
+- QED (drug-likeness, 0-1): 0.5501
+- Bertz complexity: 343.22
+- Topology: HallKierAlpha=-1.8400, Kappa1=9.2500, Kappa2=3.7090, Kappa3=2.2970, BalabanJ=3.0440, IPC=729.6810
+- Amide bonds: 0
+- Stereocenters: 0
+- Pharmacophore features: 1 hydrophobic, 1 aromatic, 1 neg-ionizable, 0 pos-ionizable
+- Gasteiger charges: max=0.3390 (atom 10, C), min=-0.4775 (atom 12, O)
+- Charge polarization: 0.8165
+- EState indices: max=10.6120 (nucleophilic proxy), min=-1.1140 (electrophilic proxy)
+Quantum Electronic Properties (GFN2-xTB):
+- HOMO energy: -11.3751 eV
+- LUMO energy: -7.8683 eV
+- HOMO-LUMO gap: 3.5068 eV
+- Dipole moment: 2.3894 Debye
+- Electrophilicity index (ω): 26.3993 eV
+- Total energy: -39.622955 Hartree
+
+Functional groups (* denotes attachment points):
+- carboxylic acid: C(=O)O ([*]C(=O)O)
+- carboxylic ester: C(=O)O (*C(=O)O[*])
+- benzene: c1ccccc1 ([*]c1ccccc1[*])
+
+Ring Systems:
+- 1 system: 6 membered, aromatic, no heteroatoms
+- Ring counts: 1 total, 1 aromatic, 0 aliphatic, 0 saturated
+- Heterocycles: 0
+- Aromatic atoms: 6 / 13
+- Not detected: PAH, macrocycle, spiro, bridgehead
+
+pKa Summary (via ML, MolGpKa):
+- Mapped SMILES: [C:1]([C:2](=[O:3])[O:4][c:5]1[c:6]([H:17])[c:7]([H:18])[c:8]([H:19])[c:9]([H:20])[c:10]1[C:11](=[O:12])[O:13][H:21])([H:14])([H:15])[H:16]
+- Number of basic sites: 0
+- Number of acidic sites: 1
+- Most basic pKa: none
+- Most acidic pKa: 3.39
+- Acidic sites by pKa: atom 12: 3.39
+Ionization at pH 7.4 (via SMARTS table, Dimorphite-DL): acid, charge -1
+- Dominant form: CC(=O)Oc1ccccc1C(=O)[O-]
+- Ambiguous (pKa near pH): No
+
+LogD at pH 7.4: -2.70
+Solubility: logS = -1.46 log(mol/L)
+
+3D Polar Surface Area (ePSA):
+3D conformation based estimation of PSA: 220.02
+
+3D Shape Descriptors:
+- PMI ratios (npr1, npr2): (0.4627, 0.6583) → intermediate
+
+Structural Alerts (5 categories):
+
+1. Ester / phenol ester / carbonate
+Esters can be hydrolyzed to release active metabolites; phenol esters and carbonates may indicate prodrug instability.
+Matched alerts (3): phenol_ester [CC(=O)Oc1ccccc1], Phenylester [O=COc1ccccc1], Ester [cOC(C)=O]
+
+2. Skin sensitization
+Structural alerts for skin sensitization via haptenation (covalent binding to skin proteins).
+Matched alerts (2): Phenyl esters [CC(=O)Oc1ccccc1], Esters of aromatic alcohols and their thio and aza analogues [cOC(C)=O]
+
+3. Electrophilic agents
+Electrophilic centers that can react with biological nucleophiles (protein thiols, DNA bases).
+Matched alerts (1): Acetates [cOC=O]
+
+4. Reactive metabolite formation (idiosyncratic toxicity)
+Can form reactive metabolites via CYP metabolism that covalently modify liver proteins, triggering immune-mediated hepatotoxicity.
+Matched alerts (1): Carboxylic acids [cC(=O)O]
+
+5. Reactive / unstable / toxic groups
+Generally reactive or unstable functional groups flagged across multiple toxicity endpoints.
+Matched alerts (1): Carboxylic acid esters [ccOC(C)=O]
+
+Predicted Metabolites (GLORYx — FAME3 SoM + reaction rules, Phase 1 + Phase 2):
+
+  1. CC(=O)Oc1ccccc1C(=O)OC1OC(C(=O)O)C(O)C(O)C1O
+     Reaction: O-glucuronidation_(aromatic_carboxyl) (Phase 2, score=0.612)
+
+=== get_similar_neighbors ===
+Similar Neighbors for task 'AMES' based on fingerprint (weighted Tanimoto)
+
+KNN Metrics (train, leave-one-out):
+- global -> accuracy=0.802, F1=0.801
+- local (27 nearest neighbors) -> accuracy=0.852, F1=0.786
+
+Nearest Neighbors from Training Set:
+1. CC(=O)Oc1ccccc1C(=O)Oc1ccccc1C(=O)O (similarity: 0.8429, label: A)
+2. O=C(O)c1ccccc1C(=O)O (similarity: 0.5203, label: A)
+3. CC(=O)Nc1ccc(OC(=O)c2ccccc2OC(C)=O)cc1 (similarity: 0.4880, label: A)
+
+Contrastive Example:
+- O=C(O)c1ccccc1[N+](=O)[O-] (similarity: 0.3833, label: B)

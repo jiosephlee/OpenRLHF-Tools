@@ -336,14 +336,22 @@ PY
 
     ### DATA ###
     if [ -z "${DATA_DIR:-}" ]; then
-        if [ "$TOOL_VERSION" = "v11" ]; then
+        if [ "$TOOL_VERSION" = "v10" ]; then
+            DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v10"
+        elif [ "$TOOL_VERSION" = "v11" ]; then
             DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v11"
         elif [ "$TOOL_VERSION" = "v12" ]; then
             DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v12_minority_oversampled"
         elif [ "$TOOL_VERSION" = "v13" ]; then
             DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v13"
         else
-            DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_gpt_oss"
+            DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v10"
+        fi
+    fi
+    if [ ! -d "$DATA_DIR" ] && [ "$TOOL_VERSION" = "v10" ]; then
+        LEGACY_V10_DIR="$PROJECT_ROOT/data/tdc/openai_format_gpt_oss"
+        if [ -d "$LEGACY_V10_DIR" ]; then
+            DATA_DIR="$LEGACY_V10_DIR"
         fi
     fi
     # Short tag derived from dataset dir name for run naming
@@ -354,6 +362,7 @@ PY
         openai_format_enriched_v6_tools) DATA_TAG="enr-v6t" ;;
         openai_format_v6_encourage_tool_use) DATA_TAG="v6etu" ;;
         openai_format_v7_tools)          DATA_TAG="v7t" ;;
+        openai_format_v10)               DATA_TAG="v10" ;;
         openai_format_gpt_oss)           DATA_TAG="gptoss" ;;
         openai_format_v11)               DATA_TAG="v11" ;;
         openai_format_v12)               DATA_TAG="v12" ;;

@@ -1,0 +1,35 @@
+<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-04-10
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|>
+
+# Tools
+
+## functions
+
+namespace functions {
+
+// Returns molecular properties including molecular weight, TPSA, LogP, functional groups, ring systems, pka, 3D shape, structural alerts, and the top predicted metabolite.
+type get_molecular_properties = (_: {
+// Input molecule as a SMILES string.
+smiles: string
+}) => any;
+
+// Find nearest neighbors from the AMES training set with labels, similarity scores, KNN confidence metrics, and one contrastive example.
+type get_similar_neighbors_ames = (_: {
+// Input molecule as a SMILES string.
+smiles: string,
+// Number of nearest neighbors to return. Default 5.
+k?: number
+}) => any;
+
+} // namespace functions<|end|><|start|>user<|message|>Instructions: Answer the following question about drug properties.
+Context: Mutagenicity means the ability of a drug to induce genetic alterations. Drugs that can cause damage to the DNA can result in cell death or other severe adverse effects. Nowadays, the most widely used assay for testing the mutagenicity of compounds is the Ames experiment which was invented by a professor named Ames. The Ames test is a short-term bacterial reverse mutation assay detecting a large number of compounds which can induce genetic damage and frameshift mutations.
+Question: Given a drug SMILES string, predict whether it
+(A) is not mutagenic (B) is mutagenic
+Drug SMILES: CNC(=O)NC
+Please think step by step and use the relevant tools in your analysis. Then put your final choice, (A) or (B), after "Answer:"<|end|><|start|>assistant

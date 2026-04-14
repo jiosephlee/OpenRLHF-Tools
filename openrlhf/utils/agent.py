@@ -13,6 +13,12 @@ _DEBUG_TRACES = os.environ.get("DEBUG_TRACES", "0") == "1"
 
 
 class AgentExecutorBase(ABC):
+    def __init__(self):
+        self._current_global_step = -1
+
+    def set_current_global_step(self, step: int) -> None:
+        self._current_global_step = int(step)
+
     @abstractmethod
     async def execute(self, prompt, label, sampling_params, max_length: int, hf_tokenizer, llm_engine, **kwargs):
         raise NotImplementedError("AgentExecutorBase.execute is not implemented")
@@ -33,6 +39,7 @@ class AgentInstanceBase(ABC):
 
 class MultiTurnAgentExecutor(AgentExecutorBase):
     def __init__(self, agent_instance_cls, length_penalty_start: int = 0, **agent_kwargs):
+        super().__init__()
         assert issubclass(agent_instance_cls, AgentInstanceBase), "AgentInstance must inherit from AgentInstanceBase"
         self.agent_instance_cls = agent_instance_cls
         self.length_penalty_start = length_penalty_start
@@ -40,7 +47,11 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
 
     async def execute(self, prompt, label, sampling_params, max_length: int, hf_tokenizer, llm_engine, log_trajectory: bool = False):
         # Treat each AgentInstance as an isolated environment; bind every prompt to its own independent instance
-        agent_instance = self.agent_instance_cls(hf_tokenizer=hf_tokenizer, **self._agent_kwargs)
+        agent_instance = self.agent_instance_cls(
+            hf_tokenizer=hf_tokenizer,
+            current_global_step=self._current_global_step,
+            **self._agent_kwargs,
+        )
         # Initialize with reset function
         initial_states = {"observation": prompt, "label": label}
         reset_result = await agent_instance.reset(initial_states)
@@ -180,10 +191,10 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
         # Cap the total tool-calling reward to 0.3 to prevent linear buildup.
         if "tool_calling_reward" in extra_logs:
             tool_calling_reward = extra_logs["tool_calling_reward"]
-            if tool_calling_reward > 0.3:
-                excess = tool_calling_reward - 0.3
+            if tool_calling_reward > 0.25:
+                excess = tool_calling_reward - 0.25
                 total_reward -= excess
-                extra_logs["tool_calling_reward"] = 0.3
+                extra_logs["tool_calling_reward"] = 0.25
 
         # DAPO-style overlong reward shaping: R_length ramps from 0 at length_penalty_start to -1 at max_length, clamped at -1
         if self.length_penalty_start > 0:
@@ -216,6 +227,7 @@ class SingleTurnAgentExecutor(AgentExecutorBase):
     """Single-turn agent executor with optional reward post-processing."""
 
     def __init__(self, remote_rm_url=None, length_penalty_start: int = 0):
+        super().__init__()
         reward_endpoints = [remote_rm_url] if isinstance(remote_rm_url, str) else remote_rm_url
         self.reward_endpoints = reward_endpoints or []
         self.length_penalty_start = length_penalty_start

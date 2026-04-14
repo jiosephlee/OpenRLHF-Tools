@@ -35,7 +35,6 @@ _MOLECULAR_INFO_TOOL_KEY_PREFIXES = (
     "tool_count__get_molecular_properties",
     "tool_count__get_features",
 )
-_KNN_CORRECT_REVERSAL_BONUS = 0.5
 _PREPENDED_NEIGHBOR_CONTEXT_RE = re.compile(
     r"(Nearest Neighbors from Training Set:|Nearest Neighbors for task\s+'[^']+'\s+\(k=\d+\):|KNN Predicted Label:\s*\([AB]\)|pseudo label from naive Morgan fingerprint KNN prediction is \([AB]\))",
     re.IGNORECASE,
@@ -65,13 +64,17 @@ def _apply_knn_reward_shaping(
     responses: list[dict],
     knn_pl: str | None,
     requested_neighbors: bool,
+    correct_reversal_bonus: float,
+    correct_stick_delta: float,
 ) -> None:
     """Apply reward shaping based on correctness relative to KNN pseudo-label.
 
-    +0.5 if the sample is correct and reverses the KNN pseudo-label.
-    No shaping is applied when no KNN pseudo-label is available, neighbors were
-    not requested/available, or the sample does not correctly reverse the KNN
-    pseudo-label.
+    Applies configurable shaping when a sample is correct and either:
+    - reverses the KNN pseudo-label, or
+    - correctly sticks with the KNN pseudo-label.
+
+    No shaping is applied when no KNN pseudo-label is available or neighbors
+    were not requested/available.
     """
     if knn_pl is None or not requested_neighbors:
         return
@@ -84,24 +87,46 @@ def _apply_knn_reward_shaping(
         is_correct = float(score_val) > 0
         true_answer = response.get("label", "")
         knn_agrees_with_truth = knn_pl in str(true_answer)
-        if not is_correct or knn_agrees_with_truth:
+        if not is_correct:
             continue
 
-        delta = _KNN_CORRECT_REVERSAL_BONUS
+        if knn_agrees_with_truth:
+            delta = correct_stick_delta
+            delta_key = "knn_correct_stick_delta"
+        else:
+            delta = correct_reversal_bonus
+            delta_key = "knn_correct_reversal_bonus"
+
+        if delta == 0:
+            continue
 
         response["reward"] = float(response.get("reward", 0.0)) + delta
 
         extra_logs = response.setdefault("extra_logs", {})
         extra_logs["knn_reward_delta"] = extra_logs.get("knn_reward_delta", 0.0) + delta
-        extra_logs["knn_correct_reversal_bonus"] = (
-            extra_logs.get("knn_correct_reversal_bonus", 0) + 1
-        )
+        extra_logs[delta_key] = extra_logs.get(delta_key, 0.0) + delta
 
 
 def _coerce_float(value: Any) -> float:
     if isinstance(value, torch.Tensor):
         return float(value.flatten()[0].item())
     return float(value)
+
+
+def _maybe_numeric_extra_log(value: Any) -> float | None:
+    """Return a scalar float for numeric extra_logs values, else None.
+
+    Experience.info is consumed as tensor-valued metrics downstream, so
+    string/categorical metadata from extra_logs must be skipped here.
+    """
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 0:
+            return None
+        value = value.flatten()[0].item()
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _count_trace_tool_usage(response: dict) -> tuple[int, int, int]:
@@ -1253,7 +1278,13 @@ class SamplesGenerator:
                             knn_correct_stick += 1
                         else:
                             knn_incorrect_stick += 1
-                _apply_knn_reward_shaping(responses, knn_pl, requested_neighbors)
+                _apply_knn_reward_shaping(
+                    responses,
+                    knn_pl,
+                    requested_neighbors,
+                    correct_reversal_bonus=getattr(self.args, "knn_correct_reversal_bonus", 0.25),
+                    correct_stick_delta=getattr(self.args, "knn_correct_stick_delta", -0.15),
+                )
                 #### end KNN tracking ####
 
                 experiences = [
@@ -1454,6 +1485,7 @@ class SamplesGenerator:
             "knn_reversal_pct": (knn_reversed / knn_total * 100) if knn_total > 0 else None,
             "knn_correct_reversal_pct": (knn_correct_reversal / knn_total * 100) if knn_total > 0 else None,
             "knn_incorrect_reversal_pct": (knn_incorrect_reversal / knn_total * 100) if knn_total > 0 else None,
+            "knn_correct_stick_pct": (knn_correct_stick / knn_total * 100) if knn_total > 0 else None,
             "knn_stick_pct": ((knn_correct_stick + knn_incorrect_stick) / knn_total * 100) if knn_total > 0 else None,
             "knn_incorrect_stick_pct": (knn_incorrect_stick / knn_total * 100) if knn_total > 0 else None,
         }
@@ -1584,6 +1616,33 @@ class SamplesGenerator:
         reward_val = response.get("reward", None)
         score_val = response.get("scores", None)
 
+        # Strip hidden instruction tokens before building training tensors.
+        # These tokens guided generation but should not be seen during training.
+        # Layout in observation: [...user | hi_tokens(H) | gen_marker(G) | action...]
+        # hi_start = action_ranges[0][0] - G - H (robust to left-truncation)
+        hi_count = response.get("hidden_instruction_token_count", 0)
+        if hi_count > 0 and tokenized_ranges:
+            gen_marker_count = response.get("hidden_instruction_gen_marker_count", 0)
+            first_action = tokenized_ranges[0][0]
+            hi_start = first_action - gen_marker_count - hi_count
+            hi_end = hi_start + hi_count
+            if hi_start >= 0 and hi_end <= len(tokenized_observation):
+                tokenized_observation = tokenized_observation[:hi_start] + tokenized_observation[hi_end:]
+                tokenized_ranges = [(s - hi_count, e - hi_count) for s, e in tokenized_ranges]
+                if response.get("rollout_log_probs") is not None:
+                    lp = response["rollout_log_probs"]
+                    response["rollout_log_probs"] = lp[:hi_start] + lp[hi_end:]
+                logger.debug(
+                    f"[hidden_instruction] Stripped {hi_count} tokens at [{hi_start}:{hi_end}), "
+                    f"new sequence length: {len(tokenized_observation)}"
+                )
+            else:
+                logger.warning(
+                    f"[hidden_instruction] Invalid strip range [{hi_start}:{hi_end}) for "
+                    f"sequence of length {len(tokenized_observation)} "
+                    f"(first_action={first_action}, gen_marker={gen_marker_count}), skipping."
+                )
+
         sequences = torch.tensor(tokenized_observation, dtype=torch.long)
         attention_mask = torch.tensor([1] * len(tokenized_observation))
         # Mark the action span within the concatenated tokens.
@@ -1641,9 +1700,10 @@ class SamplesGenerator:
         # Convert extra logs to tensors for downstream consumers.
         extra_logs = response.get("extra_logs", {})
         for key, value in extra_logs.items():
-            if isinstance(value, torch.Tensor):
-                value = value.flatten()[0].item()
-            info[key] = torch.tensor([value])
+            numeric_value = _maybe_numeric_extra_log(value)
+            if numeric_value is None:
+                continue
+            info[key] = torch.tensor([numeric_value])
 
         # Generic distillation mask: any executor can tag extra_logs["distill"] = 1
         # to request SFT loss on this experience's action tokens.

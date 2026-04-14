@@ -773,6 +773,7 @@ class PolicyModelActor(BaseModelActor):
     def init_model_from_pretrained(self, strategy: DeepspeedStrategy, pretrain, max_steps=None, vllm_engines=None):
         args = strategy.args
         eval_only = getattr(args, "eval_only", False)
+        self.eval_only = eval_only
         self.save_hf_ckpt = args.save_hf_ckpt
         self.disable_ds_ckpt = args.disable_ds_ckpt
         self.vllm_engines = vllm_engines
@@ -942,7 +943,7 @@ class PolicyModelActor(BaseModelActor):
             self.checkpoint_states = states
 
         # initial offload
-        if strategy.args.deepspeed_enable_sleep:
+        if strategy.args.deepspeed_enable_sleep and not self.eval_only:
             offload_deepspeed_states(self.actor.model)
 
         # configure Trainer
@@ -1009,9 +1010,13 @@ class PolicyModelActor(BaseModelActor):
         self.trainer.replay_buffer.append(experience)
 
     def reload_states(self):
+        if self.eval_only:
+            return
         reload_deepspeed_states(self.actor.model)
 
     def offload_states(self):
+        if self.eval_only:
+            return
         offload_deepspeed_states(self.actor.model)
 
     def save_checkpoint(self, tag, client_states):

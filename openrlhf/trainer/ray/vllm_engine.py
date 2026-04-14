@@ -295,6 +295,12 @@ class LLMRayActor:
         tool_version: Optional[str] = None,
         length_penalty_start: int = 0,
         enable_tool_calling_rewards: bool = True,
+        tool_calling_reward_mode: str = "auto",
+        tool_calling_reward_naive_per_call: float = 0.1,
+        tool_calling_reward_feature_single: float = 0.1,
+        tool_calling_reward_feature_full: float = 0.05,
+        tool_calling_reward_feature_max_count: int = 21,
+        tool_calling_reward_until_step: int = -1,
         **kwargs,
     ):
         self._configure_device_env(
@@ -319,6 +325,11 @@ class LLMRayActor:
         self.agent_max_steps = agent_max_steps
         self.vllm_stop_strings = vllm_stop_strings
 
+        # Hidden instruction: injected into prompts during generation,
+        # stripped from token sequences before training.
+        self.hidden_instruction = os.environ.get("OPENRLHF_HIDDEN_INSTRUCTION")
+        self.chat_protocol_name = chat_protocol
+
         # Execution mode mapping:
         # - custom agent executor: user-provided AgentExecutorBase subclass
         # - single-turn with optional reward: default executor
@@ -327,6 +338,12 @@ class LLMRayActor:
                 agent_func_path,
                 length_penalty_start=length_penalty_start,
                 enable_tool_calling_rewards=enable_tool_calling_rewards,
+                tool_calling_reward_until_step=tool_calling_reward_until_step,
+                tool_calling_reward_mode=tool_calling_reward_mode,
+                tool_calling_reward_naive_per_call=tool_calling_reward_naive_per_call,
+                tool_calling_reward_feature_single=tool_calling_reward_feature_single,
+                tool_calling_reward_feature_full=tool_calling_reward_feature_full,
+                tool_calling_reward_feature_max_count=tool_calling_reward_feature_max_count,
             )
         else:
             self.executor = SingleTurnAgentExecutor(
@@ -498,6 +515,8 @@ class LLMRayActor:
     def set_current_global_step(self, step: int):
         """Update the global step used in time-series samples."""
         self._stats_poller.set_global_step(step)
+        if hasattr(self, "executor") and self.executor is not None:
+            self.executor.set_current_global_step(step)
 
     def get_vllm_stats(self) -> Dict:
         """Return accumulated scheduler stats + raw samples, then reset."""
@@ -531,6 +550,65 @@ class LLMRayActor:
         except Exception:
             pass  # non-Linux or musl libc
 
+    # Map protocol names to their generation prompt markers (the string
+    # that starts the assistant turn in a chat-templated prompt).
+    _GENERATION_PROMPT_MARKERS = {
+        "glm_flash": "<|assistant|>\n",
+        "intern_s1": "<|im_start|>assistant\n<think>",
+        "qwen3": "<|im_start|>assistant\n",
+        "qwen3_coder": "<|im_start|>assistant\n",
+        "gpt_oss": "<|start|>assistant",
+    }
+
+    def _inject_hidden_instruction(self, prompt: str) -> tuple:
+        """Inject hidden instruction into prompt and compute token metadata.
+
+        Returns:
+            (augmented_prompt, hi_count, gen_marker_count) where hi_count is the
+            number of hidden instruction tokens and gen_marker_count is the number
+            of generation prompt marker tokens. These are used downstream to
+            compute the exact strip position from the actual observation tokens
+            (which may be truncated). Returns (prompt, 0, 0) if no injection.
+        """
+        hi = self.hidden_instruction
+        if not hi:
+            return prompt, 0, 0
+
+        marker = self._GENERATION_PROMPT_MARKERS.get(self.chat_protocol_name)
+        if marker is None:
+            logger.warning(
+                f"[hidden_instruction] Unknown chat_protocol '{self.chat_protocol_name}', "
+                f"appending hidden instruction to end of prompt as fallback."
+            )
+            augmented = prompt + "\n" + hi
+            marker = ""
+        else:
+            idx = prompt.rfind(marker)
+            if idx == -1:
+                logger.warning(
+                    f"[hidden_instruction] Generation prompt marker {marker!r} not found "
+                    f"in prompt, appending to end as fallback."
+                )
+                augmented = prompt + "\n" + hi
+                marker = ""
+            else:
+                augmented = prompt[:idx] + "\n" + hi + "\n" + prompt[idx:]
+
+        # Compute token counts
+        orig_ids = self.hf_tokenizer(prompt, add_special_tokens=False)["input_ids"]
+        aug_ids = self.hf_tokenizer(augmented, add_special_tokens=False)["input_ids"]
+        hi_count = len(aug_ids) - len(orig_ids)
+
+        if hi_count <= 0:
+            logger.warning(
+                f"[hidden_instruction] Token count delta is {hi_count}, skipping injection."
+            )
+            return prompt, 0, 0
+
+        gen_marker_count = len(self.hf_tokenizer(marker, add_special_tokens=False)["input_ids"]) if marker else 0
+
+        return augmented, hi_count, gen_marker_count
+
     async def generate_responses(
         self,
         prompt: str,
@@ -545,9 +623,12 @@ class LLMRayActor:
         If the executor implements execute_batch(), delegates to it (supports
         variable-size output, e.g. ERL retries). Otherwise loops N times.
         """
+        # Inject hidden instruction into the prompt for generation
+        augmented_prompt, hi_count, gen_marker_count = self._inject_hidden_instruction(prompt)
+
         if hasattr(self.executor, "execute_batch"):
             results = await self.executor.execute_batch(
-                prompt=prompt,
+                prompt=augmented_prompt,
                 label=label,
                 sampling_params=sampling_params,
                 max_length=max_length,
@@ -559,7 +640,7 @@ class LLMRayActor:
         else:
             tasks = [
                 self.executor.execute(
-                    prompt=prompt,
+                    prompt=augmented_prompt,
                     label=label,
                     sampling_params=sampling_params,
                     max_length=max_length,
@@ -570,6 +651,17 @@ class LLMRayActor:
                 for _ in range(num_samples)
             ]
             results = await asyncio.gather(*tasks)
+
+        # Tag each result with hidden instruction metadata for downstream stripping.
+        # We pass hi_count and gen_marker_count so the experience maker can compute
+        # the exact strip position from the actual observation tokens (robust to
+        # left-truncation inside the executor).
+        if hi_count > 0:
+            for result in results:
+                result["hidden_instruction_token_count"] = hi_count
+                result["hidden_instruction_gen_marker_count"] = gen_marker_count
+                # Store the original prompt (without hidden instruction) for logging
+                result["prompt"] = prompt
 
         # Periodically return freed pages to OS.  Each prompt generates many
         # intermediate objects across N samples × T turns; without malloc_trim
@@ -610,6 +702,12 @@ def create_vllm_engines(
     tool_version: Optional[str] = None,
     length_penalty_start: int = 0,
     enable_tool_calling_rewards: bool = True,
+    tool_calling_reward_until_step: int = -1,
+    tool_calling_reward_mode: str = "auto",
+    tool_calling_reward_naive_per_call: float = 0.1,
+    tool_calling_reward_feature_single: float = 0.1,
+    tool_calling_reward_feature_full: float = 0.05,
+    tool_calling_reward_feature_max_count: int = 21,
     reduce_cuda_graph: bool = False,
     vllm_cudagraph_max_capture_size: Optional[int] = None,
     kv_cache_dtype: str = "auto",
@@ -622,8 +720,13 @@ def create_vllm_engines(
     erl_max_memory: int = 5,
     erl_max_reflection_tokens: int = 512,
     language_model_only: bool = False,
+    hidden_instruction: Optional[str] = None,
 ):
     """Spin up a set of vLLM Ray actors with consistent placement."""
+    # Propagate hidden instruction via env var so LLMRayActor can read it.
+    if hidden_instruction:
+        os.environ["OPENRLHF_HIDDEN_INSTRUCTION"] = hidden_instruction
+
     # Propagate ERL config via env vars so ERLExecutor can read them
     # inside the Ray worker (set before LLMRayActor.__init__ calls
     # _load_agent_executor).
@@ -718,6 +821,12 @@ def create_vllm_engines(
                 "tool_version": tool_version,
                 "length_penalty_start": length_penalty_start,
                 "enable_tool_calling_rewards": enable_tool_calling_rewards,
+                "tool_calling_reward_until_step": tool_calling_reward_until_step,
+                "tool_calling_reward_mode": tool_calling_reward_mode,
+                "tool_calling_reward_naive_per_call": tool_calling_reward_naive_per_call,
+                "tool_calling_reward_feature_single": tool_calling_reward_feature_single,
+                "tool_calling_reward_feature_full": tool_calling_reward_feature_full,
+                "tool_calling_reward_feature_max_count": tool_calling_reward_feature_max_count,
             }
         )
 

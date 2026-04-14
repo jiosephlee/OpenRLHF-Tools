@@ -87,6 +87,17 @@ class ChatProtocol(ABC):
         """
         return None
 
+    @property
+    def generation_prompt_marker(self) -> str:
+        """Return the string that marks the start of the assistant generation turn.
+
+        Used by hidden-instruction injection to locate the insertion point
+        (just before this marker) in an already chat-templated prompt.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not define generation_prompt_marker."
+        )
+
     def inject_reflection(self, formatted_prompt: str, reflection: str) -> str:
         """Insert reflection guidance into a formatted prompt's system message.
 
@@ -120,6 +131,10 @@ class GLMFlashProtocol(ChatProtocol):
             tokenizer: HuggingFace tokenizer for the model
         """
         self.tokenizer = tokenizer
+
+    @property
+    def generation_prompt_marker(self) -> str:
+        return "<|assistant|>\n"
 
     def parse_assistant_text(self, text: str, token_ids: Optional[List[int]] = None) -> Dict[str, Any]:
         """Parse GLM Flash tool call format.
@@ -257,6 +272,10 @@ class InternS1Protocol(ChatProtocol):
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
 
+    @property
+    def generation_prompt_marker(self) -> str:
+        return "<|im_start|>assistant\n<think>"
+
     def parse_assistant_text(self, text: str, token_ids: Optional[List[int]] = None) -> Dict[str, Any]:
         """Parse Intern-S1 tool call blocks from assistant output.
 
@@ -369,6 +388,10 @@ class Qwen3Protocol(InternS1Protocol):
 
     _START_RE = re.compile(r"<tool_call>")
     _END_RE = re.compile(r"</tool_call>")
+
+    @property
+    def generation_prompt_marker(self) -> str:
+        return "<|im_start|>assistant\n"
 
     def render_tool_feedback(self, tool_results: List[Dict[str, str]]) -> str:
         """Qwen3 bridge: close assistant turn + tool responses + open next turn."""
@@ -570,6 +593,10 @@ class GPTOSSProtocol(ChatProtocol):
         self.tokenizer = tokenizer
         # Cache <|start|>assistant token IDs for the fallback path.
         self._cached_header_ids: Optional[List[int]] = None
+
+    @property
+    def generation_prompt_marker(self) -> str:
+        return "<|start|>assistant"
 
     @property
     def _assistant_header_ids(self) -> List[int]:

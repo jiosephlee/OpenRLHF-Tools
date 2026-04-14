@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Build KNN pseudo-label metadata for TDC v10 datasets from deduplicated_canonicalized CSVs.
+Build KNN pseudo-label metadata for TDC v11 datasets from raw_deduplicated CSVs.
 
-The pseudo-label is derived from the same similarity tool used during tool-calling:
-`find_similar_molecules(..., embedding_type="fingerprint", include_pseudo_label=True)`.
+The pseudo-label is derived from the same fingerprint-neighbor logic used by v11:
+majority vote over the top-5 weighted-Tanimoto training neighbors.
 
 Usage:
-    python scripts/build_knn_v10_pseudo_labels.py
-    python scripts/build_knn_v10_pseudo_labels.py --tasks AMES hERG
-    python scripts/build_knn_v10_pseudo_labels.py --splits train val test
+    python scripts/build_knn_v11_pseudo_labels.py
+    python scripts/build_knn_v11_pseudo_labels.py --tasks AMES hERG
+    python scripts/build_knn_v11_pseudo_labels.py --splits train val test
 """
 
 from __future__ import annotations
@@ -25,14 +25,14 @@ import numpy as np
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_RAW_DIR = PROJECT_ROOT / "data" / "tdc" / "deduplicated_canonicalized"
-DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "data" / "tdc" / "metadata" / "knn_v10_pseudo_labels.json"
+DEFAULT_RAW_DIR = PROJECT_ROOT / "data" / "tdc" / "raw_deduplicated"
+DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "data" / "tdc" / "metadata" / "knn_v11_pseudo_labels.json"
 DEFAULT_SPLITS = ("train", "val", "test")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build KNN pseudo-label mapping for TDC v10 tool-calling datasets."
+        description="Build KNN pseudo-label mapping for TDC v11 tool-calling datasets."
     )
     parser.add_argument("--tasks", nargs="+", help="Specific tasks to process.")
     parser.add_argument(
@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--raw-dir",
         default=str(DEFAULT_RAW_DIR),
-        help="Directory containing deduplicated canonicalized TDC CSVs.",
+        help="Directory containing raw_deduplicated TDC CSVs.",
     )
     parser.add_argument(
         "--output",
@@ -90,7 +90,6 @@ def iter_task_rows(task_dir: Path, splits: list[str]):
 
 
 def _batch_tanimoto(query_fps: np.ndarray, ref_fps: np.ndarray) -> np.ndarray:
-    """Bulk Tanimoto similarity for many query fingerprints against reference fingerprints."""
     intersections = query_fps @ ref_fps.T
     query_bits = query_fps.sum(axis=1, keepdims=True)
     ref_bits = ref_fps.sum(axis=1, keepdims=True).T
@@ -154,6 +153,7 @@ def main() -> None:
                 train_mask = np.array([s in train_smi_set for s in task_data["smiles"]], dtype=bool)
             else:
                 train_mask = np.ones(len(task_data["smiles"]), dtype=bool)
+
         print(f"Processing {task}...")
         task_rows = list(iter_task_rows(task_dir, args.splits))
         unique_smiles = list(dict.fromkeys(smiles for _, _, smiles, _ in task_rows))
@@ -173,7 +173,6 @@ def main() -> None:
         query_feat_batch = []
         query_smiles_batch = []
         query_exact_train_positions = []
-        query_validity = {}
 
         for smiles in unique_smiles:
             exact_mask = train_smiles == smiles
@@ -192,8 +191,8 @@ def main() -> None:
             else:
                 query_morgan = _compute_query_fp(smiles, use_features=False)
                 query_feat = _compute_query_fp(smiles, use_features=True)
+
             if query_morgan is None or query_feat is None:
-                query_validity[smiles] = False
                 smiles_to_pseudo_label[smiles] = None
                 continue
 
@@ -203,7 +202,6 @@ def main() -> None:
                 if len(train_pos) > 0:
                     exact_train_position = int(train_pos[0])
 
-            query_validity[smiles] = True
             query_smiles_batch.append(smiles)
             query_morgan_batch.append(query_morgan)
             query_feat_batch.append(query_feat)

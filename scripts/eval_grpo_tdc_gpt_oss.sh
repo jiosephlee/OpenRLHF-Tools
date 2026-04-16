@@ -111,10 +111,10 @@ export TORCH_DYNAMO_CACHE_SIZE_LIMIT=1024
 export TORCH_DYNAMO_RECOMPILE_LIMIT=1024
 
 case "$EVAL_SPLIT" in
-    val|test)
+    train|val|test)
         ;;
     *)
-        echo "Error: EVAL_SPLIT must be 'val' or 'test', got '$EVAL_SPLIT'" >&2
+        echo "Error: EVAL_SPLIT must be 'train', 'val', or 'test', got '$EVAL_SPLIT'" >&2
         exit 1
         ;;
 esac
@@ -150,12 +150,25 @@ if [ "$MODE" = "distributed" ]; then
 fi
 
 ### DATA ###
-if [ "$TOOL_VERSION" = "v10" ]; then
+if [ -n "${DATA_DIR_OVERRIDE:-}" ]; then
+    # Explicit override (absolute or relative to project root)
+    if [[ "$DATA_DIR_OVERRIDE" = /* ]]; then
+        DATA_DIR="$DATA_DIR_OVERRIDE"
+    else
+        DATA_DIR="$PROJECT_ROOT/$DATA_DIR_OVERRIDE"
+    fi
+elif [ "$TOOL_VERSION" = "v10" ]; then
     DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v10"
 elif [ "$TOOL_VERSION" = "v11" ]; then
     DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v11"
 elif [ "$TOOL_VERSION" = "v12" ]; then
     DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v12"
+elif [ "$TOOL_VERSION" = "v13" ]; then
+    DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v13"
+elif [ "$TOOL_VERSION" = "v14" ]; then
+    DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v14"
+elif [ "$TOOL_VERSION" = "v14_no_neighbor" ]; then
+    DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v14_no_neighbor"
 else
     DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v10"
 fi
@@ -172,6 +185,10 @@ case "$DATA_DIR_BASENAME" in
     openai_format_v10) DATA_TAG="v10" ;;
     openai_format_v11) DATA_TAG="v11" ;;
     openai_format_v12) DATA_TAG="v12" ;;
+    openai_format_v13) DATA_TAG="v13" ;;
+    openai_format_v14) DATA_TAG="v14" ;;
+    openai_format_v14_no_neighbor) DATA_TAG="v14nn" ;;
+    openai_format_v14_no_neighbor_guided) DATA_TAG="v14nn-guided" ;;
     openai_format_gpt_oss) DATA_TAG="gptoss" ;;
     *) DATA_TAG="${DATA_DIR_BASENAME#openai_format_}" ;;
 esac
@@ -256,7 +273,7 @@ if [ -n "$VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE" ]; then
     OPTIONAL_FLAGS+=(--vllm_cudagraph_max_capture_size "$VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE")
 fi
 if [ -z "${KNN_PL_PATH:-}" ]; then
-    if [ "$TOOL_VERSION" = "v11" ] || [ "$TOOL_VERSION" = "v12" ] || [ "$TOOL_VERSION" = "v13" ]; then
+    if [ "$TOOL_VERSION" = "v11" ] || [ "$TOOL_VERSION" = "v12" ] || [ "$TOOL_VERSION" = "v13" ] || [ "$TOOL_VERSION" = "v14" ] || [ "$TOOL_VERSION" = "v14_no_neighbor" ]; then
         KNN_PL_PATH="$PROJECT_ROOT/data/tdc/metadata/knn_v11_pseudo_labels.json"
     else
         KNN_PL_PATH="$PROJECT_ROOT/data/tdc/metadata/knn_v10_pseudo_labels.json"
@@ -359,10 +376,10 @@ TRAIN_CMD=(
     --disable_ds_ckpt
     --logging_steps 1
     --micro_train_batch_size 2
-    --micro_rollout_batch_size 4
+    --micro_rollout_batch_size 2
     --n_samples_per_prompt 2
-    --train_batch_size 2
-    --rollout_batch_size 2
+    --train_batch_size $(( ACTOR_GPUS * 2 ))
+    --rollout_batch_size "$ACTOR_GPUS"
     --num_episodes 1
     --prompt_max_len "$PROMPT_MAX_LEN"
     --generate_max_len "$GENERATE_MAX_LEN"

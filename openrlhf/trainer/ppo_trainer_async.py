@@ -80,9 +80,11 @@ class GenerateSamplesActor:
         import json as _json
         import os
 
+        from openrlhf.utils.run_paths import resolve_run_dir
+
         run_name = getattr(self.args, "wandb_run_name", "run").replace("/", "_")
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        log_dir = os.path.join(project_root, "runs", run_name, "dataloader_logs")
+        log_dir = os.path.join(resolve_run_dir(project_root, run_name), "dataloader_logs")
         os.makedirs(log_dir, exist_ok=True)
 
         all_samples = []

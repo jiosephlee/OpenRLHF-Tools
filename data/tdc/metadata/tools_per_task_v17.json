@@ -1,0 +1,57 @@
+{
+  "__default__": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_features",
+        "description": "Compute chemistry evidence for a molecule across selected feature groups: 'molecular_profile' (size, shape, logP, TPSA, H-bond donors/acceptors, electronic descriptors), 'ionization_and_solubility' (pKa, dominant form at pH 7.4, logD, aqueous solubility), 'structure_and_topology' (functional groups), 'alert_screening' (structural-alert categories for toxicity/reactivity). Request only the groups needed.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string",
+              "description": "Molecule to analyze, provided as a SMILES string."
+            },
+            "feature_names": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Feature groups to include: molecular_profile, ionization_and_solubility, structure_and_topology, alert_screening."
+            }
+          },
+          "required": [
+            "smiles",
+            "feature_names"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_neighbors",
+        "description": "Find the 3 most structurally similar labeled molecules to the query. For each neighbor returns: Tanimoto similarity, label, Bemis-Murcko scaffold match, MCS size, the substituent/linker change from query to neighbor (MMP transformation), shared vs query-only vs neighbor-only functional groups, and size/shape deltas (MW, heavy atoms, rings, Fsp3, rotatable bonds). Use to judge whether a neighbor's label transfers to the query. For logP, TPSA, pKa, solubility, or alerts, use get_features.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "smiles": {
+              "type": "string",
+              "description": "Query molecule, provided as a SMILES string."
+            },
+            "task_name": {
+              "type": "string",
+              "description": "TDC task name to use for neighbor retrieval."
+            }
+          },
+          "required": [
+            "smiles",
+            "task_name"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

@@ -68,10 +68,13 @@ class CriticPPOTrainer(ABC):
         elif getattr(self.args, "use_dynamic_batch", False):
             self.replay_buffer.setup_dynamic_batch(self.strategy)
 
+        use_partitioned_batches = getattr(self.args, "use_dynamic_batch", False) or getattr(
+            self.args, "use_adaptive_batch", False
+        )
         not_shuffle = (
             self.strategy.ring_attn_group is not None
             or self.args.ds_tensor_parallel_size > 1
-            or self.args.use_dynamic_batch
+            or use_partitioned_batches
         )
         dataloader = DataLoader(
             self.replay_buffer,
@@ -112,6 +115,9 @@ class CriticPPOTrainer(ABC):
 
     def training_step(self, experience: Experience, step: int) -> Dict[str, float]:
         self.critic.train()
+        use_partitioned_batches = getattr(self.args, "use_dynamic_batch", False) or getattr(
+            self.args, "use_adaptive_batch", False
+        )
 
         sequences = experience.sequences
         old_values = experience.values
@@ -144,11 +150,11 @@ class CriticPPOTrainer(ABC):
         else:
             aux_loss = 0
         loss = critic_loss + aux_loss * self.args.aux_loss_coef
-        if self.args.use_dynamic_batch:
+        if use_partitioned_batches:
             loss = loss * self.replay_buffer.dynamic_loss_scale[step]
 
         self.strategy.backward(loss, self.critic, self.critic_optim)
-        if self.args.use_dynamic_batch:
+        if use_partitioned_batches:
             if self.replay_buffer.dynamic_optimizer_step[step]:
                 self.strategy.optimizer_step(self.critic_optim, self.critic, self.critic_scheduler, name="critic")
         else:
@@ -277,14 +283,14 @@ class CriticModelActor(BaseModelActor):
         torch.cuda.synchronize()
         return status
 
-    def save_model(self):
+    def save_model(self, save_path=None):
         args = self.strategy.args
 
         # save model checkpoint after fitting on only rank0
         self.strategy.save_model(
             self.critic,
             self.tokenizer,
-            args.save_path + "_critic",
+            save_path or args.save_path + "_critic",
         )
 
     def save_checkpoint(self, tag):

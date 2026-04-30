@@ -3,6 +3,7 @@ import gc
 import json
 import os
 import re
+import shutil
 import time
 from abc import ABC
 from collections import defaultdict
@@ -17,7 +18,7 @@ from tqdm import tqdm
 
 _TRANSFORMERS_V5 = int(transformers.__version__.split(".")[0]) >= 5
 
-from openrlhf.datasets import PromptDataset
+from openrlhf.datasets import PromptDataset, PromptPoolDataset
 from openrlhf.datasets.prompts_dataset import interleave_indices_by_datasource
 from openrlhf.datasets.utils import blending_datasets
 from openrlhf.trainer.ppo_utils.experience_maker import RemoteExperienceMaker, SamplesGenerator
@@ -28,19 +29,16 @@ from openrlhf.trainer.ray.vllm_engine import batch_vllm_engine_call
 from openrlhf.utils.deepspeed import DeepspeedStrategy
 from openrlhf.utils.logging_utils import TensorboardLogger, WandbLogger, init_logger
 from openrlhf.utils.tdc_reward_model import extract_final_answer
+from openrlhf.utils.tool_versions import resolve_tool_metric_endpoint
 from openrlhf.utils.utils import get_tokenizer
 
 logger = init_logger(__name__)
 
-_NEIGHBOR_TOOL_KEY_PREFIXES = (
-    "tool_count__find_similar_molecules",
-    "tool_count__get_similar_neighbors",
-    "tool_count__get_neighbors",
-)
 _PREPENDED_NEIGHBOR_CONTEXT_RE = re.compile(
     r"(Nearest Neighbors from Training Set:|Nearest Neighbors for task\s+'[^']+'\s+\(k=\d+\):|KNN Predicted Label:\s*\([AB]\)|pseudo label from naive Morgan fingerprint KNN prediction is \([AB]\))",
     re.IGNORECASE,
 )
+from openrlhf.utils.trace_messages import reconstruct_gpt_oss_trace_messages as _reconstruct_gpt_oss_trace_messages
 
 
 def _extract_tdc_binary_choice(text: str) -> str:
@@ -50,18 +48,46 @@ def _extract_tdc_binary_choice(text: str) -> str:
     return answer.upper()
 
 
-def _macro_f1(y_true, y_pred) -> float:
-    classes = sorted(set(y_true) | set(y_pred))
-    f1_sum = 0.0
-    for cls in classes:
-        tp = sum(1 for t, p in zip(y_true, y_pred) if t == cls and p == cls)
-        fp = sum(1 for t, p in zip(y_true, y_pred) if t != cls and p == cls)
-        fn = sum(1 for t, p in zip(y_true, y_pred) if t == cls and p != cls)
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-        f1_sum += f1
-    return f1_sum / len(classes)
+def _tdc_binary_macro_f1(y_true, y_pred) -> float:
+    """Binary macro-F1 for TDC labels.
+
+    Treat any prediction that is not exactly the true ``(A)``/``(B)`` label as
+    an incorrect binary decision. This keeps unparsable outputs from becoming a
+    third class such as ``UNPARSEABLE`` with F1 0, which would artificially
+    depress macro-F1 relative to the binary metric used in the SFT evaluator.
+    """
+
+    tp_pos = fp_pos = fn_pos = tn_pos = 0
+    for true_label, pred_label in zip(y_true, y_pred):
+        positive_label = true_label == "(B)"
+        correct = pred_label == true_label
+        if positive_label and correct:
+            tp_pos += 1
+        elif not positive_label and not correct:
+            fp_pos += 1
+        elif positive_label and not correct:
+            fn_pos += 1
+        else:
+            tn_pos += 1
+
+    precision_pos = tp_pos / (tp_pos + fp_pos) if (tp_pos + fp_pos) > 0 else 0.0
+    recall_pos = tp_pos / (tp_pos + fn_pos) if (tp_pos + fn_pos) > 0 else 0.0
+    f1_pos = (
+        2 * precision_pos * recall_pos / (precision_pos + recall_pos)
+        if (precision_pos + recall_pos) > 0
+        else 0.0
+    )
+
+    tp_neg, fp_neg, fn_neg = tn_pos, fn_pos, fp_pos
+    precision_neg = tp_neg / (tp_neg + fp_neg) if (tp_neg + fp_neg) > 0 else 0.0
+    recall_neg = tp_neg / (tp_neg + fn_neg) if (tp_neg + fn_neg) > 0 else 0.0
+    f1_neg = (
+        2 * precision_neg * recall_neg / (precision_neg + recall_neg)
+        if (precision_neg + recall_neg) > 0
+        else 0.0
+    )
+
+    return (f1_pos + f1_neg) / 2
 
 
 def _prompt_has_neighbor_context(prompt: str) -> bool:
@@ -75,9 +101,12 @@ def _tool_version_number(tool_version: Optional[str]) -> int:
     return int(match.group(1)) if match else 0
 
 
-def _sample_requested_neighbors(sample, sample_idx: int) -> bool:
+def _sample_requested_neighbors(sample, sample_idx: int, tool_version: Optional[str]) -> bool:
     for key, value in sample.info.items():
-        if not any(key.startswith(prefix) for prefix in _NEIGHBOR_TOOL_KEY_PREFIXES):
+        if not key.startswith("tool_count__"):
+            continue
+        tool_name = key[len("tool_count__") :]
+        if resolve_tool_metric_endpoint(tool_version, tool_name) != "neighbors":
             continue
         try:
             tool_count = int(value.flatten()[sample_idx].item())
@@ -105,8 +134,18 @@ def prepare_datasets(strategy, tokenizer):
 
         # Create train dataset
         train_data = train_data.select(range(min(args.max_samples, len(train_data))))
-        prompts_dataset = PromptDataset(train_data, tokenizer, strategy, input_template=args.input_template)
-        shuffle = not getattr(args, "curriculum_balanced", False)
+        prompts_dataset = PromptDataset(
+            train_data,
+            tokenizer,
+            strategy,
+            input_template=args.input_template,
+            enable_phase_curriculum=getattr(args, "static_phase_tool_curriculum", False),
+            dataset_key="prompt_data",
+        )
+        shuffle = not (
+            getattr(args, "curriculum_balanced", False)
+            or getattr(prompts_dataset, "static_phase_curriculum_enabled", False)
+        )
         prompts_dataloader = strategy.setup_dataloader(prompts_dataset, 1, True, shuffle, prompts_dataset.collate_fn)
     else:
         logger.info("No prompt_data provided; skipping training dataset preparation.")
@@ -120,7 +159,7 @@ def prepare_datasets(strategy, tokenizer):
             dataset_split=args.eval_split,
         )
         eval_data = eval_data.select(range(min(args.max_samples, len(eval_data))))
-        eval_dataset = PromptDataset(eval_data, tokenizer, strategy, input_template=args.input_template)
+        eval_dataset = PromptDataset(eval_data, tokenizer, strategy, input_template=args.input_template, dataset_key="eval")
         eval_dataloader = strategy.setup_dataloader(eval_dataset, 1, True, False, eval_dataset.collate_fn)
     else:
         eval_dataloader = None
@@ -132,6 +171,125 @@ def prepare_datasets(strategy, tokenizer):
             len(prompts_dataset) * args.n_samples_per_prompt // args.train_batch_size * args.num_episodes * args.max_epochs
         )
     return prompts_dataloader, eval_dataloader, max_steps
+
+
+def _load_prompt_dataset(
+    strategy,
+    tokenizer,
+    prompt_data,
+    prompt_data_probs,
+    *,
+    dataset_key: str,
+):
+    args = strategy.args
+    train_data = blending_datasets(
+        prompt_data,
+        prompt_data_probs,
+        strategy,
+        args.seed,
+        max_count=args.max_samples,
+        dataset_split=args.prompt_split,
+    )
+    train_data = train_data.select(range(min(args.max_samples, len(train_data))))
+    return PromptDataset(
+        train_data,
+        tokenizer,
+        strategy,
+        input_template=args.input_template,
+        enable_phase_curriculum=getattr(args, "static_phase_tool_curriculum", False),
+        dataset_key=dataset_key,
+    )
+
+
+def _make_training_dataloader(strategy, prompts_dataset, *, shuffle=None):
+    if shuffle is None:
+        shuffle = not (
+            getattr(strategy.args, "curriculum_balanced", False)
+            or getattr(prompts_dataset, "static_phase_curriculum_enabled", False)
+        )
+    return strategy.setup_dataloader(prompts_dataset, 1, True, shuffle, prompts_dataset.collate_fn)
+
+
+def _prepare_eval_dataloader(strategy, tokenizer):
+    args = strategy.args
+    if not getattr(args, "eval_dataset", None):
+        return None
+    eval_data = blending_datasets(
+        args.eval_dataset,
+        None,
+        strategy,
+        dataset_split=args.eval_split,
+    )
+    eval_data = eval_data.select(range(min(args.max_samples, len(eval_data))))
+    eval_dataset = PromptDataset(eval_data, tokenizer, strategy, input_template=args.input_template, dataset_key="eval")
+    return strategy.setup_dataloader(eval_dataset, 1, True, False, eval_dataset.collate_fn)
+
+
+def prepare_structured_datasets(strategy, tokenizer):
+    args = strategy.args
+
+    if not getattr(args, "prompt_data", None) and getattr(args, "episode1_structure", "legacy") != "dual_dataset":
+        raise ValueError("Training requires --prompt_data for structured episode-1 modes.")
+
+    eval_dataloader = _prepare_eval_dataloader(strategy, tokenizer)
+
+    structure = getattr(args, "episode1_structure", "legacy")
+    datasets = {}
+    if structure == "dual_dataset":
+        dataset_a = _load_prompt_dataset(
+            strategy,
+            tokenizer,
+            args.prompt_data_a,
+            getattr(args, "prompt_data_a_probs", None),
+            dataset_key="dataset_a",
+        )
+        dataset_b = _load_prompt_dataset(
+            strategy,
+            tokenizer,
+            args.prompt_data_b,
+            getattr(args, "prompt_data_b_probs", None),
+            dataset_key="dataset_b",
+        )
+        combined_samples = list(dataset_a.iter_prompt_samples()) + list(dataset_b.iter_prompt_samples())
+        combined_hidden_instruction = (
+            dataset_a.late_phase_hidden_instruction
+            if dataset_a.late_phase_hidden_instruction is not None
+            else dataset_b.late_phase_hidden_instruction
+        )
+        combined_dataset = PromptPoolDataset(
+            combined_samples,
+            dataset_key="dual_combined",
+            late_phase_hidden_instruction=combined_hidden_instruction,
+        )
+        prompts_dataloader = _make_training_dataloader(strategy, combined_dataset)
+        datasets = {
+            "dataset_a": dataset_a,
+            "dataset_b": dataset_b,
+            "combined": combined_dataset,
+        }
+        total_prompt_count = len(combined_dataset)
+    else:
+        base_dataset = _load_prompt_dataset(
+            strategy,
+            tokenizer,
+            args.prompt_data,
+            args.prompt_data_probs,
+            dataset_key="prompt_data",
+        )
+        prompts_dataloader = _make_training_dataloader(strategy, base_dataset)
+        datasets = {
+            "base": base_dataset,
+            "combined": base_dataset,
+        }
+        total_prompt_count = len(base_dataset)
+
+    max_steps = total_prompt_count * args.n_samples_per_prompt // args.train_batch_size * args.num_episodes * args.max_epochs
+    return {
+        "prompts_dataloader": prompts_dataloader,
+        "eval_dataloader": eval_dataloader,
+        "max_steps": max_steps,
+        "datasets": datasets,
+    }
 
 
 class BasePPOTrainer(ABC):
@@ -180,6 +338,129 @@ class BasePPOTrainer(ABC):
         self.wandb_logger = WandbLogger(self.args) if self.args.use_wandb else None
         self.tensorboard_logger = TensorboardLogger(self.args) if self.args.use_tensorboard else None
 
+        # Backward compat: --save_sft_distill_traces is a deprecated alias.
+        if getattr(self.args, "save_sft_distill_traces", False) and not getattr(
+            self.args, "save_all_traces", True
+        ):
+            logger.warning(
+                "[full_trace] --save_sft_distill_traces is deprecated; use --save_all_traces instead."
+            )
+            self.args.save_all_traces = True
+
+        self._best_metric: Optional[float] = None
+        self._best_step: Optional[int] = None
+
+    def _resolve_best_metric_key(self) -> str:
+        key = str(getattr(self.args, "best_metric_key", "eval_avg_macro_f1") or "eval_avg_macro_f1").strip()
+        return key if "/" not in key else key.replace("/", "_")
+
+    def _resolve_best_save_path(self) -> str:
+        best_save_path = getattr(self.args, "best_save_path", None)
+        if best_save_path:
+            return os.path.abspath(best_save_path)
+        return os.path.abspath(os.path.join(self.args.save_path, "best"))
+
+    def _is_better_metric(self, metric: float) -> bool:
+        if self._best_metric is None:
+            return True
+        mode = getattr(self.args, "best_metric_mode", "max")
+        if mode == "min":
+            return metric < self._best_metric
+        return metric > self._best_metric
+
+    def _save_best_checkpoint(self, global_step: int, logs: Dict[str, float]) -> None:
+        if not getattr(self.args, "save_best", False):
+            return
+        if not self.strategy.is_rank_0():
+            return
+
+        metric_key = self._resolve_best_metric_key()
+        metric = logs.get(metric_key)
+        if metric is None and "/" in str(getattr(self.args, "best_metric_key", "")):
+            metric = logs.get(str(self.args.best_metric_key).replace("/", "_"))
+        if metric is None:
+            logger.warning(
+                f"[best_ckpt] step {global_step}: metric '{self.args.best_metric_key}' not found in eval logs; "
+                "skipping best-checkpoint promotion."
+            )
+            return
+
+        metric = float(metric)
+        if not self._is_better_metric(metric):
+            logger.info(
+                f"[best_ckpt] step {global_step}: {metric_key}={metric:.6f} did not improve on "
+                f"{self._best_metric:.6f} at step {self._best_step}."
+            )
+            return
+
+        best_path = self._resolve_best_save_path()
+        critic_best_path = f"{best_path}_critic"
+        os.makedirs(os.path.dirname(best_path), exist_ok=True)
+        shutil.rmtree(best_path, ignore_errors=True)
+        if self.args.save_value_network:
+            shutil.rmtree(critic_best_path, ignore_errors=True)
+
+        previous = self._best_metric
+        prev_str = f"{previous:.6f}" if previous is not None else "None"
+        logger.info(
+            f"[best_ckpt] saving promoted checkpoint synchronously @ step {global_step}: "
+            f"{metric_key}={metric:.6f} (prev {prev_str}) -> {best_path}"
+        )
+
+        # NOTE: this must stay synchronous. The PPO Ray actors process methods
+        # serially and strategy.save_model() contains a distributed barrier, so
+        # queueing an "async" save on the live actors causes the next
+        # append/ppo_train call to sit behind the checkpoint write and makes the
+        # run appear frozen during rollout append.
+        refs = list(self.actor_model_group.async_save_model(best_path))
+        if self.critic_model_group is not None and self.args.save_value_network:
+            refs.extend(self.critic_model_group.async_save_model(critic_best_path))
+        try:
+            ray.get(refs)
+        except Exception as exc:
+            logger.warning(f"[best_ckpt] save failed at step {global_step}: {exc}")
+            return
+
+        metric_payload = {
+            "step": global_step,
+            "metric_key": metric_key,
+            "metric": metric,
+            "metric_mode": getattr(self.args, "best_metric_mode", "max"),
+            "metrics": logs,
+        }
+        try:
+            with open(os.path.join(best_path, "metric.json"), "w") as f:
+                json.dump(metric_payload, f, indent=2, default=str)
+            with open(os.path.join(best_path, "training_config.json"), "w") as f:
+                json.dump(vars(self.args), f, indent=2, default=str)
+        except OSError as exc:
+            logger.warning(f"[best_ckpt] failed to write sidecar JSON to {best_path}: {exc}")
+
+        self._best_metric = metric
+        self._best_step = global_step
+        logger.info(
+            f"[best_ckpt] NEW BEST @ step {global_step}: "
+            f"{metric_key}={metric:.6f} (prev {prev_str}) -> {best_path}"
+        )
+
+    def _await_pending_best_save(self, *, reason: str = "shutdown") -> None:
+        """Compatibility no-op.
+
+        Best-checkpoint saves are synchronous because queuing them onto the live
+        PPO actors blocks subsequent append/fit calls behind the save and makes
+        training appear frozen.
+        """
+        return
+
+    def _full_trace_enabled(self) -> bool:
+        """True iff per-sample full-trace dumping should fire on this rank."""
+        if not getattr(self.args, "save_all_traces", True):
+            return False
+        from openrlhf.utils.full_trace import is_enabled as _bulk_enabled
+        if not _bulk_enabled():
+            return False
+        return True
+
     def _get_response_text(self, seq, action_mask=None) -> str:
         """Helper to decode a sequence and strip the prompt and special/pad tokens.
 
@@ -205,6 +486,8 @@ class BasePPOTrainer(ABC):
         protocol = os.environ.get("OPENRLHF_CHAT_PROTOCOL", "")
         if protocol == "gpt_oss":
             _split_marker = "<|start|>assistant"
+        elif protocol == "kimi_k2":
+            _split_marker = "<|im_assistant|>assistant<|im_middle|>"
         elif protocol in ("intern_s1", "qwen3"):
             _split_marker = "<|im_start|>assistant"
         else:
@@ -219,6 +502,7 @@ class BasePPOTrainer(ABC):
         raise NotImplementedError("fit method is not implemented")
 
     def _collect_eval_tool_usage(self, all_prompts, samples_list, prompt_to_datasource):
+        tool_version = getattr(self.args, "tool_version", None)
         per_dataset_counts = defaultdict(lambda: defaultdict(int))
         per_dataset_prompts_used = defaultdict(lambda: defaultdict(int))  # prompts that used tool at least once
         per_dataset_requested_neighbors = defaultdict(int)
@@ -233,7 +517,7 @@ class BasePPOTrainer(ABC):
                     break
                 datasource = prompt_to_datasource[all_prompts[prompt_idx]]
                 per_dataset_total_prompts[datasource] += 1
-                requested_neighbors = _sample_requested_neighbors(sample, i)
+                requested_neighbors = _sample_requested_neighbors(sample, i, tool_version)
                 sample_requested_neighbors.append(requested_neighbors)
                 if requested_neighbors:
                     per_dataset_requested_neighbors[datasource] += 1
@@ -387,10 +671,10 @@ class BasePPOTrainer(ABC):
     def _write_knn_eval_reversal_traces(
         self,
         global_step: int,
-        traces_by_dataset: dict[str, list[dict]],
+        traces_by_dataset: dict[str, dict],
         summary: dict[str, int],
     ) -> None:
-        """Persist a small sample of correct KNN reversals for offline inspection."""
+        """Persist per-dataset KNN reversal summaries plus one correct/incorrect example."""
         run_dir = self.samples_generator.runs_dir
         output_dir = os.path.join(run_dir, "knn_eval_reversals")
         os.makedirs(output_dir, exist_ok=True)
@@ -407,19 +691,69 @@ class BasePPOTrainer(ABC):
 
         jsonl_path = os.path.join(output_dir, "history.jsonl")
         with open(jsonl_path, "a") as f:
-            for datasource, records in traces_by_dataset.items():
-                for record in records:
+            for datasource, dataset_payload in traces_by_dataset.items():
+                for reversal_type in ("correct_reversal", "incorrect_reversal"):
+                    record = dataset_payload.get(reversal_type)
+                    if not record:
+                        continue
                     f.write(
                         json.dumps(
-                            {"global_step": global_step, "datasource": datasource, **record},
+                            {
+                                "global_step": global_step,
+                                "datasource": datasource,
+                                "reversal_type": reversal_type,
+                                **record,
+                            },
                             ensure_ascii=False,
                             default=str,
                         )
                         + "\n"
                     )
 
-        total_records = sum(len(records) for records in traces_by_dataset.values())
-        logger.info(f"[knn_eval_reversals] Wrote {total_records} correct-reversal traces to {json_path}")
+        total_records = sum(
+            1
+            for dataset_payload in traces_by_dataset.values()
+            for reversal_type in ("correct_reversal", "incorrect_reversal")
+            if dataset_payload.get(reversal_type)
+        )
+        logger.info(
+            f"[knn_eval_reversals] Wrote {total_records} sampled reversal traces across "
+            f"{len(traces_by_dataset)} datasets to {json_path}"
+        )
+
+    def _build_knn_eval_reversal_trace_record(
+        self,
+        original_prompt: str,
+        true_answer: str,
+        knn_pl,
+        requested_neighbors: bool,
+        sample_idx_within_prompt: int,
+        sample_score: float,
+        exp,
+    ) -> dict:
+        action_mask = exp.action_mask[0] if exp.action_mask is not None else None
+        response_text = self._get_response_text(exp.sequences[0], action_mask)
+        try:
+            model_pred = _extract_tdc_binary_choice(response_text)
+        except ValueError:
+            model_pred = "UNPARSEABLE"
+
+        return {
+            "prompt": original_prompt,
+            "true_label": _extract_tdc_binary_choice(true_answer),
+            "knn_pseudo_label": str(knn_pl),
+            "model_pred": model_pred,
+            "score": float(sample_score),
+            "sample_index_within_prompt": int(sample_idx_within_prompt),
+            "response": response_text,
+            "response_preview": response_text[:200],
+            "requested_neighbors": requested_neighbors,
+            "response_length": int(exp.info.get("response_length", torch.tensor([0])).flatten()[0].item()),
+            "completion_length": int(
+                exp.info.get("completion_length", torch.tensor([0])).flatten()[0].item()
+            ),
+            "total_length": int(exp.info.get("total_length", torch.tensor([0])).flatten()[0].item()),
+        }
 
     def _write_tool_heavy_eval_traces(self, global_step: int, records: list[dict]) -> None:
         """Persist a small sample of v10+ eval traces that used many tools."""
@@ -502,16 +836,21 @@ class BasePPOTrainer(ABC):
         # First collect all prompts and labels
         prompt_to_datasource = {}  # Dictionary to store mapping between prompts and their data sources
         prompt_to_knn_pl = {}      # prompt -> KNN pseudo-label (or None)
+        prompt_to_source_record = {}
+        eval_dataset = getattr(self.eval_dataloader, "dataset", None)
+        eval_raw_records = getattr(eval_dataset, "raw_records", None)
         for batch in self.eval_dataloader:
-            # Support both 4-tuple (legacy) and 5-tuple (with knn_pseudo_labels)
-            if len(batch) == 5:
-                _indices, datasources, prompts, labels, knn_pls = batch
+            # Support legacy tuples as well as extra curriculum metadata.
+            if len(batch) >= 5:
+                _indices, datasources, prompts, labels, knn_pls = batch[:5]
             else:
                 _indices, datasources, prompts, labels = batch
                 knn_pls = [None] * len(prompts)
-            for prompt, datasource, knn_pl in zip(prompts, datasources, knn_pls):
+            for idx, prompt, datasource, knn_pl in zip(_indices, prompts, datasources, knn_pls):
                 prompt_to_datasource[prompt] = datasource
                 prompt_to_knn_pl[prompt] = knn_pl
+                if eval_raw_records is not None and 0 <= idx < len(eval_raw_records):
+                    prompt_to_source_record[prompt] = eval_raw_records[idx]
 
         # Generate samples and calculate rewards
         samples_list = self.samples_generator.generate_eval_samples(global_step=global_step, **generate_kwargs)
@@ -541,7 +880,10 @@ class BasePPOTrainer(ABC):
         for i in range(num_prompts):
             # Get the original prompt (first one in the chunk)
             original_prompt = all_prompts[i * n_samples_per_prompt]
-            datasource = prompt_to_datasource[original_prompt]  # Get corresponding data source using the mapping
+            datasource = prompt_to_datasource.get(original_prompt)
+            if datasource is None:
+                logger.warning("[eval] Missing datasource for prompt; falling back to 'unknown'. prompt=%r", original_prompt[:200])
+                datasource = "unknown"
             if datasource not in global_metrics:
                 global_metrics[datasource] = {f"pass{n_samples_per_prompt}": 0, "pass1": 0, "count": 0}
 
@@ -594,7 +936,7 @@ class BasePPOTrainer(ABC):
             preds_by_datasource = defaultdict(list)
             unparseable_records = []
             for prompt, label, sample in zip(all_prompts, all_labels, samples_list):
-                datasource = prompt_to_datasource[prompt]
+                datasource = prompt_to_datasource.get(prompt, "unknown")
                 action_mask = sample.action_mask[0] if sample.action_mask is not None else None
                 text = self._get_response_text(sample.sequences[0], action_mask)
                 try:
@@ -628,12 +970,65 @@ class BasePPOTrainer(ABC):
 
             macro_f1_values = []
             for datasource in labels_by_datasource:
-                macro_f1 = _macro_f1(labels_by_datasource[datasource], preds_by_datasource[datasource])
+                macro_f1 = _tdc_binary_macro_f1(labels_by_datasource[datasource], preds_by_datasource[datasource])
                 logs[f"eval_{datasource}_macro_f1"] = macro_f1
                 macro_f1_values.append(macro_f1)
             if macro_f1_values:
                 logs["eval_avg_macro_f1"] = sum(macro_f1_values) / len(macro_f1_values)
             self._write_unparseable_eval_traces(global_step, unparseable_records)
+
+        # Per-sample full-trace dump (eval phase).
+        if self._full_trace_enabled() and self.strategy.is_rank_0():
+            from openrlhf.utils.full_trace import write_jsonl as _write_full_trace_jsonl
+
+            include_trace_messages = bool(getattr(self.args, "save_distill_trace_messages", False))
+            records = []
+            for k, (prompt, label, sample) in enumerate(zip(all_prompts, all_labels, samples_list)):
+                i = k // n_samples_per_prompt
+                j = k % n_samples_per_prompt
+                action_mask = sample.action_mask[0] if sample.action_mask is not None else None
+                response = self._get_response_text(sample.sequences[0], action_mask)
+                source_record = prompt_to_source_record.get(prompt, {}) or {}
+                rec = {
+                    "phase": "eval",
+                    "global_step": global_step,
+                    "datasource": prompt_to_datasource.get(prompt, "unknown"),
+                    "task": source_record.get("task", prompt_to_datasource.get(prompt, "unknown")),
+                    "smiles": source_record.get("smiles"),
+                    "prompt": prompt,
+                    "label": label,
+                    "response": response,
+                    "score": float(scores[i][j].item()),
+                    "reward": float(rewards[i][j].item()),
+                    "sample_idx": j,
+                    "ds_idx": None,
+                    "source_messages": source_record.get("messages"),
+                    "source_answer": source_record.get("answer"),
+                    "source_label": source_record.get("label"),
+                    "response_length": int(
+                        sample.info.get("response_length", torch.tensor([0])).flatten()[0].item()
+                    ),
+                    "completion_length": int(
+                        sample.info.get("completion_length", torch.tensor([0])).flatten()[0].item()
+                    ),
+                    "total_length": int(
+                        sample.info.get("total_length", torch.tensor([0])).flatten()[0].item()
+                    ),
+                    "truncated": bool(
+                        sample.info.get("truncated", torch.tensor([0])).flatten()[0].item()
+                    ),
+                    "extra_logs": None,
+                }
+                if include_trace_messages:
+                    rec["trace_messages"] = _reconstruct_gpt_oss_trace_messages(self.tokenizer, sample, k)
+                if is_tdc_eval:
+                    try:
+                        rec["pred"] = _extract_tdc_binary_choice(response)
+                    except ValueError:
+                        rec["pred"] = "UNPARSEABLE"
+                records.append(rec)
+            run_name = getattr(self.args, "wandb_run_name", "run").replace("/", "_")
+            _write_full_trace_jsonl(records, phase="eval", global_step=global_step, run_name=run_name)
 
         (
             per_dataset_counts,
@@ -665,8 +1060,21 @@ class BasePPOTrainer(ABC):
         knn_eval_incorrect_reversal = 0
         knn_eval_correct_stick = 0
         knn_eval_incorrect_stick = 0
-        knn_correct_reversal_traces = defaultdict(list)
-        max_knn_reversal_traces_per_dataset = 1
+        knn_reversal_traces_by_dataset = {
+            datasource: {
+                "summary": {
+                    "knn_eval_total": 0,
+                    "knn_eval_reversed": 0,
+                    "knn_eval_correct_reversal": 0,
+                    "knn_eval_incorrect_reversal": 0,
+                    "knn_eval_correct_stick": 0,
+                    "knn_eval_incorrect_stick": 0,
+                },
+                "correct_reversal": None,
+                "incorrect_reversal": None,
+            }
+            for datasource in sorted(set(prompt_to_datasource.values()))
+        }
         tool_heavy_eval_records = []
         collect_tool_heavy_traces = _tool_version_number(getattr(self.args, "tool_version", None)) >= 10
         for i in range(num_prompts):
@@ -735,53 +1143,74 @@ class BasePPOTrainer(ABC):
             )
             if not requested_neighbors:
                 continue
+
+            if datasource not in knn_reversal_traces_by_dataset:
+                knn_reversal_traces_by_dataset[datasource] = {
+                    "summary": {
+                        "knn_eval_total": 0,
+                        "knn_eval_reversed": 0,
+                        "knn_eval_correct_reversal": 0,
+                        "knn_eval_incorrect_reversal": 0,
+                        "knn_eval_correct_stick": 0,
+                        "knn_eval_incorrect_stick": 0,
+                    },
+                    "correct_reversal": None,
+                    "incorrect_reversal": None,
+                }
+
+            dataset_knn_summary = knn_reversal_traces_by_dataset[datasource]["summary"]
             knn_eval_total += 1
+            dataset_knn_summary["knn_eval_total"] += 1
             model_correct = chunk_scores.max().item() > 0
             knn_agrees_with_truth = knn_pl in str(true_answer)
             reversed_knn = model_correct != knn_agrees_with_truth
             if reversed_knn:
                 knn_eval_reversed += 1
+                dataset_knn_summary["knn_eval_reversed"] += 1
                 if model_correct:
                     knn_eval_correct_reversal += 1
-                    if len(knn_correct_reversal_traces[datasource]) < max_knn_reversal_traces_per_dataset:
+                    dataset_knn_summary["knn_eval_correct_reversal"] += 1
+                    if knn_reversal_traces_by_dataset[datasource]["correct_reversal"] is None:
                         chosen_idx = next(
                             (j for j in range(n_samples_per_prompt) if chunk_scores[j].item() > 0),
                             chunk_scores.argmax().item(),
                         )
                         exp = samples_list[sample_start + chosen_idx]
-                        action_mask = exp.action_mask[0] if exp.action_mask is not None else None
-                        response_text = self._get_response_text(exp.sequences[0], action_mask)
-                        try:
-                            model_pred = _extract_tdc_binary_choice(response_text)
-                        except ValueError:
-                            model_pred = "UNPARSEABLE"
-                        knn_correct_reversal_traces[datasource].append(
-                            {
-                                "prompt": original_prompt,
-                                "true_label": _extract_tdc_binary_choice(true_answer),
-                                "knn_pseudo_label": str(knn_pl),
-                                "model_pred": model_pred,
-                                "response": response_text,
-                                "response_preview": response_text[:200],
-                                "requested_neighbors": requested_neighbors,
-                                "response_length": int(
-                                    exp.info.get("response_length", torch.tensor([0])).flatten()[0].item()
-                                ),
-                                "completion_length": int(
-                                    exp.info.get("completion_length", torch.tensor([0])).flatten()[0].item()
-                                ),
-                                "total_length": int(
-                                    exp.info.get("total_length", torch.tensor([0])).flatten()[0].item()
-                                ),
-                            }
+                        knn_reversal_traces_by_dataset[datasource]["correct_reversal"] = (
+                            self._build_knn_eval_reversal_trace_record(
+                                original_prompt=original_prompt,
+                                true_answer=true_answer,
+                                knn_pl=knn_pl,
+                                requested_neighbors=requested_neighbors,
+                                sample_idx_within_prompt=chosen_idx,
+                                sample_score=chunk_scores[chosen_idx].item(),
+                                exp=exp,
+                            )
                         )
                 else:
                     knn_eval_incorrect_reversal += 1
+                    dataset_knn_summary["knn_eval_incorrect_reversal"] += 1
+                    if knn_reversal_traces_by_dataset[datasource]["incorrect_reversal"] is None:
+                        chosen_idx = chunk_scores.argmax().item()
+                        exp = samples_list[sample_start + chosen_idx]
+                        knn_reversal_traces_by_dataset[datasource]["incorrect_reversal"] = (
+                            self._build_knn_eval_reversal_trace_record(
+                                original_prompt=original_prompt,
+                                true_answer=true_answer,
+                                knn_pl=knn_pl,
+                                requested_neighbors=requested_neighbors,
+                                sample_idx_within_prompt=chosen_idx,
+                                sample_score=chunk_scores[chosen_idx].item(),
+                                exp=exp,
+                            )
+                        )
             else:
                 if model_correct:
                     knn_eval_correct_stick += 1
+                    dataset_knn_summary["knn_eval_correct_stick"] += 1
                 else:
                     knn_eval_incorrect_stick += 1
+                    dataset_knn_summary["knn_eval_incorrect_stick"] += 1
         if knn_eval_total > 0:
             logs["knn_eval_reversal_pct"] = knn_eval_reversed / knn_eval_total * 100
             logs["knn_eval_correct_reversal_pct"] = knn_eval_correct_reversal / knn_eval_total * 100
@@ -791,7 +1220,7 @@ class BasePPOTrainer(ABC):
         logs["knn_eval_total"] = knn_eval_total
         self._write_knn_eval_reversal_traces(
             global_step,
-            {ds: records for ds, records in sorted(knn_correct_reversal_traces.items()) if records},
+            {ds: knn_reversal_traces_by_dataset[ds] for ds in sorted(knn_reversal_traces_by_dataset)},
             {
                 "knn_eval_total": knn_eval_total,
                 "knn_eval_reversed": knn_eval_reversed,
@@ -868,6 +1297,8 @@ class BasePPOTrainer(ABC):
         time_str = str(timedelta(seconds=duration)).split(".")[0]
         logger.info(f"✨ Evaluation completed in {time_str}, global_step {global_step}, eval_metrics: {logs}")
 
+        self._save_best_checkpoint(global_step, logs)
+
         # Eval generates the entire dataset at once — free the large result set.
         del samples_list, all_prompts, all_labels, rewards
         gc.collect()
@@ -895,6 +1326,13 @@ class BasePPOTrainer(ABC):
     
         # Turn raw rollouts into PPO-ready trajectories with rewards.
         experiences = self.experience_maker.make_experience_batch(rollout_samples)
+        if not experiences:
+            status = {
+                "time/forward_pass": time.time() - forward_start_time,
+                "skipped_empty_experience_batch": 1.0,
+            }
+            logger.warning("Skipping PPO step because all rollout traces were discarded before training.")
+            return status, global_step
 
         time_forward_pass = time.time() - forward_start_time
         status = {}
@@ -924,9 +1362,44 @@ class BasePPOTrainer(ABC):
             self._log_interesting_groups(experiences, global_step)
 
         # Balance experiences across DP ranks if needed.
-        if self.args.use_dynamic_batch:
+        effective_actors = (
+            self.args.actor_num_nodes * self.args.actor_num_gpus_per_node
+            // self.args.ring_attn_size // self.args.ds_tensor_parallel_size
+        )
+
+        def _count_samples(exps):
+            total = 0
+            for e in exps:
+                seqs = getattr(e, "sequences", None)
+                if seqs is None:
+                    continue
+                total += int(seqs.shape[0]) if seqs.dim() > 1 else 1
+            return total
+
+        pre_balance_samples = _count_samples(experiences)
+        pre_balance_batches = len(experiences)
+
+        if self.args.use_dynamic_batch or self.args.use_adaptive_batch:
             experiences = balance_experiences(experiences, self.args)
-        
+
+        post_balance_batches = len(experiences)
+        logger.info(
+            f"[debug] step={global_step} pre_balance_batches={pre_balance_batches} "
+            f"pre_balance_samples={pre_balance_samples} post_balance_batches={post_balance_batches} "
+            f"effective_actors={effective_actors} use_dynamic_batch={self.args.use_dynamic_batch} "
+            f"use_adaptive_batch={self.args.use_adaptive_batch}"
+        )
+
+        if len(experiences) < effective_actors:
+            logger.warning(
+                f"Skipping PPO step {global_step}: only {len(experiences)} experiences "
+                f"for {effective_actors} effective actors (pre_balance_samples={pre_balance_samples}, "
+                f"pre_balance_batches={pre_balance_batches}). Likely caused by drop+filter wiping the batch."
+            )
+            status["skipped_undersized_experience_batch"] = 1.0
+            status["undersized_pre_balance_samples"] = float(pre_balance_samples)
+            return status, global_step
+
         # Push experiences to actor (and critic) shards before PPO.
         refs = self.actor_model_group.async_run_method_batch(method_name="append", experience=experiences)
         if self.critic_model_group is not None:
@@ -1149,27 +1622,54 @@ class BasePPOTrainer(ABC):
                 for si in range(start, end):
                     seq = sequences[si]
                     am = action_masks[si] if action_masks is not None else None
-                    response_text = self._get_response_text(seq, am)
                     samples.append({
                         "reward": group_rewards[si - start],
-                        "response_text": response_text,
+                        "response_text": self._get_response_text(seq, am),
                     })
 
                 record = {
                     "step": global_step,
                     "type": gtype,
-                    "group_rewards": group_rewards,
                     "prompt": group_prompt,
                     "label": group_label,
                     "samples": samples,
                 }
                 trace_path = os.path.join(trace_dir, f"group_trace_step{global_step}_{gtype}.json")
-                with open(trace_path, "w") as f:
-                    json.dump(record, f, ensure_ascii=True, indent=2)
+                self._submit_async_json_dump(trace_path, record, label=f"group_trace step={global_step} type={gtype}")
                 logger.info(f"[group_trace] step={global_step} type={gtype} rewards={group_rewards} -> {trace_path}")
 
         except Exception as e:
             logger.warning(f"[group_trace] Failed to log interesting groups at step {global_step}: {e}")
+
+    def _submit_async_json_dump(self, path: str, payload: dict, *, label: str = "json_dump", timeout: float = 5.0) -> None:
+        """Run :func:`json.dump` on a background single-worker pool with a hard timeout.
+
+        Used to keep showcase trace dumps off the trainer thread. On timeout we
+        log a warning and continue; the write may still complete in the background.
+        """
+        import concurrent.futures
+
+        executor = getattr(self, "_async_dump_executor", None)
+        if executor is None:
+            executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="trace-json-dump"
+            )
+            self._async_dump_executor = executor
+
+        def _do_dump():
+            with open(path, "w") as f:
+                json.dump(payload, f, ensure_ascii=True, indent=2)
+
+        future = executor.submit(_do_dump)
+        try:
+            future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            logger.warning(
+                "[%s] async dump exceeded %.1fs timeout (%s); continuing without blocking trainer",
+                label, timeout, path,
+            )
+        except Exception as exc:
+            logger.warning("[%s] async dump failed for %s: %s", label, path, exc)
 
     def _empty_all_model_caches(self) -> None:
         """Force PyTorch caching allocator to release memory back to CUDA/OS
@@ -1189,6 +1689,20 @@ class BasePPOTrainer(ABC):
     def save_logs_and_checkpoints(self, global_step: int, logs_dict=None, client_states=None) -> None:
         logs_dict = logs_dict or {}
         if global_step % self.args.logging_steps == 0:
+            try:
+                from openrlhf.utils.trace_writer import TraceWriter
+
+                snap = TraceWriter.instance().snapshot_stats()
+                for phase, stats in snap.items():
+                    logs_dict[f"trace/{phase}_submitted"] = stats["submitted"]
+                    logs_dict[f"trace/{phase}_written"] = stats["written"]
+                    logs_dict[f"trace/{phase}_dropped_full"] = stats["dropped_full"]
+                    logs_dict[f"trace/{phase}_dropped_budget"] = stats["dropped_budget"]
+                    logs_dict[f"trace/{phase}_budget_exceeded_steps"] = stats["budget_exceeded_steps"]
+                    logs_dict[f"trace/{phase}_bytes_written"] = stats["bytes_written"]
+            except Exception as exc:  # pragma: no cover — logging-only path
+                logger.warning("[trace_writer] failed to snapshot stats: %s", exc)
+
             if self.wandb_logger:
                 self.wandb_logger.log_train(global_step, logs_dict)
             if self.tensorboard_logger:
@@ -1268,7 +1782,20 @@ class PPOTrainer(BasePPOTrainer):
     ) -> None:
         # Tokenizer is shared across the sample generator and trainer to avoid duplicated loads.
         tokenizer = get_tokenizer(pretrain, None, "left", strategy, use_fast=not strategy.args.disable_fast_tokenizer)
-        self.prompts_dataloader, self.eval_dataloader, self.max_steps = prepare_datasets(strategy, tokenizer)
+        self.episode1_structure = getattr(strategy.args, "episode1_structure", "legacy")
+        if self.episode1_structure == "legacy":
+            self.prompts_dataloader, self.eval_dataloader, self.max_steps = prepare_datasets(strategy, tokenizer)
+            self.phase_datasets = {
+                "base": self.prompts_dataloader.dataset if self.prompts_dataloader is not None else None,
+                "combined": self.prompts_dataloader.dataset if self.prompts_dataloader is not None else None,
+            }
+        else:
+            structured_context = prepare_structured_datasets(strategy, tokenizer)
+            self.prompts_dataloader = structured_context["prompts_dataloader"]
+            self.eval_dataloader = structured_context["eval_dataloader"]
+            self.max_steps = structured_context["max_steps"]
+            self.phase_datasets = structured_context["datasets"]
+        self.followup_prompts_dataloader = self.prompts_dataloader
         strategy.args.max_steps = self.max_steps
 
         # get eval and save steps
@@ -1276,6 +1803,8 @@ class PPOTrainer(BasePPOTrainer):
             strategy.args.eval_steps = float("inf")  # do not evaluate
         if strategy.args.save_steps == -1:
             strategy.args.save_steps = float("inf")  # do not save ckpt
+        if getattr(strategy.args, "best_metric_mode", "max") not in {"max", "min"}:
+            raise ValueError(f"best_metric_mode must be 'max' or 'min', got {strategy.args.best_metric_mode!r}")
         logger.info(f"save_steps={strategy.args.save_steps} (max_steps={self.max_steps})")
         self.generate_kwargs = generate_kwargs
 
@@ -1287,6 +1816,17 @@ class PPOTrainer(BasePPOTrainer):
             tokenizer=tokenizer,
             vllm_engines=vllm_engines,
         )
+        self.prompt_ref_registry = {}
+        for dataset in self.phase_datasets.values():
+            if dataset is not None and hasattr(dataset, "iter_prompt_samples"):
+                for sample in dataset.iter_prompt_samples():
+                    self.prompt_ref_registry[sample["prompt_ref"]] = sample
+        self.default_late_phase_hidden_instruction = None
+        for dataset in self.phase_datasets.values():
+            hidden_instruction = getattr(dataset, "late_phase_hidden_instruction", None)
+            if hidden_instruction:
+                self.default_late_phase_hidden_instruction = hidden_instruction
+                break
 
         # train
         super().__init__(
@@ -1313,10 +1853,16 @@ class PPOTrainer(BasePPOTrainer):
             if state_dict and self.prompts_dataloader is not None:
                 self.prompts_dataloader.load_state_dict(state_dict)
 
-        # Make eval-only use the actor as the source of truth for vLLM weights.
-        # This is required for PEFT/LoRA adapter repos where vLLM may be
-        # initialized from the base model via --vllm_pretrain.
-        self.broadcast_to_vllm()
+        # Only broadcast when vLLM was booted from a different checkpoint than
+        # the actor (LoRA/adapter via --vllm_pretrain, or vLLM loaded a quantized
+        # format the actor needs to overwrite). For a plain eval where both
+        # sides loaded the same --pretrain, the broadcast is wasted work and
+        # can OOM (bf16 actor weights overwrite a quantized vLLM copy).
+        needs_broadcast = bool(getattr(self.args, "vllm_pretrain", None)) or (
+            getattr(self.args, "lora_rank", 0) or 0
+        ) > 0
+        if needs_broadcast:
+            self.broadcast_to_vllm()
 
         eval_generate_kwargs = self.generate_kwargs.copy()
         eval_generate_kwargs["temperature"] = self.args.eval_temperature
@@ -1329,10 +1875,383 @@ class PPOTrainer(BasePPOTrainer):
         self._write_run_summary(global_step)
         self._write_scheduler_timeseries_plot()
         self._write_final_tool_usage_plot()
+        # Drain any in-flight best-checkpoint save so the on-disk artifact
+        # (model shards + sidecar JSONs) is durable before we exit.
+        self._await_pending_best_save(reason="trainer shutdown")
         if self.wandb_logger:
             self.wandb_logger.close()
         if self.tensorboard_logger:
             self.tensorboard_logger.close()
+
+    def _safe_dataloader_state_dict(self, dataloader):
+        if dataloader is None or not hasattr(dataloader, "state_dict"):
+            return {}
+        return dataloader.state_dict()
+
+    def _set_active_prompts_dataloader(self, dataloader):
+        self.prompts_dataloader = dataloader
+        self.samples_generator.set_prompts_dataloader(dataloader)
+
+    def _dedupe_prompt_refs(self, prompt_refs):
+        deduped = []
+        seen = set()
+        for prompt_ref in prompt_refs:
+            if prompt_ref is None or prompt_ref in seen:
+                continue
+            if prompt_ref not in self.prompt_ref_registry:
+                continue
+            seen.add(prompt_ref)
+            deduped.append(prompt_ref)
+        return deduped
+
+    def _build_phase_dataset(self, prompt_refs, dataset_key: str):
+        deduped_prompt_refs = self._dedupe_prompt_refs(prompt_refs)
+        samples = [self.prompt_ref_registry[prompt_ref] for prompt_ref in deduped_prompt_refs]
+        return PromptPoolDataset(
+            samples,
+            dataset_key=dataset_key,
+            late_phase_hidden_instruction=self.default_late_phase_hidden_instruction,
+        )
+
+    def _build_phase_dataloader(self, prompt_refs, dataset_key: str, *, shuffle: bool):
+        phase_dataset = self._build_phase_dataset(prompt_refs, dataset_key)
+        return DataLoader(
+            phase_dataset,
+            batch_size=1,
+            shuffle=shuffle,
+            collate_fn=phase_dataset.collate_fn,
+        )
+
+    def _run_phase_loop(
+        self,
+        *,
+        episode: int,
+        global_step: int,
+        total_consumed_prompts: int,
+        last_train_end_time: float,
+        last_eval_wall_sec: float,
+        prompts_dataloader,
+        phase_tag: str,
+        preserve_episode_tracking: bool,
+        allow_train_missed_fallback: bool = True,
+    ):
+        self._set_active_prompts_dataloader(prompts_dataloader)
+        dataset_length = len(prompts_dataloader)
+        pbar = tqdm(
+            range(dataset_length),
+            desc=f"Episode [{episode + 1}/{self.args.num_episodes}] {phase_tag}",
+        )
+        while True:
+            iteration_start_time = time.time()
+            rollout_start_time = time.time()
+            gap_train_to_rollout = rollout_start_time - last_train_end_time - last_eval_wall_sec
+
+            rollout_samples, filter_pass_rate, prompts_consumed, is_exhausted = self.samples_generator.generate_samples(
+                global_step=global_step,
+                _skip_clear_replay=preserve_episode_tracking,
+                allow_train_missed_fallback=allow_train_missed_fallback,
+                **self.generate_kwargs,
+            )
+            rollout_wall_sec = time.time() - rollout_start_time
+            rollout_end_time = time.time()
+            total_consumed_prompts += prompts_consumed
+
+            if is_exhausted:
+                if rollout_samples:
+                    train_start_time = time.time()
+                    status, global_step = self.train_step(rollout_samples, global_step)
+                    train_wall_sec = time.time() - train_start_time
+                    last_train_end_time = time.time()
+                    if self.args.dynamic_filtering:
+                        status["dynamic_filtering_pass_rate"] = filter_pass_rate
+                        status["too_easy_pct"] = self.samples_generator.step_too_easy_pct
+                        status["too_hard_pct"] = self.samples_generator.step_too_hard_pct
+                        status["oversample_ratio"] = self.samples_generator.step_oversample_ratio
+                    if (
+                        getattr(self.args, "oversample_ratio", 1.0) > 1.0
+                        or getattr(self.args, "oversample_ratio_start", None) is not None
+                        or getattr(self.args, "oversample_ratio_end", None) is not None
+                    ):
+                        status["oversample/missed_pct"] = self.samples_generator.step_missed_pct
+                    log_status = {k: v for k, v in status.items() if k not in ["generated_samples"]}
+                    logger.info(f"✨ Global step {global_step} [{phase_tag}-partial]: {log_status}")
+                    client_states = {
+                        "episode": episode,
+                        "global_step": global_step,
+                        "total_consumed_prompts": total_consumed_prompts,
+                        "data_loader_state_dict": self._safe_dataloader_state_dict(prompts_dataloader),
+                    }
+                    self.save_logs_and_checkpoints(global_step, status, client_states)
+                    del rollout_samples, status
+                    gc.collect()
+                break
+
+            train_start_time = time.time()
+            gap_rollout_to_train = train_start_time - rollout_end_time
+            status, global_step = self.train_step(rollout_samples, global_step)
+            train_wall_sec = time.time() - train_start_time
+            last_train_end_time = time.time()
+
+            if self.args.dynamic_filtering:
+                status["dynamic_filtering_pass_rate"] = filter_pass_rate
+                status["too_easy_pct"] = self.samples_generator.step_too_easy_pct
+                status["too_hard_pct"] = self.samples_generator.step_too_hard_pct
+                status["oversample_ratio"] = self.samples_generator.step_oversample_ratio
+
+            if (
+                getattr(self.args, "oversample_ratio", 1.0) > 1.0
+                or getattr(self.args, "oversample_ratio_start", None) is not None
+                or getattr(self.args, "oversample_ratio_end", None) is not None
+            ):
+                status["oversample/missed_pct"] = self.samples_generator.step_missed_pct
+
+            knn_stats = self.samples_generator.step_knn_stats
+            for k, v in knn_stats.items():
+                if v is not None:
+                    status[k] = v
+
+            vllm_stats = getattr(self.samples_generator, "last_vllm_stats", {})
+            vllm_stats.pop("vllm_generation_wall_time_sec", None)
+            status.update(vllm_stats)
+            status["vllm_rollout_wall_sec"] = round(rollout_wall_sec, 2)
+            status["vllm_train_wall_sec"] = round(train_wall_sec, 2)
+            status["phase/tag"] = phase_tag
+
+            log_status = {k: v for k, v in status.items() if k not in ["generated_samples"]}
+            logger.info(f"✨ Global step {global_step} [{phase_tag}]: {log_status}")
+
+            current_eval_wall_sec = None
+            client_states = {
+                "episode": episode,
+                "global_step": global_step,
+                "total_consumed_prompts": total_consumed_prompts,
+                "data_loader_state_dict": self._safe_dataloader_state_dict(prompts_dataloader),
+            }
+            self.save_logs_and_checkpoints(global_step, status, client_states)
+
+            if global_step % self.args.eval_steps == 0 and self.eval_dataloader:
+                eval_start_time = time.time()
+                eval_generate_kwargs = self.generate_kwargs.copy()
+                eval_generate_kwargs["temperature"] = self.args.eval_temperature
+                eval_generate_kwargs["n_samples_per_prompt"] = self.args.eval_n_samples_per_prompt
+                self.evaluate(global_step, **eval_generate_kwargs)
+                current_eval_wall_sec = time.time() - eval_start_time
+
+            last_eval_wall_sec = current_eval_wall_sec if current_eval_wall_sec else 0.0
+
+            iteration_wall_sec = time.time() - iteration_start_time
+            _eval_sec = current_eval_wall_sec if current_eval_wall_sec else 0.0
+            accounted_sec = rollout_wall_sec + train_wall_sec + _eval_sec
+            misc_gap_sec = max(0.0, iteration_wall_sec - accounted_sec)
+            _extra = {
+                k.replace("time/", ""): v
+                for k, v in status.items()
+                if k.startswith("time/") and k not in {
+                    "time/forward_pass", "time/backward_pass", "time/sync_weights",
+                }
+            }
+            _extra["iteration_wall_sec"] = iteration_wall_sec
+            _extra["misc_gap_sec"] = misc_gap_sec
+            _extra.update({k: v for k, v in status.items() if k.startswith("micro_batch/")})
+            self._write_run_timing(
+                global_step=global_step,
+                rollout_wall_sec=rollout_wall_sec,
+                gap_rollout_to_train=gap_rollout_to_train,
+                train_wall_sec=train_wall_sec,
+                time_forward_pass=status.get("time/forward_pass", 0.0),
+                time_backward_pass=status.get("time/backward_pass", 0.0),
+                time_sync_weights=status.get("time/sync_weights", 0.0),
+                gap_train_to_rollout=gap_train_to_rollout,
+                eval_wall_sec=current_eval_wall_sec,
+                extra_timings=_extra,
+            )
+
+            pbar.update(prompts_consumed)
+            del rollout_samples, status
+            gc.collect()
+            try:
+                ctypes.CDLL("libc.so.6").malloc_trim(0)
+            except Exception:
+                pass
+
+            self._empty_all_model_caches()
+            self.samples_generator.flush_timeseries_to_disk(global_step=global_step)
+
+        pbar.close()
+        return global_step, total_consumed_prompts, last_train_end_time, last_eval_wall_sec
+
+    def _default_phase_shuffle(self, dataset) -> bool:
+        return not (
+            getattr(self.args, "curriculum_balanced", False)
+            or getattr(dataset, "static_phase_curriculum_enabled", False)
+        )
+
+    def _run_post_episode_logic(
+        self,
+        *,
+        episode: int,
+        global_step: int,
+        total_consumed_prompts: int,
+        run_leftover_before_replay: bool,
+    ) -> int:
+        self.samples_generator.save_discarded_indices(episode)
+        self.samples_generator.save_easy_hard_collection()
+
+        if run_leftover_before_replay and getattr(self.args, "oversample_ratio", 1.0) > 1.0:
+            global_step = self._run_leftover_phase(episode, global_step, total_consumed_prompts)
+
+        if self.eval_dataloader and (global_step % self.args.eval_steps != 0):
+            eval_generate_kwargs = self.generate_kwargs.copy()
+            eval_generate_kwargs["temperature"] = self.args.eval_temperature
+            eval_generate_kwargs["n_samples_per_prompt"] = self.args.eval_n_samples_per_prompt
+            logger.info(f"Running end-of-episode evaluation at global_step {global_step}")
+            self.evaluate(global_step, **eval_generate_kwargs)
+
+        if getattr(self.args, "smart_replay", False):
+            if self.wandb_logger:
+                self.wandb_logger.log_episode(
+                    self._round_counter,
+                    episode,
+                    0,
+                    self.samples_generator.episode_filter_stats,
+                )
+                self._round_counter += 1
+            global_step = self._run_replay_episodes(episode, global_step, total_consumed_prompts)
+
+        return global_step
+
+    def _run_episode1_dual_dataset(
+        self,
+        *,
+        episode: int,
+        global_step: int,
+        total_consumed_prompts: int,
+        last_train_end_time: float,
+        last_eval_wall_sec: float,
+    ):
+        self.samples_generator.clear_replay_indices()
+        dataset_a = self.phase_datasets["dataset_a"]
+        dataset_b = self.phase_datasets["dataset_b"]
+
+        phase_a_dataloader = self._build_phase_dataloader(
+            dataset_a.prompt_refs,
+            "dataset_a_main",
+            shuffle=self._default_phase_shuffle(dataset_a),
+        )
+        global_step, total_consumed_prompts, last_train_end_time, last_eval_wall_sec = self._run_phase_loop(
+            episode=episode,
+            global_step=global_step,
+            total_consumed_prompts=total_consumed_prompts,
+            last_train_end_time=last_train_end_time,
+            last_eval_wall_sec=last_eval_wall_sec,
+            prompts_dataloader=phase_a_dataloader,
+            phase_tag="dataset_a_main",
+            preserve_episode_tracking=True,
+        )
+        if getattr(self.args, "oversample_ratio", 1.0) > 1.0:
+            global_step = self._run_leftover_phase(episode, global_step, total_consumed_prompts)
+
+        phase_b_dataloader = self._build_phase_dataloader(
+            dataset_b.prompt_refs,
+            "dataset_b_main",
+            shuffle=self._default_phase_shuffle(dataset_b),
+        )
+        global_step, total_consumed_prompts, last_train_end_time, last_eval_wall_sec = self._run_phase_loop(
+            episode=episode,
+            global_step=global_step,
+            total_consumed_prompts=total_consumed_prompts,
+            last_train_end_time=last_train_end_time,
+            last_eval_wall_sec=last_eval_wall_sec,
+            prompts_dataloader=phase_b_dataloader,
+            phase_tag="dataset_b_main",
+            preserve_episode_tracking=True,
+        )
+        if getattr(self.args, "oversample_ratio", 1.0) > 1.0:
+            global_step = self._run_leftover_phase(episode, global_step, total_consumed_prompts)
+
+        self._set_active_prompts_dataloader(self.followup_prompts_dataloader)
+        return global_step, total_consumed_prompts, last_train_end_time, last_eval_wall_sec
+
+    def _run_episode1_half_mixed_recovery(
+        self,
+        *,
+        episode: int,
+        global_step: int,
+        total_consumed_prompts: int,
+        last_train_end_time: float,
+        last_eval_wall_sec: float,
+    ):
+        self.samples_generator.clear_replay_indices()
+        base_dataset = self.phase_datasets["base"]
+        half_index = len(base_dataset.prompt_refs) // 2
+        first_half_refs = base_dataset.prompt_refs[:half_index]
+        remaining_half_refs = base_dataset.prompt_refs[half_index:]
+
+        first_half_dataloader = self._build_phase_dataloader(
+            first_half_refs,
+            "first_half_main",
+            shuffle=self._default_phase_shuffle(base_dataset),
+        )
+        global_step, total_consumed_prompts, last_train_end_time, last_eval_wall_sec = self._run_phase_loop(
+            episode=episode,
+            global_step=global_step,
+            total_consumed_prompts=total_consumed_prompts,
+            last_train_end_time=last_train_end_time,
+            last_eval_wall_sec=last_eval_wall_sec,
+            prompts_dataloader=first_half_dataloader,
+            phase_tag="first_half_main",
+            preserve_episode_tracking=True,
+        )
+
+        hard_refs, _kept_refs = self.samples_generator.get_replay_indices()
+        easy_refs = self.samples_generator.get_easy_prompt_refs()
+        missed_refs = self.samples_generator.get_missed_indices()
+        mixed_recovery_refs = self._dedupe_prompt_refs(
+            list(remaining_half_refs)
+            + list(hard_refs)
+            + list(easy_refs)
+            + list(missed_refs)
+        )
+        remaining_half_set = set(remaining_half_refs)
+        recovery_bucket_union = set(hard_refs) | set(easy_refs) | set(missed_refs)
+        logger.info(
+            "[Episode1Structure] half_first_episode_with_mixed_recovery: "
+            "remaining_half=%d, hard=%d, easy=%d, missed=%d, "
+            "mixed_recovery_unique=%d, net_added_over_remaining=%d, overlap_with_remaining=%d",
+            len(remaining_half_refs),
+            len(hard_refs),
+            len(easy_refs),
+            len(missed_refs),
+            len(mixed_recovery_refs),
+            len(set(mixed_recovery_refs) - remaining_half_set),
+            len(recovery_bucket_union & remaining_half_set),
+        )
+        self.samples_generator.clear_replay_indices(reset_episode_counters=False)
+        logger.info(
+            "[Episode1Structure] Cleared first-half easy/hard/missed tracking before mixed_recovery; "
+            "leftover after mixed_recovery will only see misses created during mixed_recovery."
+        )
+        mixed_recovery_dataloader = self._build_phase_dataloader(
+            mixed_recovery_refs,
+            "mixed_recovery",
+            shuffle=True,
+        )
+        global_step, total_consumed_prompts, last_train_end_time, last_eval_wall_sec = self._run_phase_loop(
+            episode=episode,
+            global_step=global_step,
+            total_consumed_prompts=total_consumed_prompts,
+            last_train_end_time=last_train_end_time,
+            last_eval_wall_sec=last_eval_wall_sec,
+            prompts_dataloader=mixed_recovery_dataloader,
+            phase_tag="mixed_recovery",
+            preserve_episode_tracking=True,
+            allow_train_missed_fallback=False,
+        )
+        if getattr(self.args, "oversample_ratio", 1.0) > 1.0:
+            global_step = self._run_leftover_phase(episode, global_step, total_consumed_prompts)
+
+        self._set_active_prompts_dataloader(self.followup_prompts_dataloader)
+        return global_step, total_consumed_prompts, last_train_end_time, last_eval_wall_sec
 
     #### Oversampling: LeftOverPrompts phase ####
     def _run_leftover_phase(self, episode: int, global_step: int, total_consumed_prompts: int) -> int:
@@ -1381,7 +2300,7 @@ class PPOTrainer(BasePPOTrainer):
             )
 
         # Restore original dataloader.
-        self.samples_generator.prompts_dataloader = saved_dataloader
+        self._set_active_prompts_dataloader(saved_dataloader)
         # Any new missed_indices from this phase stay for smart replay.
         return global_step
 
@@ -1390,21 +2309,20 @@ class PPOTrainer(BasePPOTrainer):
         missed_indices: set, oversample_ratio: float, phase_tag: str,
     ) -> int:
         """Run a single leftover pass over the given missed indices."""
-        original_dataset = self.samples_generator._original_dataset
-        subset = Subset(original_dataset, list(missed_indices))
-        leftover_dataloader = DataLoader(
-            subset, batch_size=1, shuffle=False, collate_fn=original_dataset.collate_fn
+        leftover_dataloader = self._build_phase_dataloader(
+            list(missed_indices),
+            f"{phase_tag}_pool",
+            shuffle=False,
         )
 
         # Temporarily swap dataloader; clear consumed missed indices.
-        self.samples_generator.prompts_dataloader = leftover_dataloader
+        self._set_active_prompts_dataloader(leftover_dataloader)
         self.samples_generator._missed_indices = set()
 
         while True:
-            log_step_trace = global_step % 2 == 0
             rollout_samples, filter_pass_rate, prompts_consumed, is_exhausted = (
                 self.samples_generator.generate_samples(
-                    global_step=global_step, log_step_trace=log_step_trace,
+                    global_step=global_step,
                     oversample_ratio=oversample_ratio,
                     _apply_oversample_ramp=False,
                     _skip_clear_replay=True,  # preserve replay indices
@@ -1508,31 +2426,33 @@ class PPOTrainer(BasePPOTrainer):
 
             # Build a dataloader over the replay subset.
             if getattr(self.args, "curriculum_balanced", False):
-                replay_indices = interleave_indices_by_datasource(
-                    replay_indices, original_dataloader.dataset.datasources, self.args.seed
+                replay_prompt_refs = list(replay_indices)
+                datasources = [self.prompt_ref_registry[prompt_ref]["datasource"] for prompt_ref in replay_indices]
+                replay_order = interleave_indices_by_datasource(
+                    list(range(len(replay_indices))), datasources, self.args.seed
                 )
+                replay_indices = [replay_prompt_refs[i] for i in replay_order]
                 replay_shuffle = False
             else:
                 replay_shuffle = True
 
-            subset = Subset(original_dataloader.dataset, replay_indices)
+            replay_dataset = self._build_phase_dataset(replay_indices, f"replay_round_{replay_round + 1}")
             replay_dataloader = DataLoader(
-                subset,
+                replay_dataset,
                 batch_size=1,
                 shuffle=replay_shuffle,
-                collate_fn=original_dataloader.dataset.collate_fn,
+                collate_fn=replay_dataset.collate_fn,
             )
-            self.samples_generator.prompts_dataloader = replay_dataloader
+            self._set_active_prompts_dataloader(replay_dataloader)
 
             pbar = tqdm(
                 range(len(replay_dataloader)),
                 desc=f"Episode [{episode + 1}] Replay round {replay_round + 1}",
             )
             while True:
-                log_step_trace = global_step % 2 == 0
                 rollout_samples, filter_pass_rate, prompts_consumed, is_exhausted = (
                     self.samples_generator.generate_samples(
-                        global_step=global_step, log_step_trace=log_step_trace, **self.generate_kwargs
+                        global_step=global_step, **self.generate_kwargs
                     )
                 )
                 total_consumed_prompts += prompts_consumed
@@ -1619,16 +2539,18 @@ class PPOTrainer(BasePPOTrainer):
             )
 
         # Restore original dataloader.
-        self.samples_generator.prompts_dataloader = original_dataloader
+        self._set_active_prompts_dataloader(original_dataloader)
         return global_step
 
     def _log_dataloader_order(self):
         """Log first/last 100 samples from the dataloader for validation."""
         import json as _json
 
+        from openrlhf.utils.run_paths import resolve_run_dir
+
         run_name = getattr(self.args, "wandb_run_name", "run").replace("/", "_")
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        log_dir = os.path.join(project_root, "runs", run_name, "dataloader_logs")
+        log_dir = os.path.join(resolve_run_dir(project_root, run_name), "dataloader_logs")
         os.makedirs(log_dir, exist_ok=True)
 
         # Collect all samples (iterate the full dataloader once)
@@ -1684,9 +2606,11 @@ class PPOTrainer(BasePPOTrainer):
         """Return the vllm_stats directory path (lazily created)."""
         stats_dir = getattr(self.samples_generator, "vllm_stats_dir", None)
         if stats_dir is None:
+            from openrlhf.utils.run_paths import resolve_run_dir
+
             run_name = getattr(self.args, "wandb_run_name", "run").replace("/", "_")
             project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            stats_dir = os.path.join(project_root, "runs", run_name, "vllm_stats")
+            stats_dir = os.path.join(resolve_run_dir(project_root, run_name), "vllm_stats")
             os.makedirs(stats_dir, exist_ok=True)
         return stats_dir
 
@@ -1934,207 +2858,69 @@ class PPOTrainer(BasePPOTrainer):
             return
 
         for episode in range(start_episode, self.args.num_episodes):
-            dataset_length = len(self.prompts_dataloader)
-            pbar = tqdm(
-                range(dataset_length),
-                desc=f"Episode [{episode + 1}/{self.args.num_episodes}]",
-                initial=total_consumed_prompts % max(dataset_length, 1),
-            )
-            while True:
-                iteration_start_time = time.time()
-
-                # Calculate gap from the end of the previous training loop (or initialization)
-                # to the start of this generation step, excluding any time spent evaluating.
-                rollout_start_time = time.time()
-                gap_train_to_rollout = rollout_start_time - last_train_end_time - last_eval_wall_sec
-
-                # Draw one mini-batch of prompts; stop when loader is exhausted.
-                log_step_trace = global_step % 2 == 0
-                rollout_samples, filter_pass_rate, prompts_consumed, is_exhausted = (
-                    self.samples_generator.generate_samples(
-                        global_step=global_step, log_step_trace=log_step_trace, **self.generate_kwargs
-                    )
-                )
-                rollout_wall_sec = time.time() - rollout_start_time
-                rollout_end_time = time.time()
-
-                total_consumed_prompts += prompts_consumed
-                #### Oversampling: train on partial batch before breaking ####
-                if is_exhausted:
-                    if rollout_samples:
-                        train_start_time = time.time()
-                        status, global_step = self.train_step(rollout_samples, global_step)
-                        train_wall_sec = time.time() - train_start_time
-                        last_train_end_time = time.time()
-                        if self.args.dynamic_filtering:
-                            status["dynamic_filtering_pass_rate"] = filter_pass_rate
-                            status["too_easy_pct"] = self.samples_generator.step_too_easy_pct
-                            status["too_hard_pct"] = self.samples_generator.step_too_hard_pct
-                            status["oversample_ratio"] = self.samples_generator.step_oversample_ratio
-                        if (
-                            getattr(self.args, "oversample_ratio", 1.0) > 1.0
-                            or getattr(self.args, "oversample_ratio_start", None) is not None
-                            or getattr(self.args, "oversample_ratio_end", None) is not None
-                        ):
-                            status["oversample/missed_pct"] = self.samples_generator.step_missed_pct
-                        log_status = {k: v for k, v in status.items() if k not in ["generated_samples"]}
-                        logger.info(f"✨ Global step {global_step} [partial-batch]: {log_status}")
-                        client_states = {
-                            "episode": episode,
-                            "global_step": global_step,
-                            "total_consumed_prompts": total_consumed_prompts,
-                            "data_loader_state_dict": self.prompts_dataloader.state_dict(),
-                        }
-                        self.save_logs_and_checkpoints(global_step, status, client_states)
-                        del rollout_samples, status
-                        gc.collect()
-                    break
-                #### end oversampling ####
-
-                # Run PPO update on this batch and bump the global step counter.
-                train_start_time = time.time()
-                gap_rollout_to_train = train_start_time - rollout_end_time
-                status, global_step = self.train_step(rollout_samples, global_step)
-                train_wall_sec = time.time() - train_start_time
-                last_train_end_time = time.time()
-
-                # Add generated samples to status dictionary
-                if self.args.dynamic_filtering:
-                    status["dynamic_filtering_pass_rate"] = filter_pass_rate
-                    status["too_easy_pct"] = self.samples_generator.step_too_easy_pct
-                    status["too_hard_pct"] = self.samples_generator.step_too_hard_pct
-                    status["oversample_ratio"] = self.samples_generator.step_oversample_ratio
-
-                #### Oversampling: telemetry ####
-                if (
-                    getattr(self.args, "oversample_ratio", 1.0) > 1.0
-                    or getattr(self.args, "oversample_ratio_start", None) is not None
-                    or getattr(self.args, "oversample_ratio_end", None) is not None
-                ):
-                    status["oversample/missed_pct"] = self.samples_generator.step_missed_pct
-                #### end oversampling ####
-
-                #### KNN reversal metrics ####
-                knn_stats = self.samples_generator.step_knn_stats
-                for k, v in knn_stats.items():
-                    if v is not None:
-                        status[k] = v
-                #### end KNN metrics ####
-
-                # Merge vLLM stats into status for W&B logging.
-                vllm_stats = getattr(self.samples_generator, "last_vllm_stats", {})
-                
-                # Remove duplicated wall time from vllm_stats to rely purely on the trainer's measurement
-                vllm_stats.pop("vllm_generation_wall_time_sec", None)
-                
-                status.update(vllm_stats)
-                status["vllm_rollout_wall_sec"] = round(rollout_wall_sec, 2)
-                status["vllm_train_wall_sec"] = round(train_wall_sec, 2)
-
-                log_status = {k: v for k, v in status.items() if k not in ["generated_samples"]}
-                logger.info(f"✨ Global step {global_step}: {log_status}")
-                
-                current_eval_wall_sec = None
-
-                # logs/checkpoints
-                client_states = {
-                    "episode": episode,
-                    "global_step": global_step,
-                    "total_consumed_prompts": total_consumed_prompts,
-                    "data_loader_state_dict": self.prompts_dataloader.state_dict(),
-                }
-                self.save_logs_and_checkpoints(global_step, status, client_states)
-
-                # TODO: Add evaluation mechanism for PPO
-                if global_step % self.args.eval_steps == 0 and self.eval_dataloader:
-                    eval_start_time = time.time()
-                    eval_generate_kwargs = self.generate_kwargs.copy()
-                    eval_generate_kwargs["temperature"] = self.args.eval_temperature
-                    eval_generate_kwargs["n_samples_per_prompt"] = self.args.eval_n_samples_per_prompt
-                    self.evaluate(global_step, **eval_generate_kwargs)
-                    current_eval_wall_sec = time.time() - eval_start_time
-
-                last_eval_wall_sec = current_eval_wall_sec if current_eval_wall_sec else 0.0
-
-                # Write training timing JSONL.
-                # Compute total iteration time and misc overhead.
-                iteration_wall_sec = time.time() - iteration_start_time
-                _eval_sec = current_eval_wall_sec if current_eval_wall_sec else 0.0
-                accounted_sec = rollout_wall_sec + train_wall_sec + _eval_sec
-                misc_gap_sec = max(0.0, iteration_wall_sec - accounted_sec)
-
-                # Collect sub-phase timings for sleep/wake/reload/offload.
-                _extra = {
-                    k.replace("time/", ""): v
-                    for k, v in status.items()
-                    if k.startswith("time/") and k not in {
-                        "time/forward_pass", "time/backward_pass", "time/sync_weights",
-                    }
-                }
-                _extra["iteration_wall_sec"] = iteration_wall_sec
-                _extra["misc_gap_sec"] = misc_gap_sec
-                # Include micro batch partition stats for local tracking.
-                _extra.update({k: v for k, v in status.items() if k.startswith("micro_batch/")})
-                self._write_run_timing(
+            if episode == 0 and self.episode1_structure == "dual_dataset":
+                (
+                    global_step,
+                    total_consumed_prompts,
+                    last_train_end_time,
+                    last_eval_wall_sec,
+                ) = self._run_episode1_dual_dataset(
+                    episode=episode,
                     global_step=global_step,
-                    rollout_wall_sec=rollout_wall_sec,
-                    gap_rollout_to_train=gap_rollout_to_train,
-                    train_wall_sec=train_wall_sec,
-                    time_forward_pass=status.get("time/forward_pass", 0.0),
-                    time_backward_pass=status.get("time/backward_pass", 0.0),
-                    time_sync_weights=status.get("time/sync_weights", 0.0),
-                    gap_train_to_rollout=gap_train_to_rollout,
-                    eval_wall_sec=current_eval_wall_sec,
-                    extra_timings=_extra,
+                    total_consumed_prompts=total_consumed_prompts,
+                    last_train_end_time=last_train_end_time,
+                    last_eval_wall_sec=last_eval_wall_sec,
                 )
+                global_step = self._run_post_episode_logic(
+                    episode=episode,
+                    global_step=global_step,
+                    total_consumed_prompts=total_consumed_prompts,
+                    run_leftover_before_replay=False,
+                )
+                continue
 
-                pbar.update(prompts_consumed)
+            if episode == 0 and self.episode1_structure == "half_first_episode_with_mixed_recovery":
+                (
+                    global_step,
+                    total_consumed_prompts,
+                    last_train_end_time,
+                    last_eval_wall_sec,
+                ) = self._run_episode1_half_mixed_recovery(
+                    episode=episode,
+                    global_step=global_step,
+                    total_consumed_prompts=total_consumed_prompts,
+                    last_train_end_time=last_train_end_time,
+                    last_eval_wall_sec=last_eval_wall_sec,
+                )
+                global_step = self._run_post_episode_logic(
+                    episode=episode,
+                    global_step=global_step,
+                    total_consumed_prompts=total_consumed_prompts,
+                    run_leftover_before_replay=False,
+                )
+                continue
 
-                # Free accumulated Ray object store refs and Python garbage to
-                # prevent host-RAM growth across training steps.
-                del rollout_samples, status
-                gc.collect()
-                try:
-                    ctypes.CDLL("libc.so.6").malloc_trim(0)
-                except Exception:
-                    pass
-
-                self._empty_all_model_caches()
-
-                # Flush accumulated timeseries samples from Ray actor memory to disk.
-                self.samples_generator.flush_timeseries_to_disk(global_step=global_step)
-
-            # --- Save discarded prompts for offline analysis ---
-            self.samples_generator.save_discarded_indices(episode)
-
-            #### Flush easy/hard collection (Phase 12) ####
-            self.samples_generator.save_easy_hard_collection()
-            #### end flush easy/hard ####
-
-            #### Oversampling: LeftOverPrompts phase after main episode, before smart replay ####
-            if getattr(self.args, "oversample_ratio", 1.0) > 1.0:
-                global_step = self._run_leftover_phase(episode, global_step, total_consumed_prompts)
-            #### end oversampling ####
-
-            # Eval at end of episode (skip if last step already ran eval).
-            if self.eval_dataloader and (global_step % self.args.eval_steps != 0):
-                eval_generate_kwargs = self.generate_kwargs.copy()
-                eval_generate_kwargs["temperature"] = self.args.eval_temperature
-                eval_generate_kwargs["n_samples_per_prompt"] = self.args.eval_n_samples_per_prompt
-                logger.info(f"Running end-of-episode evaluation at global_step {global_step}")
-                self.evaluate(global_step, **eval_generate_kwargs)
-
-            # --- Smart replay: log initial-pass stats and run replay episodes ---
-            if getattr(self.args, "smart_replay", False):
-                if self.wandb_logger:
-                    self.wandb_logger.log_episode(
-                        self._round_counter,
-                        episode,
-                        0,
-                        self.samples_generator.episode_filter_stats,
-                    )
-                    self._round_counter += 1
-                global_step = self._run_replay_episodes(episode, global_step, total_consumed_prompts)
+            (
+                global_step,
+                total_consumed_prompts,
+                last_train_end_time,
+                last_eval_wall_sec,
+            ) = self._run_phase_loop(
+                episode=episode,
+                global_step=global_step,
+                total_consumed_prompts=total_consumed_prompts,
+                last_train_end_time=last_train_end_time,
+                last_eval_wall_sec=last_eval_wall_sec,
+                prompts_dataloader=self.prompts_dataloader,
+                phase_tag="legacy_main" if episode == 0 else f"episode_{episode + 1}_main",
+                preserve_episode_tracking=False,
+            )
+            global_step = self._run_post_episode_logic(
+                episode=episode,
+                global_step=global_step,
+                total_consumed_prompts=total_consumed_prompts,
+                run_leftover_before_replay=True,
+            )
 
         # Final eval at end of training (skip if last step already ran eval)
         if self.eval_dataloader and (global_step % self.args.eval_steps != 0):
@@ -2159,6 +2945,9 @@ class PPOTrainer(BasePPOTrainer):
 
         # Close trackers
         self._write_final_tool_usage_plot()
+        # Drain any in-flight best-checkpoint save so the on-disk artifact
+        # (model shards + sidecar JSONs) is durable before we exit.
+        self._await_pending_best_save(reason="trainer shutdown")
         if self.wandb_logger:
             self.wandb_logger.close()
         if self.tensorboard_logger:

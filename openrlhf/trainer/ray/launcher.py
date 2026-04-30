@@ -289,13 +289,13 @@ class RayActorGroup:
         """
         return [actor.init_model_from_pretrained.remote(*args, **kwargs) for actor in self._actor_handlers]
 
-    def async_save_model(self):
+    def async_save_model(self, save_path=None):
         """Save actor model on rank 0.
 
         Returns:
             List: list of remote object refs.
         """
-        return [actor.save_model.remote() for actor in self._actor_handlers]
+        return [actor.save_model.remote(save_path) for actor in self._actor_handlers]
 
     def async_run_method(self, method_name, *args, **kwargs):
         refs = []

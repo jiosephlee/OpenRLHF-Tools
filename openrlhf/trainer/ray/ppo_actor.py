@@ -285,10 +285,13 @@ class ActorPPOTrainer(ABC):
 
         torch.cuda.empty_cache()
 
+        use_partitioned_batches = getattr(self.args, "use_dynamic_batch", False) or getattr(
+            self.args, "use_adaptive_batch", False
+        )
         not_shuffle = (
             self.strategy.ring_attn_group is not None
             or self.args.ds_tensor_parallel_size > 1
-            or self.args.use_dynamic_batch
+            or use_partitioned_batches
         )
         dataloader = DataLoader(
             self.replay_buffer,
@@ -419,6 +422,9 @@ class ActorPPOTrainer(ABC):
 
     def training_step(self, experience: Experience, kl_ctl: float, step: int) -> Dict[str, float]:
         self.actor.train()
+        use_partitioned_batches = getattr(self.args, "use_dynamic_batch", False) or getattr(
+            self.args, "use_adaptive_batch", False
+        )
         # Enable VRAM audit on the first step only
         if step == 0 and not hasattr(self, "_vram_audit"):
             self._vram_audit = os.environ.get("OPENRLHF_VRAM_AUDIT", "0") == "1"
@@ -436,6 +442,16 @@ class ActorPPOTrainer(ABC):
         old_action_log_probs = experience.action_log_probs
         advantages = experience.advantages
         base_action_log_probs = experience.base_action_log_probs
+
+        # prompt_tokens may be stored as a list of 0-dim tensors after
+        # make_experience_batch re-collation; stack into a 1-D tensor on
+        # the correct device so loss.py can call .clamp on it.
+        prompt_tokens = experience.info.get("prompt_tokens")
+        if isinstance(prompt_tokens, list):
+            prompt_tokens = torch.stack([t if torch.is_tensor(t) else torch.tensor(t) for t in prompt_tokens])
+        if torch.is_tensor(prompt_tokens):
+            prompt_tokens = prompt_tokens.to(sequences.device)
+            experience.info["prompt_tokens"] = prompt_tokens
 
         #### Forward pass + policy loss (divergent) ####
         # Both paths produce: actor_loss, clip_ratio, ppo_kl, vllm_kl, aux_loss
@@ -568,7 +584,7 @@ class ActorPPOTrainer(ABC):
                 loss = loss + distill_coef * distill_loss
         #### end shared post-loss ####
 
-        if self.args.use_dynamic_batch:
+        if use_partitioned_batches:
             loss = loss * self.replay_buffer.dynamic_loss_scale[step]
 
         if step == 0:
@@ -579,7 +595,7 @@ class ActorPPOTrainer(ABC):
         if nan_guard:
             self._assert_finite_actor_state(step, stage="post_backward", check_grad=True)
         grad_norm = None
-        if self.args.use_dynamic_batch:
+        if use_partitioned_batches:
             if self.replay_buffer.dynamic_optimizer_step[step]:
                 grad_norm = self.strategy.optimizer_step(self.actor_optim, self.actor, self.actor_scheduler, name="actor")
         else:
@@ -588,14 +604,14 @@ class ActorPPOTrainer(ABC):
             self._assert_finite_actor_state(step, stage="post_optimizer", check_grad=False)
 
         if self.ema_model:
-            if self.args.use_dynamic_batch:
+            if use_partitioned_batches:
                 if self.replay_buffer.dynamic_optimizer_step[step]:
                     self.strategy.moving_average(self.actor, self.ema_model, self.ema_beta, "cuda")
             else:
                 self.strategy.moving_average(self.actor, self.ema_model, self.ema_beta, "cuda")
 
         # status — log policy_loss after loss_scale normalization for comparable magnitudes
-        if self.args.use_dynamic_batch:
+        if use_partitioned_batches:
             logged_policy_loss = (actor_loss * self.replay_buffer.dynamic_loss_scale[step]).detach().item()
         else:
             logged_policy_loss = actor_loss.detach().item()
@@ -613,7 +629,16 @@ class ActorPPOTrainer(ABC):
         # NOTE: parse_method__* keys are also sparse but are normalized
         # across ranks via all_gather_object in ppo_train() before all_reduce.
         # Keys that are internal signals, not metrics to log.
-        _SKIP_INFO_KEYS = {"distill_mask"}
+        _SKIP_INFO_KEYS = {
+            "distill_mask",
+            "requested_get_features",
+            "get_features_request_count",
+            "get_features_requested_feature_total",
+            "get_features_requested_feature_count_count",
+            "get_neighbors_request_count",
+            "get_neighbors_requested_feature_total",
+            "get_neighbors_requested_feature_count_count",
+        }
         for k in sorted(experience.info.keys()):
             v = experience.info[k]
             if k in _SKIP_INFO_KEYS or k.startswith("tool_count__"):
@@ -809,6 +834,34 @@ class PolicyModelActor(BaseModelActor):
 
         self._setup_distributed(strategy)
 
+        # Eval-only short-circuit: when we're only running eval (vLLM does the
+        # generation, reward model does scoring), the HF actor is dead weight.
+        # Skip the Actor build + DeepSpeed prepare entirely so we don't pin
+        # ~30GB/GPU of bf16 param shards next to vLLM. NOTE: this relies on
+        # broadcast_to_vllm being gated off in run_eval_only (no LoRA, no
+        # --vllm_pretrain). If either is set, fall through to the full path.
+        _needs_actor_for_broadcast = bool(getattr(args, "vllm_pretrain", None)) or (
+            getattr(args, "lora_rank", 0) or 0
+        ) > 0
+        if eval_only and not _needs_actor_for_broadcast:
+            from transformers import AutoTokenizer
+
+            strategy.print("[eval_only] Skipping HF actor + DeepSpeed init (no broadcast needed).")
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                pretrain, trust_remote_code=True, use_fast=not strategy.args.disable_fast_tokenizer
+            )
+            self.tokenizer.padding_side = "left"
+            if self.tokenizer.pad_token is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+                self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+            self.actor = None
+            self.ema_model = None
+            self.actor_optim = None
+            self.actor_scheduler = None
+            self.trainer = None
+            self.checkpoint_states = {}
+            return
+
         actor = Actor(
             pretrain,
             attn_implementation=strategy.args.attn_implementation,
@@ -970,14 +1023,14 @@ class PolicyModelActor(BaseModelActor):
         torch.cuda.synchronize()
         return status
 
-    def save_model(self):
+    def save_model(self, save_path=None):
         args = self.strategy.args
 
         # save model checkpoint after fitting on only rank0
         self.strategy.save_model(
             self.ema_model if args.enable_ema else self.actor,
             self.tokenizer,
-            args.save_path,
+            save_path or args.save_path,
         )
 
     def forward(

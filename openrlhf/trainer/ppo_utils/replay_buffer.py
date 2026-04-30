@@ -7,8 +7,11 @@ import torch
 from torch import distributed as dist
 
 from openrlhf.trainer.ppo_utils.experience_maker import Experience
+from openrlhf.utils.logging_utils import init_logger
 from openrlhf.utils.seqlen_balancing import get_minimum_num_micro_batch_size, get_seqlen_balanced_partitions
 from openrlhf.utils.utils import zero_pad_sequences
+
+logger = init_logger(__name__)
 
 
 @dataclass
@@ -148,30 +151,19 @@ def remove_padding_in_sequences(items):
     return items
 
 
-def balance_experiences(experiences, args):
-    """
-    Balance experience accross dp
-    Example:
-        sorted lengths: [8,7,6,5,4,3,2,1], effective_num: 2
-        first_half: [[8,7], [6,5]], last_half: [[3,4], [1,2]], interval_items: [[8,7], [1,2], [6,5], [3,4]]
-        interval_merged: [[8,1,6,3], [7,2,5,4]]
-    """
-    # split experience, sort by total_length
-    items_all = []
-    for item in experiences:
-        items_all.extend(split_experience_batch(item))
-    items_all.sort(key=lambda x: x.info["total_length"], reverse=True)
+def _balance_experiences_legacy(items_all, effective_num):
+    """Original chunk-zip balancer.
 
-    # split experience into chunks
-    effective_num = (
-        args.actor_num_nodes * args.actor_num_gpus_per_node // args.ring_attn_size // args.ds_tensor_parallel_size
-    )
+    Pairs heavy/light chunks across DP ranks, but `zip` silently truncates to
+    the smallest chunk when `len(items_all) % effective_num != 0` — both
+    dropping samples and returning fewer than `effective_num` batches.
+    Kept for fallback only.
+    """
     split_items = [items_all[i : i + effective_num] for i in range(0, len(items_all), effective_num)]
     half = len(split_items) // 2
     first_half = split_items[:half]
     last_half = [item[::-1] for item in split_items[half:]]
 
-    # balance distribution by intervaling chunks
     interval_items = []
     for i in range(half):
         interval_items.append(first_half[i])
@@ -181,6 +173,93 @@ def balance_experiences(experiences, args):
 
     interval_merged = list(zip(*interval_items))
     return [make_experience_batch(items) for items in interval_merged]
+
+
+def _balance_experiences_snake(items_all, effective_num):
+    """Snake/zigzag balancer at item granularity.
+
+    Items are length-sorted desc; we walk them and assign to ranks in a
+    boustrophedon pattern (0..k-1, k-1..0, 0..k-1, ...). This pairs heavy
+    with light per rank, preserves all samples, and always returns exactly
+    `effective_num` batches as long as `len(items_all) >= effective_num`.
+    """
+    buckets = [[] for _ in range(effective_num)]
+    for i, item in enumerate(items_all):
+        cycle, pos = divmod(i, effective_num)
+        rank = pos if cycle % 2 == 0 else (effective_num - 1 - pos)
+        buckets[rank].append(item)
+    return [b for b in buckets if b]
+
+
+def _finalize_balanced_buckets(buckets, args, effective_num):
+    if not buckets:
+        return []
+
+    bucket_sizes = [len(bucket) for bucket in buckets]
+    target_size = min(bucket_sizes)
+    if target_size <= 0:
+        logger.warning(
+            "Balanced experience buckets contain an empty rank shard; bucket_sizes=%s effective_actors=%d",
+            bucket_sizes,
+            effective_num,
+        )
+        return []
+
+    if getattr(args, "use_dynamic_batch", False) or getattr(args, "use_adaptive_batch", False):
+        local_train_batch_size = max(args.train_batch_size // max(effective_num, 1), 1)
+        target_steps = target_size // local_train_batch_size
+        target_size = target_steps * local_train_batch_size
+        if target_size <= 0:
+            logger.warning(
+                "Balanced experience buckets are smaller than local_train_batch_size; "
+                "bucket_sizes=%s effective_actors=%d local_train_batch_size=%d",
+                bucket_sizes,
+                effective_num,
+                local_train_batch_size,
+            )
+            return []
+
+    dropped = sum(len(bucket) - target_size for bucket in buckets)
+    if dropped > 0:
+        logger.warning(
+            "Dropping %d post-balance samples to equalize DP ranks and avoid collective mismatch; "
+            "bucket_sizes=%s target_size=%d effective_actors=%d",
+            dropped,
+            bucket_sizes,
+            target_size,
+            effective_num,
+        )
+
+    return [make_experience_batch(bucket[:target_size]) for bucket in buckets]
+
+
+def balance_experiences(experiences, args):
+    """Balance experiences across DP ranks.
+
+    Default uses the snake balancer (`_balance_experiences_snake`), which
+    preserves every sample and always emits `effective_num` batches when
+    the input has at least that many samples.
+
+    Set `args.balance_experiences_legacy = True` to fall back to the
+    chunk-zip implementation that shipped originally. The legacy path
+    silently drops samples when the sample count isn't a multiple of the
+    effective DP rank count — only use it for A/B comparison or if the
+    snake path regresses.
+    """
+    items_all = []
+    for item in experiences:
+        items_all.extend(split_experience_batch(item))
+    items_all.sort(key=lambda x: x.info["total_length"], reverse=True)
+
+    effective_num = (
+        args.actor_num_nodes * args.actor_num_gpus_per_node // args.ring_attn_size // args.ds_tensor_parallel_size
+    )
+
+    if getattr(args, "balance_experiences_legacy", False):
+        return _balance_experiences_legacy(items_all, effective_num)
+
+    buckets = _balance_experiences_snake(items_all, effective_num)
+    return _finalize_balanced_buckets(buckets, args, effective_num)
 
 
 class NaiveReplayBuffer(ABC):
@@ -246,20 +325,20 @@ class NaiveReplayBuffer(ABC):
         return experience
 
     def __len__(self) -> int:
-        if self.dynamic_batch:
+        if self.dynamic_batch or self.adaptive_batch:
             return len(self.dynamic_indices)
         else:
             return len(self.items)
 
     def __getitem__(self, idx: int) -> BufferItem:
-        if self.dynamic_batch:
+        if self.dynamic_batch or self.adaptive_batch:
             indices = self.dynamic_indices[idx]
             return [self.items[i] for i in indices]
         else:
             return self.items[idx]
 
     def collate_fn(self, batch) -> Experience:
-        if self.dynamic_batch:
+        if self.dynamic_batch or self.adaptive_batch:
             batch = batch[0]
         experience = make_experience_batch(batch, self.packing_samples)
         return experience

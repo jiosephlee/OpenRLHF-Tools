@@ -10,7 +10,7 @@ training wrapper defaults, or SLURM submission behavior.
 
 ## Scope
 
-Use this checklist whenever adding a new version such as `v13`, `v14`, etc.
+Use this checklist whenever adding a new version such as `v13`, `v15`, etc.
 
 These transitions usually involve:
 
@@ -28,13 +28,17 @@ Use these as the concrete examples:
 
 - `v11`: generalized `get_features` plus task-specific `get_neighbors_<task>`
 - `v12`: same shape as `v11`, but with more granular physicochemical feature names
+- `v13`: `v12` plus top-20 SFT-backed RDKit descriptor names
+- `v14`: `v12` vocabulary plus cache-backed scalars (`neutral_fraction_7_4`, `labute_asa`, `no_count`, carbocycle counts); **`metabolites` removed** from `get_features`; does NOT include v13 SFT descriptors. Populate missing CSV columns with [scripts/data_conversion/add_v14_metadata_columns.py](/vast/home/j/jojolee/OpenRLHF-Tools/scripts/data_conversion/add_v14_metadata_columns.py).
 
 Reference files:
 
 - [openrlhf/tools/therapeutic_tools/v11.py](/vast/home/j/jojolee/OpenRLHF-Tools/openrlhf/tools/therapeutic_tools/v11.py)
 - [openrlhf/tools/therapeutic_tools/v12.py](/vast/home/j/jojolee/OpenRLHF-Tools/openrlhf/tools/therapeutic_tools/v12.py)
+- [openrlhf/tools/therapeutic_tools/v14.py](/vast/home/j/jojolee/OpenRLHF-Tools/openrlhf/tools/therapeutic_tools/v14.py)
 - [data/tdc/build_v11_datasets.py](/vast/home/j/jojolee/OpenRLHF-Tools/data/tdc/build_v11_datasets.py)
 - [data/tdc/build_v12_datasets.py](/vast/home/j/jojolee/OpenRLHF-Tools/data/tdc/build_v12_datasets.py)
+- [data/tdc/build_v14_datasets.py](/vast/home/j/jojolee/OpenRLHF-Tools/data/tdc/build_v14_datasets.py)
 - [openrlhf/utils/tool_versions.py](/vast/home/j/jojolee/OpenRLHF-Tools/openrlhf/utils/tool_versions.py)
 
 
@@ -415,6 +419,12 @@ This is especially important when wrapper defaults lag behind the new version.
 - keeping a legacy alias for `physicochemical` is useful for forgiving prompts
   and interactive use
 
+## v14-Specific Notes
+
+- Same neighbor / fingerprint stack as `v11`–`v13`: reuse `knn_v11_pseudo_labels.json` when using `raw_deduplicated`.
+- Run `scripts/data_conversion/add_v14_metadata_columns.py` once so `tdc_metadata_consolidated.csv` includes `f_neutral_7_4`, `NOCount`, and carbocycle count columns (warm path for `get_features`).
+- `metabolites` is not a valid `feature_names` entry in `v14` (metabolic prediction is not exposed as a tool).
+
 
 ## Quick Rollout Checklist
 
@@ -424,14 +434,14 @@ For a new version `v<NN>`:
 2. Export it from `therapeutic_tools/__init__.py`.
 3. Register it in `openrlhf/utils/tool_versions.py`.
 4. Add it to `openrlhf/cli/train_ppo_ray.py`.
-5. Generate `data/tdc/metadata/tools_per_task_v<NN>.json`.
+5. Generate `data/tdc/metadata/tools_per_task_v<NN>.json` (`scripts/generate_tools_json.py`).
 6. Add `data/tdc/build_v<NN>_datasets.py`.
 7. Build `data/tdc/openai_format_v<NN>/`.
 8. Build or point to the correct `knn_v<...>_pseudo_labels.json`.
 9. Update `train_grpo_tdc_gpt_oss.sh`.
 10. Update `train_grpo_tdc_gpt_oss_slurm.sh`.
-11. Update `ppo_utils/experience_maker.py` metric prefix coverage.
-12. Update `ppo_trainer.py` eval metric prefix coverage.
+11. Update `ppo_utils/experience_maker.py` metric prefix coverage (if tool names changed).
+12. Update `ppo_trainer.py` eval metric prefix coverage (if tool names changed).
 13. Verify the regex coverage for prepended neighbor context.
 14. Smoke-test tools in the project conda env.
 15. Submit via `sbatch`, not `bash`, for the SLURM wrapper.

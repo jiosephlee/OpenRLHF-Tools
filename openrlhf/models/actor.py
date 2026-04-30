@@ -8,7 +8,7 @@ import torch.distributed as dist
 import torch.nn as nn
 from peft import LoraConfig, TaskType, get_peft_model
 from peft.tuners.lora import LoraLayer
-from transformers import AutoModelForCausalLM, BitsAndBytesConfig
+from transformers import AutoConfig, AutoModelForCausalLM, BitsAndBytesConfig
 
 try:
     from transformers import Mxfp4Config
@@ -116,8 +116,17 @@ class Actor(nn.Module):
                 from openrlhf.kernels.moe.patch import patch_moe_kernels
                 patch_moe_kernels()
 
+            # transformers modeling_utils.get_hf_quantizer uses
+            # `pre_quantized = hasattr(config, "quantization_config")`. Some checkpoints
+            # (e.g. gpt-oss) ship `"quantization_config": null` in config.json, so the
+            # attribute exists but is None; supports_quant_method then calls .get on None.
+            hf_config = AutoConfig.from_pretrained(pretrain_or_model, trust_remote_code=True)
+            if hasattr(hf_config, "quantization_config") and hf_config.quantization_config is None:
+                delattr(hf_config, "quantization_config")
+
             self.model = model_class.from_pretrained(
                 pretrain_or_model,
+                config=hf_config,
                 trust_remote_code=True,
                 attn_implementation=attn_impl,
                 quantization_config=quant_config,

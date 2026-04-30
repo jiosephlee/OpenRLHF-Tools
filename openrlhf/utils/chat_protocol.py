@@ -21,6 +21,26 @@ logger = init_logger(__name__)
 _HARMONY_ENCODING = None
 
 
+def _coerce_arg_value(raw: str) -> Any:
+    """Coerce a string tool-call arg into a JSON-typed value when it looks like one.
+
+    GLM's XML tool-call encoding always arrives as a string. If the model emits
+    an array/object/bool/null/number literal, json.loads it so it matches the
+    tool schema (e.g. `feature_names: string[]`). Fall back to the raw string.
+    """
+    if not isinstance(raw, str):
+        return raw
+    s = raw.strip()
+    if not s:
+        return raw
+    if s[0] in "[{" or s in ("true", "false", "null"):
+        try:
+            return json.loads(s)
+        except (ValueError, json.JSONDecodeError):
+            return raw
+    return raw
+
+
 def _get_harmony_encoding():
     """Load the Harmony encoder once per process.
 
@@ -139,7 +159,9 @@ class GLMFlashProtocol(ChatProtocol):
     def parse_assistant_text(self, text: str, token_ids: Optional[List[int]] = None) -> Dict[str, Any]:
         """Parse GLM Flash tool call format.
 
-        Uses vLLM's official parser if available, falls back to regex.
+        Uses the older GLM Flash parser shape where the tool call body is
+        effectively treated as a single call and arguments follow the
+        ``<arg_key>...</arg_key><arg_value>...</arg_value>`` layout.
         """
         tool_call = self._parse_glm_flash_tool_call(text)
 
@@ -161,16 +183,14 @@ class GLMFlashProtocol(ChatProtocol):
         return feedback
 
     def _parse_glm_flash_tool_call(self, text: str) -> Optional[Dict[str, Any]]:
-        """Parse GLM Flash tool call format using vLLM parser or regex fallback.
+        """Parse GLM Flash tool call format using the original regex fallback.
 
-        Format: <tool_call>func_name<arg_key>key</arg_key><arg_value>value</arg_value></tool_call>
+        Format:
+            <tool_call>func_name<arg_key>key</arg_key><arg_value>value</arg_value></tool_call>
 
         Returns:
-            Dict with 'function_name' and 'arguments', or None if no tool call found
+            Dict with ``function_name`` and ``arguments``, or ``None``.
         """
-        # Regex parser (based on official vLLM patterns).
-        # Note: vLLM's Glm47MoeModelToolParser.extract_tool_calls() now requires
-        # a ChatCompletionRequest arg we don't have here, so we use regex directly.
         func_detail_regex = re.compile(r"<tool_call>(.*?)(<arg_key>.*?)?</tool_call>", re.DOTALL)
         func_arg_regex = re.compile(
             r"<arg_key>(.*?)</arg_key>(?:\n|\s)*<arg_value>(.*?)</arg_value>",
@@ -184,13 +204,189 @@ class GLMFlashProtocol(ChatProtocol):
         function_name = tool_call_match.group(1).strip()
         arg_section = tool_call_match.group(2)
         arguments = {}
-
         if arg_section:
-            arg_matches = func_arg_regex.findall(arg_section)
-            for key, value in arg_matches:
-                arguments[key.strip()] = value.strip()
+            for key, value in func_arg_regex.findall(arg_section):
+                arguments[key.strip()] = _coerce_arg_value(value.strip())
 
         return {"function_name": function_name, "arguments": arguments}
+
+
+class GLM51Protocol(ChatProtocol):
+    """GLM-5 / GLM-5.1 XML tool-calling protocol.
+
+    Matches the GLM-4.7 / vLLM ``glm47`` parsing behavior used by GLM-5.1.
+    """
+
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+
+    @property
+    def generation_prompt_marker(self) -> str:
+        return "<|assistant|>\n"
+
+    def parse_assistant_text(self, text: str, token_ids: Optional[List[int]] = None) -> Dict[str, Any]:
+        """Parse GLM-5.1 XML tool calls with glm47-compatible tolerance."""
+        tool_calls = self._parse_glm51_tool_calls(text)
+
+        if tool_calls:
+            return {
+                "content": self._extract_non_tool_call_content(text),
+                "tool_calls": tool_calls,
+            }
+        return {"content": text, "tool_calls": []}
+
+    def render_tool_feedback(self, tool_results: List[Dict[str, str]]) -> str:
+        """GLM-5.1 bridge: no explicit assistant close needed."""
+        feedback = ""
+        for tr in tool_results:
+            feedback += f"<|observation|>\n<tool_response>{tr['content']}</tool_response>\n"
+        feedback += "<|assistant|>\n"
+        return feedback
+
+    def _parse_glm51_tool_calls(self, text: str) -> List[Dict[str, Any]]:
+        """Parse GLM-5.1 XML tool calls using vLLM glm47-compatible regex."""
+        tool_block_regex = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL)
+        func_detail_regex = re.compile(
+            r"<tool_call>\s*(\S+?)\s*(<arg_key>.*)?</tool_call>",
+            re.DOTALL,
+        )
+        func_arg_regex = re.compile(
+            r"<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>",
+            re.DOTALL,
+        )
+
+        tool_calls: List[Dict[str, Any]] = []
+        for block in tool_block_regex.findall(text):
+            tool_call_match = func_detail_regex.search(block)
+            if not tool_call_match:
+                continue
+
+            function_name = tool_call_match.group(1).strip()
+            if not function_name:
+                continue
+
+            arg_section = tool_call_match.group(2)
+            arguments = {}
+            if arg_section:
+                for key, value in func_arg_regex.findall(arg_section):
+                    arguments[key.strip()] = _coerce_arg_value(value.strip())
+
+            tool_calls.append({"name": function_name, "arguments": arguments})
+
+        return tool_calls
+
+    @staticmethod
+    def _extract_non_tool_call_content(text: str) -> str:
+        """Return assistant-visible text outside ``<tool_call>`` blocks."""
+        return re.sub(r"<tool_call>.*?</tool_call>", "", text, flags=re.DOTALL).strip()
+
+
+class KimiK2Protocol(ChatProtocol):
+    """Kimi-K2 / Kimi-K2.5 tool-calling protocol.
+
+    Tool call format::
+
+        <|tool_calls_section_begin|>
+        <|tool_call_begin|>functions.tool_name:0<|tool_call_argument_begin|>{"key": "value"}<|tool_call_end|>
+        <|tool_calls_section_end|>
+
+    Tool feedback format follows the model chat template:
+
+        <|im_system|>tool_name<|im_middle|>## Return of functions.tool_name:0
+        {tool_result}<|im_end|>
+        <|im_assistant|>assistant<|im_middle|><think>
+    """
+
+    _SECTION_START_VARIANTS = (
+        "<|tool_calls_section_begin|>",
+        "<|tool_call_section_begin|>",
+    )
+    _SECTION_END_VARIANTS = (
+        "<|tool_calls_section_end|>",
+        "<|tool_call_section_end|>",
+    )
+    _TOOL_CALL_RE = re.compile(
+        r"<\|tool_call_begin\|>\s*(?P<tool_call_id>[^<]+:\d+)\s*"
+        r"<\|tool_call_argument_begin\|>\s*(?P<function_arguments>(?:(?!<\|tool_call_begin\|>).)*?)\s*"
+        r"<\|tool_call_end\|>",
+        re.DOTALL,
+    )
+    _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+
+    @property
+    def generation_prompt_marker(self) -> str:
+        return "<|im_assistant|>assistant<|im_middle|><think>"
+
+    def parse_assistant_text(self, text: str, token_ids: Optional[List[int]] = None) -> Dict[str, Any]:
+        """Parse Kimi tool-call sections using the vLLM kimi_k2 shape."""
+        section_start = self._find_first_section_start(text)
+        if section_start is None:
+            return {"content": self._strip_reasoning_markup(text), "tool_calls": []}
+
+        tool_calls = []
+        for match in self._TOOL_CALL_RE.finditer(text):
+            tool_call_id = match.group("tool_call_id").strip()
+            function_name = tool_call_id.split(":")[0].split(".")[-1]
+            arguments = self._parse_arguments(match.group("function_arguments"))
+            tool_calls.append(
+                {
+                    "id": tool_call_id,
+                    "name": function_name,
+                    "arguments": arguments,
+                }
+            )
+
+        if not tool_calls:
+            return {"content": self._strip_reasoning_markup(text), "tool_calls": []}
+
+        content = self._strip_reasoning_markup(text[:section_start])
+        return {"content": content, "tool_calls": tool_calls}
+
+    def render_tool_feedback(self, tool_results: List[Dict[str, str]]) -> str:
+        """Render Kimi tool results as tool-role turns plus the next assistant turn."""
+        feedback = "</think><|im_end|>"
+        for tr in tool_results:
+            tool_name = tr["name"]
+            tool_call_id = tr.get("tool_call_id", f"functions.{tool_name}:0")
+            feedback += (
+                f"<|im_system|>{tool_name}<|im_middle|>"
+                f"## Return of {tool_call_id}\n"
+                f"{tr['content']}<|im_end|>"
+            )
+        feedback += "<|im_assistant|>assistant<|im_middle|><think>"
+        return feedback
+
+    def _find_first_section_start(self, text: str) -> Optional[int]:
+        starts = [text.find(marker) for marker in self._SECTION_START_VARIANTS if marker in text]
+        if not starts:
+            return None
+        return min(starts)
+
+    def _parse_arguments(self, raw_arguments: str) -> Dict[str, Any]:
+        raw_arguments = raw_arguments.strip()
+        if not raw_arguments:
+            return {}
+        try:
+            parsed = json.loads(raw_arguments)
+        except json.JSONDecodeError as ex:
+            if "Invalid \\escape" in str(ex):
+                try:
+                    parsed = json.loads(_repair_invalid_json_escapes(raw_arguments))
+                except Exception:
+                    return {"raw": raw_arguments}
+            else:
+                return {"raw": raw_arguments}
+        except Exception:
+            return {"raw": raw_arguments}
+
+        return parsed if isinstance(parsed, dict) else {"raw": raw_arguments}
+
+    @classmethod
+    def _strip_reasoning_markup(cls, text: str) -> str:
+        return cls._THINK_BLOCK_RE.sub("", text).strip()
 
 
 _VALID_JSON_ESC = set(['"', "\\", "/", "b", "f", "n", "r", "t", "u"])

@@ -18,7 +18,7 @@ import asyncio
 import os
 import re
 from collections import defaultdict, deque
-from typing import List
+from typing import Any, Dict, List, Optional
 
 from openrlhf.utils.agent import AgentExecutorBase
 from openrlhf.utils.logging_utils import init_logger
@@ -111,6 +111,7 @@ class ERLExecutor(AgentExecutorBase):
         hf_tokenizer,
         llm_engine,
         log_trajectory: bool = False,
+        extra_state: Optional[Dict[str, Any]] = None,
     ) -> list:
         """Generate samples with prompt-level ERL gating and k diverse retries."""
 
@@ -124,6 +125,7 @@ class ERLExecutor(AgentExecutorBase):
                 hf_tokenizer=hf_tokenizer,
                 llm_engine=llm_engine,
                 log_trajectory=log_trajectory,
+                extra_state=extra_state,
             )
             for _ in range(num_samples)
         ]
@@ -182,6 +184,7 @@ class ERLExecutor(AgentExecutorBase):
                     hf_tokenizer=hf_tokenizer,
                     llm_engine=llm_engine,
                     log_trajectory=False,
+                    extra_state=extra_state,
                 )
             )
         retry_results = await asyncio.gather(*retry_tasks)

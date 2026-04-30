@@ -1,4 +1,6 @@
 import asyncio
+import re
+import json
 import os
 import threading
 import time as time_mod
@@ -10,7 +12,7 @@ import vllm
 from packaging import version
 from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, PreTrainedTokenizerFast
 from vllm.inputs import TokensPrompt
 from vllm.sampling_params import RequestOutputKind
 from vllm.utils import random_uuid
@@ -21,6 +23,83 @@ from openrlhf.utils.logging_utils import init_logger
 from .utils import get_bundle_indices, ray_noset_visible_devices
 
 logger = init_logger(__name__)
+
+
+def _sanitize_tokenizer_config_dir(model_path: str) -> str:
+    resolved_path = model_path
+    if not os.path.isdir(resolved_path):
+        from huggingface_hub import snapshot_download
+
+        # Download just the model-loading files (not eval traces / extra dirs)
+        # so vLLM finds config.json + weights in the snapshot dir we hand back.
+        resolved_path = snapshot_download(
+            repo_id=model_path,
+            allow_patterns=[
+                "config.json",
+                "generation_config.json",
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "tokenizer.model",
+                "special_tokens_map.json",
+                "chat_template.jinja",
+                "*.safetensors",
+                "*.safetensors.index.json",
+            ],
+        )
+
+    tokenizer_config_path = os.path.join(resolved_path, "tokenizer_config.json")
+    if not os.path.isfile(tokenizer_config_path):
+        return resolved_path
+
+    with open(tokenizer_config_path) as f:
+        tokenizer_config = json.load(f)
+
+    if tokenizer_config.get("tokenizer_class") != "TokenizersBackend":
+        return resolved_path
+
+    tokenizer_config["tokenizer_class"] = "PreTrainedTokenizerFast"
+    with open(tokenizer_config_path, "w") as f:
+        json.dump(tokenizer_config, f, indent=2)
+        f.write("\n")
+
+    logger.warning(
+        "Rewrote tokenizer_config.json for %s: tokenizer_class TokenizersBackend -> PreTrainedTokenizerFast",
+        resolved_path,
+    )
+    return resolved_path
+
+
+def _load_hf_tokenizer(model_path: str):
+    try:
+        return AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    except ValueError as exc:
+        if "Tokenizer class TokenizersBackend does not exist" not in str(exc):
+            raise
+        logger.warning(
+            "Falling back to PreTrainedTokenizerFast for %s because tokenizer_config.json "
+            "declares unsupported tokenizer_class=TokenizersBackend.",
+            model_path,
+        )
+        return PreTrainedTokenizerFast.from_pretrained(model_path)
+    except AttributeError as exc:
+        # Triggered when transformers falls back to slow-tokenizer conversion
+        # but the repo lacks a vocab_file (e.g., gpt-oss whose tokenizer.json
+        # was never downloaded into the local HF cache). The exception message
+        # is just "'NoneType' object has no attribute 'endswith'", so identify
+        # by traceback frame instead.
+        import traceback as _tb
+        in_convert_slow = any(
+            frame.name == "convert_slow_tokenizer" for frame in _tb.extract_tb(exc.__traceback__)
+        )
+        if not in_convert_slow or "gpt-oss-20b" not in str(model_path):
+            raise
+        logger.warning(
+            "Tokenizer load failed for %s (missing tokenizer.json / no slow vocab_file). "
+            "Falling back to unsloth/gpt-oss-20b tokenizer — gpt-oss uses a fixed o200k "
+            "tokenizer so this is safe.",
+            model_path,
+        )
+        return AutoTokenizer.from_pretrained("unsloth/gpt-oss-20b", trust_remote_code=True)
 
 
 def _load_agent_executor(agent_func_path: str, **kwargs) -> AgentExecutorBase:
@@ -298,9 +377,12 @@ class LLMRayActor:
         tool_calling_reward_mode: str = "auto",
         tool_calling_reward_naive_per_call: float = 0.1,
         tool_calling_reward_feature_single: float = 0.1,
-        tool_calling_reward_feature_full: float = 0.05,
+        tool_calling_reward_feature_full: float = 0.065,
         tool_calling_reward_feature_max_count: int = 21,
+        tool_calling_reward_max_rewarded_calls: int = -1,
+        discard_failed_tool_traces: bool = True,
         tool_calling_reward_until_step: int = -1,
+        tool_calling_reward_cap: float = 0.25,
         **kwargs,
     ):
         self._configure_device_env(
@@ -311,7 +393,7 @@ class LLMRayActor:
         self._configure_vllm_env(version, vllm, kwargs.pop("full_determinism", False))
 
         model_path = kwargs.get("model", "")
-        self.hf_tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        self.hf_tokenizer = _load_hf_tokenizer(model_path)
 
         # Configure agent environment variables
         if agent_func_path:
@@ -324,10 +406,13 @@ class LLMRayActor:
         # Store agent config for generation
         self.agent_max_steps = agent_max_steps
         self.vllm_stop_strings = vllm_stop_strings
+        self._current_global_step = -1
+        self._total_training_steps = -1
 
         # Hidden instruction: injected into prompts during generation,
         # stripped from token sequences before training.
         self.hidden_instruction = os.environ.get("OPENRLHF_HIDDEN_INSTRUCTION")
+        self.hidden_prompt_audit_dir = os.environ.get("OPENRLHF_HIDDEN_PROMPT_AUDIT_DIR", "")
         self.chat_protocol_name = chat_protocol
 
         # Execution mode mapping:
@@ -344,6 +429,9 @@ class LLMRayActor:
                 tool_calling_reward_feature_single=tool_calling_reward_feature_single,
                 tool_calling_reward_feature_full=tool_calling_reward_feature_full,
                 tool_calling_reward_feature_max_count=tool_calling_reward_feature_max_count,
+                tool_calling_reward_max_rewarded_calls=tool_calling_reward_max_rewarded_calls,
+                discard_failed_tool_traces=discard_failed_tool_traces,
+                tool_calling_reward_cap=tool_calling_reward_cap,
             )
         else:
             self.executor = SingleTurnAgentExecutor(
@@ -514,9 +602,16 @@ class LLMRayActor:
 
     def set_current_global_step(self, step: int):
         """Update the global step used in time-series samples."""
+        self._current_global_step = int(step)
         self._stats_poller.set_global_step(step)
         if hasattr(self, "executor") and self.executor is not None:
             self.executor.set_current_global_step(step)
+
+    def set_total_training_steps(self, total_steps: int):
+        """Update the total number of training steps for phase-aware behavior."""
+        self._total_training_steps = int(total_steps)
+        if hasattr(self, "executor") and self.executor is not None:
+            self.executor.set_total_training_steps(total_steps)
 
     def get_vllm_stats(self) -> Dict:
         """Return accumulated scheduler stats + raw samples, then reset."""
@@ -554,13 +649,59 @@ class LLMRayActor:
     # that starts the assistant turn in a chat-templated prompt).
     _GENERATION_PROMPT_MARKERS = {
         "glm_flash": "<|assistant|>\n",
+        "glm51": "<|assistant|>\n",
         "intern_s1": "<|im_start|>assistant\n<think>",
+        "kimi_k2": "<|im_assistant|>assistant<|im_middle|><think>",
         "qwen3": "<|im_start|>assistant\n",
+        "qwen3_5": "<|im_start|>assistant\n",
         "qwen3_coder": "<|im_start|>assistant\n",
         "gpt_oss": "<|start|>assistant",
     }
 
-    def _inject_hidden_instruction(self, prompt: str) -> tuple:
+    def _write_hidden_prompt_audit_files(
+        self,
+        prompt: str,
+        augmented_prompt: str,
+        hidden_instruction_text: str,
+        hi_count: int,
+        gen_marker_count: int,
+        marker: str,
+    ) -> None:
+        """Persist one representative hidden-prompt audit sample per run."""
+        audit_dir = self.hidden_prompt_audit_dir
+        if not audit_dir or hi_count <= 0:
+            return
+
+        marker_path = os.path.join(audit_dir, ".sample0_generation_written")
+        try:
+            os.makedirs(audit_dir, exist_ok=True)
+            fd = os.open(marker_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+        except FileExistsError:
+            return
+        except OSError as exc:
+            logger.warning("[hidden_instruction] Failed to initialize audit dir %s: %s", audit_dir, exc)
+            return
+
+        meta = {
+            "chat_protocol": self.chat_protocol_name,
+            "generation_prompt_marker": marker,
+            "hidden_instruction_token_count": hi_count,
+            "hidden_instruction_gen_marker_count": gen_marker_count,
+            "hidden_instruction_text": hidden_instruction_text,
+        }
+        try:
+            with open(os.path.join(audit_dir, "sample0_base_prompt.txt"), "w", encoding="utf-8") as f:
+                f.write(prompt)
+            with open(os.path.join(audit_dir, "sample0_augmented_prompt.txt"), "w", encoding="utf-8") as f:
+                f.write(augmented_prompt)
+            with open(os.path.join(audit_dir, "sample0_generation_meta.json"), "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2, ensure_ascii=False)
+            logger.info("[hidden_instruction] Wrote augmented prompt audit files to %s", audit_dir)
+        except OSError as exc:
+            logger.warning("[hidden_instruction] Failed to write prompt audit files in %s: %s", audit_dir, exc)
+
+    def _inject_hidden_instruction(self, prompt: str, extra_hidden_instruction: Optional[str] = None) -> tuple:
         """Inject hidden instruction into prompt and compute token metadata.
 
         Returns:
@@ -570,7 +711,13 @@ class LLMRayActor:
             compute the exact strip position from the actual observation tokens
             (which may be truncated). Returns (prompt, 0, 0) if no injection.
         """
-        hi = self.hidden_instruction
+        hi_parts = []
+        if self.hidden_instruction:
+            hi_parts.append(self.hidden_instruction)
+        if extra_hidden_instruction:
+            hi_parts.append(extra_hidden_instruction)
+
+        hi = "\n\n".join(part.strip() for part in hi_parts if part and part.strip())
         if not hi:
             return prompt, 0, 0
 
@@ -606,6 +753,7 @@ class LLMRayActor:
             return prompt, 0, 0
 
         gen_marker_count = len(self.hf_tokenizer(marker, add_special_tokens=False)["input_ids"]) if marker else 0
+        self._write_hidden_prompt_audit_files(prompt, augmented, hi, hi_count, gen_marker_count, marker)
 
         return augmented, hi_count, gen_marker_count
 
@@ -617,6 +765,9 @@ class LLMRayActor:
         max_length: int,
         num_samples: int = 1,
         log_trajectory: bool = False,
+        extra_hidden_instruction: Optional[str] = None,
+        datasource: Optional[str] = None,
+        task: Optional[str] = None,
     ):
         """Generate N samples for a single prompt. log_trajectory: log init + trajectory only for first prompt in episode.
 
@@ -624,8 +775,23 @@ class LLMRayActor:
         variable-size output, e.g. ERL retries). Otherwise loops N times.
         """
         # Inject hidden instruction into the prompt for generation
-        augmented_prompt, hi_count, gen_marker_count = self._inject_hidden_instruction(prompt)
+        augmented_prompt, hi_count, gen_marker_count = self._inject_hidden_instruction(
+            prompt,
+            extra_hidden_instruction=extra_hidden_instruction,
+        )
 
+        injected_task = task
+        if injected_task is None and datasource:
+            stripped_datasource = re.sub(r"_(train|valid|validation|val|test|eval)$", "", datasource)
+            try:
+                from openrlhf.tools.therapeutic_tools.v11 import _resolve_task_name
+
+                if _resolve_task_name(stripped_datasource) or _resolve_task_name(datasource):
+                    injected_task = datasource
+            except Exception:
+                injected_task = None
+
+        extra_state = {"task": injected_task} if injected_task else None
         if hasattr(self.executor, "execute_batch"):
             results = await self.executor.execute_batch(
                 prompt=augmented_prompt,
@@ -636,6 +802,7 @@ class LLMRayActor:
                 hf_tokenizer=self.hf_tokenizer,
                 llm_engine=self,
                 log_trajectory=log_trajectory,
+                extra_state=extra_state,
             )
         else:
             tasks = [
@@ -647,21 +814,25 @@ class LLMRayActor:
                     hf_tokenizer=self.hf_tokenizer,
                     llm_engine=self,
                     log_trajectory=log_trajectory,
+                    extra_state=extra_state,
                 )
                 for _ in range(num_samples)
             ]
             results = await asyncio.gather(*tasks)
 
-        # Tag each result with hidden instruction metadata for downstream stripping.
-        # We pass hi_count and gen_marker_count so the experience maker can compute
-        # the exact strip position from the actual observation tokens (robust to
-        # left-truncation inside the executor).
-        if hi_count > 0:
-            for result in results:
+        # Normalize response metadata for downstream consumers.
+        # Always restore the original dataset prompt here so eval/training logic
+        # can key lookups on a stable prompt string even if the executor ran on
+        # an augmented prompt (hidden instruction, chat wrapping, etc.).
+        # When hidden instructions were injected, also pass token counts so the
+        # experience maker can strip them back out of observation tokens.
+        for result in results:
+            result["prompt"] = prompt
+            if datasource is not None:
+                result["datasource"] = datasource
+            if hi_count > 0:
                 result["hidden_instruction_token_count"] = hi_count
                 result["hidden_instruction_gen_marker_count"] = gen_marker_count
-                # Store the original prompt (without hidden instruction) for logging
-                result["prompt"] = prompt
 
         # Periodically return freed pages to OS.  Each prompt generates many
         # intermediate objects across N samples × T turns; without malloc_trim
@@ -706,8 +877,11 @@ def create_vllm_engines(
     tool_calling_reward_mode: str = "auto",
     tool_calling_reward_naive_per_call: float = 0.1,
     tool_calling_reward_feature_single: float = 0.1,
-    tool_calling_reward_feature_full: float = 0.05,
+    tool_calling_reward_feature_full: float = 0.065,
     tool_calling_reward_feature_max_count: int = 21,
+    tool_calling_reward_max_rewarded_calls: int = -1,
+    discard_failed_tool_traces: bool = True,
+    tool_calling_reward_cap: float = 0.25,
     reduce_cuda_graph: bool = False,
     vllm_cudagraph_max_capture_size: Optional[int] = None,
     kv_cache_dtype: str = "auto",
@@ -721,11 +895,16 @@ def create_vllm_engines(
     erl_max_reflection_tokens: int = 512,
     language_model_only: bool = False,
     hidden_instruction: Optional[str] = None,
+    hidden_prompt_audit_dir: Optional[str] = None,
 ):
     """Spin up a set of vLLM Ray actors with consistent placement."""
     # Propagate hidden instruction via env var so LLMRayActor can read it.
     if hidden_instruction:
         os.environ["OPENRLHF_HIDDEN_INSTRUCTION"] = hidden_instruction
+    if hidden_prompt_audit_dir:
+        os.environ["OPENRLHF_HIDDEN_PROMPT_AUDIT_DIR"] = hidden_prompt_audit_dir
+
+    pretrain = _sanitize_tokenizer_config_dir(pretrain)
 
     # Propagate ERL config via env vars so ERLExecutor can read them
     # inside the Ray worker (set before LLMRayActor.__init__ calls
@@ -738,7 +917,11 @@ def create_vllm_engines(
         os.environ["OPENRLHF_ERL_MAX_REFLECTION_TOKENS"] = str(erl_max_reflection_tokens)
 
     vllm_engines = []
-    distributed_executor_backend = "uni" if tensor_parallel_size == 1 else "mp"
+    # TP>1 engines are launched from inside a Ray placement group. Let vLLM
+    # use its Ray executor path so each TP worker is assigned to a Ray GPU
+    # bundle directly; forcing "mp" here launches local worker processes under
+    # a zero-GPU parent actor and breaks device/local_rank assignment.
+    distributed_executor_backend = "uni" if tensor_parallel_size == 1 else "ray"
     use_hybrid_engine = shared_pg is not None
     num_gpus = int(tensor_parallel_size == 1)
     if use_hybrid_engine and tensor_parallel_size == 1:
@@ -802,7 +985,11 @@ def create_vllm_engines(
                 max_cudagraph_capture_size=max_capture,
                 pass_config={"fuse_allreduce_rms": True, "eliminate_noops": True, "fuse_attn_quant": True},
             )
-            actor_kwargs["async_scheduling"] = True
+            # vLLM's Ray executor currently rejects async scheduling during
+            # config validation. Leave it unset so vLLM can disable it
+            # automatically for Ray while keeping the compilation config.
+            if distributed_executor_backend != "ray":
+                actor_kwargs["async_scheduling"] = True
         elif vllm_cudagraph_max_capture_size is not None and not enforce_eager:
             from vllm.config import CompilationConfig, CompilationMode
 
@@ -827,6 +1014,9 @@ def create_vllm_engines(
                 "tool_calling_reward_feature_single": tool_calling_reward_feature_single,
                 "tool_calling_reward_feature_full": tool_calling_reward_feature_full,
                 "tool_calling_reward_feature_max_count": tool_calling_reward_feature_max_count,
+                "tool_calling_reward_max_rewarded_calls": tool_calling_reward_max_rewarded_calls,
+                "discard_failed_tool_traces": discard_failed_tool_traces,
+                "tool_calling_reward_cap": tool_calling_reward_cap,
             }
         )
 

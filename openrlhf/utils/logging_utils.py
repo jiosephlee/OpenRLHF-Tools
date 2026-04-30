@@ -78,7 +78,7 @@ class WandbLogger:
 
         wandb.define_metric("train/global_step")
         wandb.define_metric("train/*", step_metric="train/global_step", step_sync=True)
-        wandb.define_metric("parse/*", step_metric="train/global_step", step_sync=True)
+        wandb.define_metric("tool_calling/*", step_metric="train/global_step", step_sync=True)
         wandb.define_metric("system/*", step_metric="train/global_step", step_sync=True)
         wandb.define_metric("vllm/*", step_metric="train/global_step", step_sync=True)
         wandb.define_metric("batch/*", step_metric="train/global_step", step_sync=True)
@@ -90,8 +90,29 @@ class WandbLogger:
         self.handle = wandb
         self.samples_table = wandb.Table(columns=["global_step", "text", "reward"])
 
-    # Keys routed to the "parse/" wandb panel instead of "train/".
-    _PARSE_KEYS = {"parse_failed", "tool_call_attempted"}
+    # Parse and tool-calling metrics share a dedicated W&B section.
+    _TOOL_CALLING_KEYS = {
+        "parse_failed",
+        "tool_call_attempted",
+        "tool_call_count",
+        "tool_time_total",
+        "tool_time_max_call",
+        "tool_time_avg",
+        "tool_calling_reward",
+        "tool_call_rewarded_count",
+        "tool_call_reward_suppressed_count",
+        "requested_get_neighbors_pct",
+        "requested_get_features_pct",
+        "avg_get_features_requested_feature_count",
+        "avg_get_neighbors_requested_feature_count",
+        "trace_total",
+        "trace_pct_at_least_2_unique_tools",
+        "trace_correctness_at_least_2_unique_tools",
+        "trace_pct_at_least_3_tool_calls",
+        "trace_correctness_at_least_3_tool_calls",
+        "trace_pct_at_least_2_molinfo_and_1_neighbor",
+        "trace_correctness_at_least_2_molinfo_and_1_neighbor",
+    }
 
     @staticmethod
     def _route_key(k: str) -> str:
@@ -102,8 +123,15 @@ class WandbLogger:
             return "batch"
         if k.startswith("vllm_"):
             return "vllm"
-        if k.startswith("parse_method__") or k in WandbLogger._PARSE_KEYS:
-            return "parse"
+        if (
+            k.startswith("parse_method__")
+            or k.startswith("tool_")
+            or k.startswith("requested_get_")
+            or k.startswith("avg_get_")
+            or k.startswith("trace_")
+            or k in WandbLogger._TOOL_CALLING_KEYS
+        ):
+            return "tool_calling"
         if k in ("cpu_percent", "cpu_cores_affinity"):
             return "system"
         return "train"

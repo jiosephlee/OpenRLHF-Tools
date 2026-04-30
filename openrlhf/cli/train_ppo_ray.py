@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import shutil
 import torch
 
 # Set Dynamo limits from environment variables if provided
@@ -24,6 +25,38 @@ from openrlhf.trainer.ray.ppo_actor import PolicyModelActor
 from openrlhf.trainer.ray.ppo_critic import CriticModelActor
 from openrlhf.utils import get_strategy
 from openrlhf.utils.fp4_config import FP4Config
+from openrlhf.utils.tool_versions import _ALL_VERSIONS
+
+
+def _resolve_upload_folder(args) -> str:
+    if getattr(args, "save_best", False):
+        best_path = getattr(args, "best_save_path", None) or os.path.join(args.save_path, "best")
+        config_path = os.path.join(best_path, "config.json")
+        if os.path.isdir(best_path) and os.path.isfile(config_path):
+            return best_path
+    return args.save_path
+
+
+def _cleanup_uploaded_dirs(args, uploaded_path: str) -> None:
+    cleanup_paths = [uploaded_path, args.save_path]
+    best_path = getattr(args, "best_save_path", None)
+    if best_path:
+        cleanup_paths.append(best_path)
+
+    if getattr(args, "save_value_network", False):
+        cleanup_paths.append(f"{args.save_path}_critic")
+        if best_path:
+            cleanup_paths.append(f"{best_path}_critic")
+
+    seen = set()
+    for path in cleanup_paths:
+        if not path:
+            continue
+        abs_path = os.path.abspath(path)
+        if abs_path in seen or not os.path.exists(abs_path):
+            continue
+        shutil.rmtree(abs_path, ignore_errors=True)
+        seen.add(abs_path)
 
 
 def _strip_quantization_config(pretrain_path: str) -> None:
@@ -50,9 +83,33 @@ def _strip_quantization_config(pretrain_path: str) -> None:
 
 
 def train(args):
+    from openrlhf.utils.run_paths import resolve_run_dir
+
+    run_name = getattr(args, "wandb_run_name", "run").replace("/", "_")
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    resolved_run_dir = resolve_run_dir(project_root, run_name)
+
+    # Pin the SMILES error log into the resolved run dir so it joins the
+    # date-organized layout regardless of what the launch script exported.
+    # Done before ray.init so Ray actors inherit the corrected path.
+    os.environ["OPENRLHF_SMILES_ERROR_LOG"] = os.path.join(resolved_run_dir, "smiles_errors.jsonl")
+
     # initialize ray if not initialized
     if not ray.is_initialized():
-        ray.init(runtime_env={"env_vars": {"TOKENIZERS_PARALLELISM": "true", "NCCL_DEBUG": "INFO"}})
+        ray_env_vars = {
+            "TOKENIZERS_PARALLELISM": "true",
+            "NCCL_DEBUG": "INFO",
+            "OPENRLHF_SMILES_ERROR_LOG": os.environ["OPENRLHF_SMILES_ERROR_LOG"],
+        }
+        for passthrough in (
+            "OPENRLHF_FULL_TRACE_DIR",
+            "OPENRLHF_FULL_TRACE_KEEP_LAST",
+            "OPENRLHF_TRACE_QUEUE_SIZE",
+            "OPENRLHF_TRACE_BUDGET_SEC",
+        ):
+            if os.environ.get(passthrough):
+                ray_env_vars[passthrough] = os.environ[passthrough]
+        ray.init(runtime_env={"env_vars": ray_env_vars})
 
     # configure strategy
     strategy = get_strategy(args)
@@ -99,6 +156,8 @@ def train(args):
                 args.hidden_instruction = f.read().strip()
             strategy.print(f"[hidden_instruction] Loaded from {hi_path}: {args.hidden_instruction[:100]!r}...")
 
+        hidden_prompt_audit_dir = os.path.join(resolved_run_dir, "hidden_prompt_audit")
+
         vllm_pretrain = args.vllm_pretrain if args.vllm_pretrain else args.pretrain
         vllm_engines = create_vllm_engines(
             args.vllm_num_engines,
@@ -128,6 +187,9 @@ def train(args):
             tool_calling_reward_feature_single=args.tool_calling_reward_feature_single,
             tool_calling_reward_feature_full=args.tool_calling_reward_feature_full,
             tool_calling_reward_feature_max_count=args.tool_calling_reward_feature_max_count,
+            tool_calling_reward_max_rewarded_calls=args.tool_calling_reward_max_rewarded_calls,
+            discard_failed_tool_traces=args.discard_failed_tool_traces,
+            tool_calling_reward_cap=args.tool_calling_reward_cap,
             reduce_cuda_graph=args.optimal_flags_b200_gpt_oss,
             vllm_cudagraph_max_capture_size=args.vllm_cudagraph_max_capture_size,
             kv_cache_dtype=args.kv_cache_dtype,
@@ -140,6 +202,7 @@ def train(args):
             erl_max_reflection_tokens=args.erl_max_reflection_tokens,
             language_model_only=args.language_model_only,
             hidden_instruction=args.hidden_instruction,
+            hidden_prompt_audit_dir=hidden_prompt_audit_dir,
         )
 
     actor_model = RayActorGroup(
@@ -236,6 +299,8 @@ def train(args):
     max_steps = ray.get(ppo_trainer.get_max_steps.remote())
     if eval_only and max_steps == 0:
         max_steps = 1
+    if vllm_engines:
+        ray.get([engine.set_total_training_steps.remote(max_steps) for engine in vllm_engines])
 
     # init actor/reference/reward model
     refs = []
@@ -276,17 +341,16 @@ def train(args):
     if args.push_to_hub:
         from huggingface_hub import HfApi
 
+        upload_path = _resolve_upload_folder(args)
         api = HfApi()
         api.create_repo(args.push_to_hub, private=args.push_to_hub_private, exist_ok=True)
         api.upload_folder(
-            folder_path=args.save_path,
+            folder_path=upload_path,
             repo_id=args.push_to_hub,
             commit_message="Upload model from OpenRLHF training",
         )
         if args.delete_local_after_push:
-            import shutil
-
-            shutil.rmtree(args.save_path, ignore_errors=True)
+            _cleanup_uploaded_dirs(args, upload_path)
 
 
 if __name__ == "__main__":
@@ -412,6 +476,33 @@ if __name__ == "__main__":
     parser.add_argument("--eval_steps", type=int, default=-1)
     parser.add_argument("--skip_eval_step_zero", action="store_true", default=False)
     parser.add_argument(
+        "--save_all_traces",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Dump every rollout and eval sample as JSONL to "
+        "$OPENRLHF_FULL_TRACE_DIR/<category>/<week>/<run>/full_traces/. Writes are "
+        "performed off-thread via openrlhf.utils.trace_writer.TraceWriter (bounded "
+        "queue, per-step wall-clock budget; under back-pressure records are dropped, "
+        "trainer never blocks). Rollout records exclude the heavy `trace_messages` "
+        "field; flip --save_distill_trace_messages to include it on eval records. "
+        "When OPENRLHF_FULL_TRACE_DIR is unset, writes are silently skipped.",
+    )
+    parser.add_argument(
+        "--save_distill_trace_messages",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Include the structured per-turn `trace_messages` reconstruction (used "
+        "for SFT distillation) on EVAL records only. Rollout records never include "
+        "this field. Default off; flip on for distillation runs.",
+    )
+    # Deprecated alias kept for backward compat with older bash scripts.
+    parser.add_argument(
+        "--save_sft_distill_traces",
+        action="store_true",
+        default=False,
+        help="DEPRECATED alias for --save_all_traces; will be removed.",
+    )
+    parser.add_argument(
         "--skip_training",
         action="store_true",
         default=False,
@@ -503,6 +594,16 @@ if __name__ == "__main__":
     # dynamic batch size
     parser.add_argument("--use_dynamic_batch", action="store_true", default=False)
     parser.add_argument("--use_adaptive_batch", action="store_true", default=False, help="Use padded adaptive batching instead of packed dynamic batching")
+    parser.add_argument(
+        "--balance_experiences_legacy",
+        action="store_true",
+        default=False,
+        help=(
+            "Fallback only: use the original chunk-zip balancer in balance_experiences(). "
+            "Silently drops samples when total_samples %% effective_dp_ranks != 0, but kept "
+            "behind a flag for A/B comparison if the new snake balancer regresses."
+        ),
+    )
     parser.add_argument("--rollout_max_tokens_per_gpu", type=int, default=None)
     parser.add_argument("--train_max_tokens_per_gpu", type=int, default=16192)
 
@@ -561,6 +662,31 @@ if __name__ == "__main__":
 
     # PPO
     parser.add_argument("--save_path", type=str, default="./ckpt")
+    parser.add_argument(
+        "--best_save_path",
+        type=str,
+        default=None,
+        help="Optional local directory for the promoted best-eval checkpoint. Defaults to <save_path>/best.",
+    )
+    parser.add_argument(
+        "--save_best",
+        action="store_true",
+        default=False,
+        help="Track eval metrics during training and save the best checkpoint to --best_save_path.",
+    )
+    parser.add_argument(
+        "--best_metric_key",
+        type=str,
+        default="eval_avg_macro_f1",
+        help="Flat eval metric key tracked by --save_best. Slash-style aliases are normalized to underscores.",
+    )
+    parser.add_argument(
+        "--best_metric_mode",
+        type=str,
+        default="max",
+        choices=["max", "min"],
+        help="Whether larger or smaller values are better for --best_metric_key.",
+    )
     parser.add_argument("--num_episodes", type=int, default=1)
     parser.add_argument("--rollout_batch_size", type=int, default=1024, help="Batch size for make experience")
     parser.add_argument(
@@ -611,7 +737,7 @@ if __name__ == "__main__":
         "--delete_local_after_push",
         action="store_true",
         default=False,
-        help="Delete local save_path after successful push to Hub",
+        help="Delete local save_path and best_save_path artifacts after successful push to Hub",
     )
     parser.add_argument("--actor_learning_rate", type=float, default=1e-6)
     parser.add_argument("--critic_learning_rate", type=float, default=9e-6)
@@ -823,7 +949,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--tool_calling_reward_feature_full",
         type=float,
-        default=0.05,
+        default=0.065,
         help="Feature-aware reward when the maximum configured number of features is requested.",
     )
     parser.add_argument(
@@ -831,6 +957,35 @@ if __name__ == "__main__":
         type=int,
         default=21,
         help="Maximum feature count used to interpolate feature-aware rewards.",
+    )
+    parser.add_argument(
+        "--tool_calling_reward_max_rewarded_calls",
+        type=int,
+        default=-1,
+        help="Maximum number of tool calls per episode that can receive tool-calling shaping reward. "
+        "Example: 2 rewards only the first two tool calls and suppresses reward on the third+. "
+        "Set to -1 to disable this count-based cap.",
+    )
+    parser.add_argument(
+        "--discard_failed_tool_traces",
+        dest="discard_failed_tool_traces",
+        action="store_true",
+        default=True,
+        help="Discard traces from PPO after any tool execution error. "
+        "When enabled, the episode ends after the failed tool turn and the trace is dropped before training.",
+    )
+    parser.add_argument(
+        "--keep_failed_tool_traces",
+        dest="discard_failed_tool_traces",
+        action="store_false",
+        help="Opt out of discarding traces after tool execution errors. "
+        "Failed turns still receive no tool-calling shaping reward.",
+    )
+    parser.add_argument(
+        "--tool_calling_reward_cap",
+        type=float,
+        default=0.25,
+        help="Maximum total tool-calling reward per episode. Excess is clipped. Set to -1 to disable capping.",
     )
     parser.add_argument(
         "--vllm_stop_strings",
@@ -844,7 +999,7 @@ if __name__ == "__main__":
         "--chat_protocol",
         type=str,
         default="glm_flash",
-        choices=["glm_flash", "intern_s1", "gpt_oss", "qwen3", "qwen3_5"],
+        choices=["glm_flash", "glm51", "intern_s1", "gpt_oss", "kimi_k2", "qwen3", "qwen3_5"],
         help="Chat protocol for tool-calling format.",
     )
     parser.add_argument(
@@ -861,6 +1016,20 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="sampling probs for datasets",
+    )
+    parser.add_argument("--prompt_data_a", type=str, default=None, help="Primary dataset A for structured episode-1 dual-dataset mode")
+    parser.add_argument(
+        "--prompt_data_a_probs",
+        type=str,
+        default=None,
+        help="Sampling probabilities for dataset A sources in dual-dataset mode",
+    )
+    parser.add_argument("--prompt_data_b", type=str, default=None, help="Primary dataset B for structured episode-1 dual-dataset mode")
+    parser.add_argument(
+        "--prompt_data_b_probs",
+        type=str,
+        default=None,
+        help="Sampling probabilities for dataset B sources in dual-dataset mode",
     )
     parser.add_argument("--prompt_split", type=str, default="train")
     parser.add_argument("--eval_dataset", type=str, default=None, help="Path to the evaluation dataset")
@@ -891,7 +1060,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--tool_version",
         type=str,
-        choices=["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13"],
+        choices=sorted(_ALL_VERSIONS),
         default=None,
         help="Tool version for training (v1: RDKit+AccFG, v2: +salts, v3: +pKa/logD/ePSA, "
         "v4: +Haydn, v5: consolidated, v6: consolidated+KNN+metabolism, "
@@ -899,7 +1068,15 @@ if __name__ == "__main__":
         "v9: +decision tree analysis, v10: consolidated molecular summary + task-specific neighbors, "
         "v11: generalized features + task-specific fingerprint neighbors, "
         "v12: v11 with granular physicochemical property features, "
-        "v13: v12 plus top-20 SFT-backed RDKit descriptor names)",
+        "v13: v12 plus top-20 SFT-backed RDKit descriptor names, "
+        "v14: v12 plus neutral fraction / Labute ASA / NOCount / carbocycle counts; no metabolites; no v13 SFT descriptors, "
+        "v14_consolidated: v11-style grouped feature buckets over the v14 surface, "
+        "v14_no_neighbor: same get_features as v14 without neighbor tools, "
+        "v14_consolidated_no_neighbor: same get_features as v14_consolidated without neighbor tools, "
+        "v15: TRIM-style get_mol_properties_and_fg + task-bound compare_similar_mols, "
+        "v15_no_neighbor: v15 single-molecule property evidence only, "
+        "v15_neighbor_only: v15 local-analog comparison only, "
+        "v15_neighbor_only_4: v15 local-analog comparison with 2 positive + 2 negative neighbors)",
     )
 
     parser.add_argument(
@@ -1002,6 +1179,19 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="Evenly interleave samples from each dataset across training",
+    )
+    parser.add_argument(
+        "--static_phase_tool_curriculum",
+        action="store_true",
+        default=False,
+        help="One-time shuffle the training prompts, split them in half, and preprocess early/late tool variants for the main pass.",
+    )
+    parser.add_argument(
+        "--episode1_structure",
+        type=str,
+        default="legacy",
+        choices=["legacy", "dual_dataset", "half_first_episode_with_mixed_recovery"],
+        help="Structure used for episode 1. 'legacy' preserves the existing path; other modes orchestrate custom phase sequences before replay/later episodes.",
     )
     # ERL (Experiential Reinforcement Learning)
     parser.add_argument(
@@ -1165,14 +1355,35 @@ if __name__ == "__main__":
 
     if args.async_train:
         assert not args.vllm_enable_sleep, "Async RLHF is not supported with --vllm_enable_sleep."
+        if args.smart_replay:
+            raise ValueError("--smart_replay is not supported with --async_train.")
 
     if args.eval_dataset:
         assert args.remote_rm_url, "`--eval_dataset` is only supported with `--remote_rm_url`."
 
     if args.eval_only:
         assert args.eval_dataset, "`--eval_only` requires `--eval_dataset`."
-    elif not args.prompt_data:
-        raise ValueError("Training requires --prompt_data. Use --eval_only for eval-only runs.")
+    elif args.episode1_structure == "dual_dataset":
+        if not args.prompt_data_a or not args.prompt_data_b:
+            raise ValueError(
+                "--episode1_structure dual_dataset requires both --prompt_data_a and --prompt_data_b."
+            )
+        if args.async_train:
+            raise ValueError("Structured episode-1 modes are currently supported only in the synchronous PPO trainer.")
+    else:
+        if not args.prompt_data:
+            raise ValueError("Training requires --prompt_data. Use --eval_only for eval-only runs.")
+        if args.episode1_structure != "legacy" and args.async_train:
+            raise ValueError("Structured episode-1 modes are currently supported only in the synchronous PPO trainer.")
+
+    if args.save_best and not args.eval_dataset:
+        raise ValueError("--save_best requires --eval_dataset.")
+
+    if args.static_phase_tool_curriculum and args.curriculum_balanced:
+        raise ValueError("--static_phase_tool_curriculum is not supported with --curriculum_balanced.")
+
+    if args.best_save_path:
+        args.best_save_path = os.path.abspath(args.best_save_path)
 
     if args.use_kl_loss:
         if args.kl_estimator not in ["k2", "k3"]:

@@ -2,6 +2,7 @@ import asyncio
 import os
 from abc import ABC, abstractmethod
 from copy import deepcopy
+from typing import Any, Dict, Optional
 
 import aiohttp
 
@@ -15,9 +16,13 @@ _DEBUG_TRACES = os.environ.get("DEBUG_TRACES", "0") == "1"
 class AgentExecutorBase(ABC):
     def __init__(self):
         self._current_global_step = -1
+        self._total_training_steps = -1
 
     def set_current_global_step(self, step: int) -> None:
         self._current_global_step = int(step)
+
+    def set_total_training_steps(self, total_steps: int) -> None:
+        self._total_training_steps = int(total_steps)
 
     @abstractmethod
     async def execute(self, prompt, label, sampling_params, max_length: int, hf_tokenizer, llm_engine, **kwargs):
@@ -38,22 +43,26 @@ class AgentInstanceBase(ABC):
 
 
 class MultiTurnAgentExecutor(AgentExecutorBase):
-    def __init__(self, agent_instance_cls, length_penalty_start: int = 0, **agent_kwargs):
+    def __init__(self, agent_instance_cls, length_penalty_start: int = 0, tool_calling_reward_cap: float = 0.25, **agent_kwargs):
         super().__init__()
         assert issubclass(agent_instance_cls, AgentInstanceBase), "AgentInstance must inherit from AgentInstanceBase"
         self.agent_instance_cls = agent_instance_cls
         self.length_penalty_start = length_penalty_start
+        self.tool_calling_reward_cap = tool_calling_reward_cap
         self._agent_kwargs = agent_kwargs
 
-    async def execute(self, prompt, label, sampling_params, max_length: int, hf_tokenizer, llm_engine, log_trajectory: bool = False):
+    async def execute(self, prompt, label, sampling_params, max_length: int, hf_tokenizer, llm_engine, log_trajectory: bool = False, extra_state: Optional[Dict[str, Any]] = None):
         # Treat each AgentInstance as an isolated environment; bind every prompt to its own independent instance
         agent_instance = self.agent_instance_cls(
             hf_tokenizer=hf_tokenizer,
             current_global_step=self._current_global_step,
+            total_training_steps=self._total_training_steps,
             **self._agent_kwargs,
         )
         # Initialize with reset function
         initial_states = {"observation": prompt, "label": label}
+        if extra_state:
+            initial_states.update(extra_state)
         reset_result = await agent_instance.reset(initial_states)
         observation_text = reset_result["observation"]
         if _DEBUG_TRACES and log_trajectory:
@@ -188,13 +197,12 @@ class MultiTurnAgentExecutor(AgentExecutorBase):
         if total_calls > 0 and "tool_time_total" in extra_logs:
             extra_logs["tool_time_avg"] = extra_logs["tool_time_total"] / total_calls
 
-        # Cap the total tool-calling reward to 0.3 to prevent linear buildup.
-        if "tool_calling_reward" in extra_logs:
+        if "tool_calling_reward" in extra_logs and self.tool_calling_reward_cap >= 0:
             tool_calling_reward = extra_logs["tool_calling_reward"]
-            if tool_calling_reward > 0.25:
-                excess = tool_calling_reward - 0.25
+            if tool_calling_reward > self.tool_calling_reward_cap:
+                excess = tool_calling_reward - self.tool_calling_reward_cap
                 total_reward -= excess
-                extra_logs["tool_calling_reward"] = 0.25
+                extra_logs["tool_calling_reward"] = self.tool_calling_reward_cap
 
         # DAPO-style overlong reward shaping: R_length ramps from 0 at length_penalty_start to -1 at max_length, clamped at -1
         if self.length_penalty_start > 0:

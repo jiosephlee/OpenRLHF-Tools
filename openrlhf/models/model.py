@@ -65,6 +65,8 @@ def get_llm_for_sequence_regression(
     ), f"invalid model_type: {model_type}, should be critic or reward."
 
     config = AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=True)
+    if hasattr(config, "quantization_config") and config.quantization_config is None:
+        delattr(config, "quantization_config")
     config.normalize_reward = normalize_reward
     config._attn_implementation = attn_implementation
 

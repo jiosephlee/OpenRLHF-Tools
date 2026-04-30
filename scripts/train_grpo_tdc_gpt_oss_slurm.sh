@@ -248,6 +248,12 @@ PY
     KNN_CORRECT_REVERSAL_BONUS="${KNN_CORRECT_REVERSAL_BONUS:-0.25}"
     KNN_CORRECT_STICK_DELTA="${KNN_CORRECT_STICK_DELTA:--0.15}"
 
+    if [[ "$TOOL_VERSION" == *no_neighbor* ]]; then
+        ENABLE_KNN_TRACKING=0
+    else
+        ENABLE_KNN_TRACKING=1
+    fi
+
     export TORCH_DYNAMO_CACHE_SIZE_LIMIT=1024
     export TORCH_DYNAMO_RECOMPILE_LIMIT=1024
 
@@ -344,6 +350,16 @@ PY
             DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v12_minority_oversampled"
         elif [ "$TOOL_VERSION" = "v13" ]; then
             DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v13"
+        elif [ "$TOOL_VERSION" = "v14" ]; then
+            DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v14"
+        elif [ "$TOOL_VERSION" = "v14_consolidated" ]; then
+            DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v14_consolidated"
+        elif [ "$TOOL_VERSION" = "v14_no_neighbor" ]; then
+            DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v14_no_neighbor"
+        elif [ "$TOOL_VERSION" = "v14_consolidated_no_neighbor" ]; then
+            DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v14_consolidated_no_neighbor"
+        elif [ -d "$PROJECT_ROOT/data/tdc/openai_format_${TOOL_VERSION}" ]; then
+            DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_${TOOL_VERSION}"
         else
             DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v10"
         fi
@@ -368,6 +384,16 @@ PY
         openai_format_v12)               DATA_TAG="v12" ;;
         openai_format_v12_minority_oversampled) DATA_TAG="v12-mos" ;;
         openai_format_v13)               DATA_TAG="v13" ;;
+        openai_format_v14)               DATA_TAG="v14" ;;
+        openai_format_v14_consolidated)  DATA_TAG="v14c" ;;
+        openai_format_v14_no_neighbor)   DATA_TAG="v14nn" ;;
+        openai_format_v14_consolidated_no_neighbor) DATA_TAG="v14cnn" ;;
+        openai_format_v14_no_neighbor_local_attribution) DATA_TAG="v14nn-localattr" ;;
+        openai_format_v14_no_neighbor_local_attribution_pretend) DATA_TAG="v14nn-localattr-pretend" ;;
+        openai_format_v16_no_neighbor_local_attribution) DATA_TAG="v16nn-localattr" ;;
+        openai_format_v16_no_neighbor_local_attribution_pretend) DATA_TAG="v16nn-localattr-pretend" ;;
+        openai_format_v16_no_neighbor_playbook) DATA_TAG="v16nn-playbook" ;;
+        openai_format_v16_no_neighbor_playbook_subagent) DATA_TAG="v16nn-playbook-subagent" ;;
         prepended_tools_v6)              DATA_TAG="pre-v6" ;;
         prepended_tools_v7)              DATA_TAG="pre-v7" ;;
         *)                               DATA_TAG="${DATA_DIR_BASENAME#openai_format_}" ;;
@@ -410,8 +436,7 @@ PY
     fi
     RUN_ID="${RUN_NAME}"
     HUB_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
-    RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}"
-    mkdir -p "$RUNS_DIR"
+    source "$PROJECT_ROOT/scripts/lib/resolve_runs_dir.sh"
     LOCAL_SAVE_DIR="${LOCAL_SAVE_DIR:-/vast/projects/myatskar/design-documents/hf_home}"
     SAVE_PATH="$LOCAL_SAVE_DIR/$RUN_NAME"
     HUB_REPO_ID="jiosephlee/${HUB_NAME}"
@@ -658,15 +683,21 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
     # inline neighbor pseudo-labels. Generate with:
     #   python scripts/build_knn_v10_pseudo_labels.py
     #   python scripts/build_knn_v11_pseudo_labels.py
-    if [ -z "${KNN_PL_PATH:-}" ]; then
-        if [ "$TOOL_VERSION" = "v11" ] || [ "$TOOL_VERSION" = "v12" ] || [ "$TOOL_VERSION" = "v13" ]; then
-            KNN_PL_PATH="$PROJECT_ROOT/data/tdc/metadata/knn_v11_pseudo_labels.json"
-        else
-            KNN_PL_PATH="$PROJECT_ROOT/data/tdc/metadata/knn_v10_pseudo_labels.json"
+    if [ "$ENABLE_KNN_TRACKING" = "1" ]; then
+        if [ -z "${KNN_PL_PATH:-}" ]; then
+            if [ "$TOOL_VERSION" = "v15" ]; then
+                KNN_PL_PATH="$PROJECT_ROOT/data/tdc/metadata/knn_v15_pseudo_labels.json"
+            elif [ "$TOOL_VERSION" = "v11" ] || [ "$TOOL_VERSION" = "v12" ] || [ "$TOOL_VERSION" = "v13" ] || [ "$TOOL_VERSION" = "v14" ] || [ "$TOOL_VERSION" = "v14_consolidated" ]; then
+                KNN_PL_PATH="$PROJECT_ROOT/data/tdc/metadata/knn_v11_pseudo_labels.json"
+            else
+                KNN_PL_PATH="$PROJECT_ROOT/data/tdc/metadata/knn_v10_pseudo_labels.json"
+            fi
         fi
-    fi
-    if [ -f "$KNN_PL_PATH" ]; then
-        OPTIONAL_FLAGS+=" --knn_pseudo_labels_path $KNN_PL_PATH"
+        if [ -f "$KNN_PL_PATH" ]; then
+            OPTIONAL_FLAGS+=" --knn_pseudo_labels_path $KNN_PL_PATH"
+        fi
+    else
+        KNN_PL_PATH=""
     fi
 
     ### RENAME SLURM LOGS ###
@@ -678,6 +709,12 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
     ### TRAINING ###
     RUN_LOG="$RUNS_DIR/run_${QUANT_LABEL}.log"
     echo "Logging to: $RUN_LOG"
+    KNN_REWARD_FLAGS=""
+    if [ "$ENABLE_KNN_TRACKING" = "1" ]; then
+        KNN_REWARD_FLAGS+=" --knn_correct_reversal_bonus $KNN_CORRECT_REVERSAL_BONUS"
+        KNN_REWARD_FLAGS+=" --knn_correct_stick_delta $KNN_CORRECT_STICK_DELTA"
+    fi
+
     python -m openrlhf.cli.train_ppo_ray \
         --pretrain "$PRETRAIN_PATH" \
         --ref_num_nodes 0 \
@@ -751,8 +788,7 @@ print(f'Built TDC eval dataset: {sum(1 for _ in open(\"$EVAL_DATA\"))} samples f
         --enable_tool_calling_rewards \
         --freeze_router \
         --aux_loss_coef 0 \
-        --knn_correct_reversal_bonus $KNN_CORRECT_REVERSAL_BONUS \
-        --knn_correct_stick_delta $KNN_CORRECT_STICK_DELTA \
+        $KNN_REWARD_FLAGS \
         $QUANT_FLAGS \
         $MODE_FLAGS \
         $OPTIONAL_FLAGS \

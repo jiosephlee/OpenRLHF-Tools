@@ -1,17 +1,18 @@
 #!/bin/bash
 #
-# Eval-only runner for GPT-OSS TDC GRPO checkpoints/configs.
+# Generate SFT distillation traces on the TDC guided dataset with a Qwen teacher.
 #
-# This uses openrlhf.cli.train_ppo_ray --eval_only, which initializes the
-# actor/vLLM stack, runs evaluation, writes eval artifacts under runs/, and
-# exits without saving or pushing a checkpoint.
+# Defaults to Qwen/Qwen3.5-27B. Override PRETRAIN_PATH to try a different teacher,
+# for example:
+#   PRETRAIN_PATH=Qwen/Qwen3.5-35B-A3B bash scripts/eval_tdc_sft_distill_guided_qwen.sh
 #
-# Usage examples:
-#   PRETRAIN_PATH=openai/gpt-oss-20b bash scripts/eval_grpo_tdc_gpt_oss.sh
-#   MODE=distributed ACTOR_GPUS=1 VLLM_NUM_ENGINES=1 PRETRAIN_PATH=/path/to/model bash scripts/eval_grpo_tdc_gpt_oss.sh
-#   TOOL_VERSION=v10 EVAL_N_SAMPLES_PER_PROMPT=4 EVAL_TEMPERATURE=0.7 PRETRAIN_PATH=... bash scripts/eval_grpo_tdc_gpt_oss.sh
+# Usage:
+#   bash scripts/eval_tdc_sft_distill_guided_qwen.sh
+#   EVAL_SPLIT=val bash scripts/eval_tdc_sft_distill_guided_qwen.sh
+#
+set -eo pipefail
 
-PRETRAIN_PATH="${PRETRAIN_PATH:?PRETRAIN_PATH is required (HF model id or local path)}"
+PRETRAIN_PATH="${PRETRAIN_PATH:-Qwen/Qwen3.5-27B}"
 MODEL_TAG="${MODEL_TAG:-$(basename "$PRETRAIN_PATH")}"
 CONDA_ENV="${CONDA_ENV:-/vast/projects/myatskar/design-documents/conda_env/openrlhf_nightly}"
 
@@ -28,9 +29,6 @@ conda activate "$CONDA_ENV"
 set -euo pipefail
 
 export DS_SKIP_CUDA_CHECK=1
-# Wiping compile caches forces a long, often log-silent torch.compile/inductor phase after
-# "Dynamo bytecode transform" (especially bad for gpt-oss-120b + --optimal_flags_b200_gpt_oss).
-# Default: keep caches so eval restarts reuse them. Set CLEAR_TORCH_COMPILE_CACHE=1 to wipe.
 if [ "${CLEAR_TORCH_COMPILE_CACHE:-0}" = "1" ]; then
     rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ ~/.cache/vllm/torch_compile_cache/ 2>/dev/null || true
 fi
@@ -39,7 +37,6 @@ VLLM_USE_FLASHINFER_MOE_FP16="${VLLM_USE_FLASHINFER_MOE_FP16:-0}"
 export VLLM_USE_FLASHINFER_MOE_FP16
 unset VLLM_FLASHINFER_MOE_BACKEND
 
-### PROJECT ROOT ###
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 while [ "$PROJECT_ROOT" != "/" ] && [ ! -d "$PROJECT_ROOT/openrlhf" ]; do
     PROJECT_ROOT="$(dirname "$PROJECT_ROOT")"
@@ -49,11 +46,11 @@ if [ ! -d "$PROJECT_ROOT/openrlhf" ]; then
     exit 1
 fi
 
-### ARGS ###
 NUM_GPUS="${SLURM_GPUS_ON_NODE:-$(nvidia-smi -L 2>/dev/null | wc -l)}"
 MODE="${MODE:-colocated}"
-TOOL_VERSION="${TOOL_VERSION:-v15}"
-EVAL_SPLIT="${EVAL_SPLIT:-val}"
+TOOL_VERSION="${TOOL_VERSION:-v16_no_neighbor}"
+DATA_DIR_OVERRIDE="${DATA_DIR_OVERRIDE:-data/tdc/openai_format_v16_no_neighbor_guided}"
+EVAL_SPLIT="${EVAL_SPLIT:-train}"
 DEBUG_TRACES="${DEBUG_TRACES:-0}"
 PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-5120}"
 GENERATE_MAX_LEN="${GENERATE_MAX_LEN:-3072}"
@@ -63,7 +60,10 @@ EVAL_TEMPERATURE="${EVAL_TEMPERATURE:-0.1}"
 EVAL_N_SAMPLES_PER_PROMPT="${EVAL_N_SAMPLES_PER_PROMPT:-1}"
 TOP_P="${TOP_P:-0.95}"
 TEMPERATURE="${TEMPERATURE:-1.0}"
-KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-fp8}"
+# Do not force FP8 KV cache for Qwen by default.
+# Our current vLLM checkout can fail during wake_up() in init_fp8_kv_scales()
+# with some Qwen models/configs when kv_cache_dtype=fp8.
+KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-}"
 VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-256}"
 VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
 VLLM_TENSOR_PARALLEL_SIZE="${VLLM_TENSOR_PARALLEL_SIZE:-1}"
@@ -71,12 +71,7 @@ VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE="${VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE:-1024}"
 AGENT_MAX_STEPS="${AGENT_MAX_STEPS:-30}"
 USE_WANDB="${USE_WANDB:-1}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
-RAY_PORT="${RAY_PORT:-$((6379 + (RANDOM % 1000)))}"
-RAY_INCLUDE_DASHBOARD="${RAY_INCLUDE_DASHBOARD:-0}"
-RAY_DASHBOARD_PORT="${RAY_DASHBOARD_PORT:-8265}"
-RAY_MIN_WORKER_PORT="${RAY_MIN_WORKER_PORT:-10002}"
-RAY_MAX_WORKER_PORT="${RAY_MAX_WORKER_PORT:-19999}"
-STOP_EXISTING_RAY="${STOP_EXISTING_RAY:-0}"
+LANGUAGE_MODEL_ONLY="${LANGUAGE_MODEL_ONLY:-1}"
 
 export TORCH_DYNAMO_CACHE_SIZE_LIMIT=1024
 export TORCH_DYNAMO_RECOMPILE_LIMIT=1024
@@ -90,7 +85,6 @@ case "$EVAL_SPLIT" in
         ;;
 esac
 
-### MODE ###
 if [ "$MODE" = "colocated" ]; then
     ACTOR_GPUS="${ACTOR_GPUS:-$NUM_GPUS}"
     VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$(( NUM_GPUS / VLLM_TENSOR_PARALLEL_SIZE ))}"
@@ -120,69 +114,23 @@ if [ "$MODE" = "distributed" ]; then
     fi
 fi
 
-### DATA ###
-if [ -n "${DATA_DIR_OVERRIDE:-}" ]; then
-    # Explicit override (absolute or relative to project root)
-    if [[ "$DATA_DIR_OVERRIDE" = /* ]]; then
-        DATA_DIR="$DATA_DIR_OVERRIDE"
-    else
-        DATA_DIR="$PROJECT_ROOT/$DATA_DIR_OVERRIDE"
-    fi
-elif [ "$TOOL_VERSION" = "v10" ]; then
-    DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v10"
-elif [ "$TOOL_VERSION" = "v11" ]; then
-    DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v11"
-elif [ "$TOOL_VERSION" = "v12" ]; then
-    DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v12"
-elif [ "$TOOL_VERSION" = "v13" ]; then
-    DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v13"
-elif [ "$TOOL_VERSION" = "v14" ]; then
-    DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v14"
-elif [ "$TOOL_VERSION" = "v14_consolidated" ]; then
-    DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v14_consolidated"
-elif [ "$TOOL_VERSION" = "v14_no_neighbor" ]; then
-    DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v14_no_neighbor"
-elif [ "$TOOL_VERSION" = "v14_consolidated_no_neighbor" ]; then
-    DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v14_consolidated_no_neighbor"
-elif [ "$TOOL_VERSION" = "v16_no_neighbor" ]; then
-    DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v16_no_neighbor"
-elif [ -d "$PROJECT_ROOT/data/tdc/openai_format_${TOOL_VERSION}" ]; then
-    DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_${TOOL_VERSION}"
-elif [[ "$TOOL_VERSION" == v15_* ]] && [ -d "$PROJECT_ROOT/data/tdc/openai_format_v15" ]; then
-    DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v15"
+if [[ "$DATA_DIR_OVERRIDE" = /* ]]; then
+    DATA_DIR="$DATA_DIR_OVERRIDE"
 else
-    DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v10"
+    DATA_DIR="$PROJECT_ROOT/$DATA_DIR_OVERRIDE"
 fi
 
-if [ ! -d "$DATA_DIR" ] && [ "$TOOL_VERSION" = "v10" ]; then
-    LEGACY_V10_DIR="$PROJECT_ROOT/data/tdc/openai_format_gpt_oss"
-    if [ -d "$LEGACY_V10_DIR" ]; then
-        DATA_DIR="$LEGACY_V10_DIR"
-    fi
+if [ ! -d "$DATA_DIR" ]; then
+    echo "Error: Data directory not found: $DATA_DIR" >&2
+    exit 1
 fi
 
 DATA_DIR_BASENAME="$(basename "$DATA_DIR")"
 case "$DATA_DIR_BASENAME" in
-    openai_format_v10) DATA_TAG="v10" ;;
-    openai_format_v11) DATA_TAG="v11" ;;
-    openai_format_v12) DATA_TAG="v12" ;;
-    openai_format_v13) DATA_TAG="v13" ;;
-    openai_format_v14) DATA_TAG="v14" ;;
-    openai_format_v15) DATA_TAG="v15" ;;
-    openai_format_v16) DATA_TAG="v16" ;;
-    openai_format_v14_consolidated) DATA_TAG="v14c" ;;
-    openai_format_v14_no_neighbor) DATA_TAG="v14nn" ;;
-    openai_format_v14_consolidated_no_neighbor) DATA_TAG="v14cnn" ;;
     openai_format_v14_no_neighbor_guided) DATA_TAG="v14nn-guided" ;;
-    openai_format_v14_no_neighbor_local_attribution) DATA_TAG="v14nn-localattr" ;;
-    openai_format_v14_no_neighbor_local_attribution_pretend) DATA_TAG="v14nn-localattr-pretend" ;;
-    openai_format_v16_no_neighbor) DATA_TAG="v16nn" ;;
+    openai_format_v14_no_neighbor) DATA_TAG="v14nn" ;;
     openai_format_v16_no_neighbor_guided) DATA_TAG="v16nn-guided" ;;
-    openai_format_v16_no_neighbor_local_attribution) DATA_TAG="v16nn-localattr" ;;
-    openai_format_v16_no_neighbor_local_attribution_pretend) DATA_TAG="v16nn-localattr-pretend" ;;
-    openai_format_v16_no_neighbor_playbook) DATA_TAG="v16nn-playbook" ;;
-    openai_format_v16_no_neighbor_playbook_subagent) DATA_TAG="v16nn-playbook-subagent" ;;
-    openai_format_gpt_oss) DATA_TAG="gptoss" ;;
+    openai_format_v16_no_neighbor) DATA_TAG="v16nn" ;;
     *) DATA_TAG="${DATA_DIR_BASENAME#openai_format_}" ;;
 esac
 
@@ -215,18 +163,16 @@ done
 
 mkdir -p "$PROJECT_ROOT/logs"
 
-### RUN CONFIG ###
 N_TASKS=${#TASK_NAMES[@]}
 DATE_TAG=$(date +%m%d_%H%M)
-CHAT_PROTOCOL="gpt_oss"
-RUN_NAME="eval-tdc-gptoss-${MODEL_TAG}-${N_TASKS}t-${TOOL_VERSION}-${DATA_TAG}-${EVAL_SPLIT}-${MODE_TAG}-${DATE_TAG}"
+CHAT_PROTOCOL="qwen3_5"
+RUN_NAME="eval-tdc-qwen-${MODEL_TAG}-${N_TASKS}t-${TOOL_VERSION}-${DATA_TAG}-${EVAL_SPLIT}-${MODE_TAG}-${DATE_TAG}"
 source "$PROJECT_ROOT/scripts/lib/resolve_runs_dir.sh"
 RUN_LOG="$RUNS_DIR/eval_${MODEL_TAG}.log"
 SAVE_PATH="${SAVE_PATH:-$RUNS_DIR/eval_only_unused_ckpt}"
 WANDB_PROJECT="${WANDB_PROJECT:-openrlhf_tdc_grpo}"
-WANDB_GROUP="${WANDB_GROUP:-TDC-GPTOss-eval-${MODEL_TAG}-${DATA_TAG}-${EVAL_SPLIT}-${MODE_TAG}}"
+WANDB_GROUP="${WANDB_GROUP:-TDC-Qwen-eval-${MODEL_TAG}-${DATA_TAG}-${EVAL_SPLIT}-${MODE_TAG}}"
 
-### W&B ###
 WANDB_FLAGS=()
 if [ "$USE_WANDB" = "1" ]; then
     if [ -z "${WANDB_API_KEY:-}" ]; then
@@ -236,12 +182,10 @@ if [ "$USE_WANDB" = "1" ]; then
     WANDB_FLAGS=(--use_wandb 1 --wandb_project "$WANDB_PROJECT" --wandb_group "$WANDB_GROUP" --wandb_run_name "$RUN_NAME")
 fi
 
-### TOOL-CALLING ###
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
 TDC_TOOLS_JSON="$PROJECT_ROOT/data/tdc/metadata/tools_per_task_${TOOL_VERSION}.json"
 python "$PROJECT_ROOT/scripts/generate_tools_json.py" --version "$TOOL_VERSION"
 
-### BUILD EVAL DATASET ###
 EVAL_DATA="$DATA_DIR/eval_tdc_${EVAL_SPLIT}.jsonl"
 python -c "
 import json, sys
@@ -264,17 +208,17 @@ fi
 if [ -n "$VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE" ]; then
     OPTIONAL_FLAGS+=(--vllm_cudagraph_max_capture_size "$VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE")
 fi
+if [ "$LANGUAGE_MODEL_ONLY" = "1" ]; then
+    OPTIONAL_FLAGS+=(--language_model_only)
+fi
 if [ -z "${KNN_PL_PATH:-}" ]; then
-    if [[ "$TOOL_VERSION" == v15* ]]; then
-        KNN_PL_PATH="$PROJECT_ROOT/data/tdc/metadata/knn_v15_pseudo_labels.json"
-    elif [ "$TOOL_VERSION" = "v11" ] || [ "$TOOL_VERSION" = "v12" ] || [ "$TOOL_VERSION" = "v13" ] || [ "$TOOL_VERSION" = "v14" ] || [ "$TOOL_VERSION" = "v14_consolidated" ] || [ "$TOOL_VERSION" = "v14_no_neighbor" ] || [ "$TOOL_VERSION" = "v14_consolidated_no_neighbor" ] || [ "$TOOL_VERSION" = "v16_no_neighbor" ]; then
-        KNN_PL_PATH="$PROJECT_ROOT/data/tdc/metadata/knn_v11_pseudo_labels.json"
-    else
-        KNN_PL_PATH="$PROJECT_ROOT/data/tdc/metadata/knn_v10_pseudo_labels.json"
-    fi
+    KNN_PL_PATH="$PROJECT_ROOT/data/tdc/metadata/knn_v11_pseudo_labels.json"
 fi
 if [ -f "$KNN_PL_PATH" ]; then
     OPTIONAL_FLAGS+=(--knn_pseudo_labels_path "$KNN_PL_PATH")
+fi
+if [ "${SAVE_SFT_DISTILL_TRACES:-1}" = "1" ]; then
+    EXTRA_ARGS="${EXTRA_ARGS:-} --save_sft_distill_traces"
 fi
 if [ -n "$EXTRA_ARGS" ]; then
     # shellcheck disable=SC2206
@@ -283,8 +227,7 @@ else
     EXTRA_ARGS_ARR=()
 fi
 
-### ENVIRONMENT ###
-export RAY_TMPDIR="${RAY_TMPDIR:-/tmp/ray_${USER}_${RAY_PORT}}"
+export RAY_TMPDIR="${RAY_TMPDIR:-/tmp/ray_${USER}}"
 mkdir -p "$RAY_TMPDIR"
 export TRITON_CACHE_DIR="/vast/projects/myatskar/design-documents/.cache/triton"
 mkdir -p "$TRITON_CACHE_DIR"
@@ -305,65 +248,16 @@ ulimit -n 65535 2>/dev/null || true
 
 CONDA_RAY=("$(which python)" -m ray.scripts.scripts)
 unset RAY_ADDRESS
-cleanup_ray_cluster() {
-    python - <<'PY'
-import os
-import signal
-import subprocess
+"${CONDA_RAY[@]}" stop --force 2>/dev/null || true
+rm -rf "$RAY_TMPDIR"/ray/session_* 2>/dev/null || true
 
-pattern = os.environ.get("RAY_TMPDIR", "")
-if not pattern:
-    raise SystemExit(0)
-
-current_pid = os.getpid()
-pids = []
-for line in subprocess.check_output(["ps", "-eo", "pid,args"], text=True).splitlines()[1:]:
-    parts = line.strip().split(None, 1)
-    if len(parts) < 2:
-        continue
-    pid = int(parts[0])
-    args = parts[1]
-    if pid == current_pid:
-        continue
-    if pattern in args:
-        pids.append(pid)
-
-for sig in (signal.SIGTERM, signal.SIGKILL):
-    for pid in sorted(set(pids), reverse=True):
-        try:
-            os.kill(pid, sig)
-        except ProcessLookupError:
-            pass
-    if sig == signal.SIGTERM:
-        try:
-            subprocess.run(["sleep", "2"], check=False)
-        except Exception:
-            pass
-PY
-}
-trap cleanup_ray_cluster EXIT
-
-if [ "$STOP_EXISTING_RAY" = "1" ]; then
-    "${CONDA_RAY[@]}" stop --force 2>/dev/null || true
-fi
-
+RAY_PORT=$((6379 + (RANDOM % 1000)))
 echo "Starting Ray head node at $RAY_NODE_IP_ADDRESS:$RAY_PORT"
-RAY_START_CMD=(
-    "${CONDA_RAY[@]}" start --head
-    --node-ip-address "$RAY_NODE_IP_ADDRESS"
-    --port "$RAY_PORT"
-    --num-gpus "$NUM_GPUS"
+"${CONDA_RAY[@]}" start --head \
+    --node-ip-address "$RAY_NODE_IP_ADDRESS" \
+    --port "$RAY_PORT" \
+    --num-gpus "$NUM_GPUS" \
     --temp-dir "$RAY_TMPDIR"
-    --min-worker-port "$RAY_MIN_WORKER_PORT"
-    --max-worker-port "$RAY_MAX_WORKER_PORT"
-    --disable-usage-stats
-)
-if [ "$RAY_INCLUDE_DASHBOARD" = "1" ]; then
-    RAY_START_CMD+=(--dashboard-port "$RAY_DASHBOARD_PORT")
-else
-    RAY_START_CMD+=(--include-dashboard=false)
-fi
-"${RAY_START_CMD[@]}"
 export RAY_ADDRESS="$RAY_NODE_IP_ADDRESS:$RAY_PORT"
 
 echo "Waiting for Ray..."
@@ -381,7 +275,7 @@ if [ "$RAY_READY" -ne 1 ]; then
 fi
 
 echo "========================================"
-echo "TDC Eval Only — GPT-OSS (MODE=$MODE, MODEL=$MODEL_TAG)"
+echo "TDC Eval Only — Qwen (MODE=$MODE, MODEL=$MODEL_TAG)"
 echo "========================================"
 echo "Tasks: ${TASK_NAMES[*]}"
 echo "Model: $PRETRAIN_PATH"
@@ -407,7 +301,6 @@ TRAIN_CMD=(
     --actor_num_gpus_per_node "$ACTOR_GPUS"
     --vllm_num_engines "$VLLM_NUM_ENGINES"
     --vllm_tensor_parallel_size "$VLLM_TENSOR_PARALLEL_SIZE"
-    --optimal_flags_b200_gpt_oss
     --max_num_batched_tokens "$VLLM_MAX_NUM_BATCHED_TOKENS"
     --vllm_gpu_memory_utilization "$VLLM_GPU_MEM_UTIL"
     --advantage_estimator group_norm
@@ -449,7 +342,7 @@ TRAIN_CMD=(
     --temperature "$TEMPERATURE"
     --agent_func_path "$AGENT_FUNC_PATH"
     --agent_max_steps "$AGENT_MAX_STEPS"
-    --vllm_stop_strings "<|return|>" "<|call|>"
+    --vllm_stop_strings "</tool_call>"
     --vllm_max_num_seqs "$VLLM_MAX_NUM_SEQS"
     --chat_protocol "$CHAT_PROTOCOL"
     --wandb_run_name "$RUN_NAME"
@@ -463,6 +356,5 @@ TRAIN_CMD+=("${EXTRA_ARGS_ARR[@]}")
 
 "${TRAIN_CMD[@]}" 2>&1 | tee "$RUN_LOG"
 
-echo "Eval complete. Stopping Ray cluster rooted at $RAY_TMPDIR..."
-cleanup_ray_cluster
-trap - EXIT
+echo "Eval complete. Stopping Ray..."
+"${CONDA_RAY[@]}" stop --force || true

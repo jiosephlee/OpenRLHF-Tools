@@ -26,7 +26,11 @@
 #   PRETRAIN_PATH= EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=1 TIS=1 TIS_TYPE=tis TRAIN_MAX_TOKENS_PER_GPU=40960 SMART_REPLAY=1 REDUCE_OPTIMIZER=adam_offload LIGER_GRPO_LOSS=1 DEQUANT=unsloth LOSS_TYPE=dapo bash train_grpo_tdc_gpt_oss.sh
 #   USE_LORA=1 LEARNING_RATE=2e-5 EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TRAIN_MAX_TOKENS_PER_GPU=41952 REDUCE_OPTIMIZER=none LIGER_GRPO_LOSS=0 DEQUANT=unsloth LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss.sh
 #.  EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 TRAIN_MAX_TOKENS_PER_GPU=41952 REDUCE_OPTIMIZER=none LIGER_GRPO_LOSS=0 DEQUANT=unsloth LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss.sh
-#   TOOL_VERSION=v17 TIS=1 TIS_TYPE=tis LEARNING_RATE=8e-7 SMART_REPLAY=1 DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=cispo bash train_grpo_tdc_gpt_oss.sh
+# TOOL_VERSION=v15_neighbor_only DATA_DIR=/vast/home/j/jojolee/OpenRLHF-Tools/data/tdc/openai_format_v15_no_sft_trim_5p4mini_comparison_only_b100pct_task_smiles_overlap PRETRAIN_PATH=jiosephlee/gpt-oss-20b-sft-trim-5p4mini-compare-b100pct-fullft-lr1e-4-0427-0459 TIS=1 TIS_TYPE=tis LEARNING_RATE=4e-7 DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=4 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=ppo EXTRA_ARGS="--episode1_structure half_first_episode_with_mixed_recovery" bash train_grpo_tdc_gpt_oss_v15.sh
+# TOOL_VERSION=v15_neighbor_only EPISODE1_STRUCTURE=dual_dataset PRETRAIN_PATH=jiosephlee/gpt-oss-20b-sft-trim-5p4mini-compare-b100pct-fullft-lr1e-4-0427-0459 TIS=1 TIS_TYPE=tis LEARNING_RATE=4e-7 DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=4 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss_v15.sh
+# EPISODE1_STRUCTURE=dual_dataset DEQUANT=unsloth TOOL_VERSION=v15_neighbor_only PRETRAIN_PATH=jiosephlee/gpt-oss-20b-sft-trim-5p4mini-compare-b100pct-fullft-lr1e-4-0427-0459 TIS=1 TIS_TYPE=tis LEARNING_RATE=4e-7 EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss_v15.sh
+#   TOOL_VERSION=v15_neighbor_only DATA_DIR=/vast/home/j/jojolee/OpenRLHF-Tools/data/tdc/openai_format_v15_no_sft_trim_5p4mini_comparison_only_b100pct_task_smiles_overlap PRETRAIN_PATH=jiosephlee/gpt-oss-20b-sft-trim-5p4mini-compare-b100pct-fullft-lr1e-4-0427-0459 TIS=1 TIS_TYPE=tis LEARNING_RATE=4e-7 SMART_REPLAY=1 DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss_v15.sh
+#   TOOL_VERSION=v15_neighbor_only TIS=1 TIS_TYPE=tis LEARNING_RATE=4e-7 SMART_REPLAY=1 DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=ppo bash train_grpo_tdc_gpt_oss_v15.sh
 #   TOOL_VERSION=v14_consolidated_no_neighbor TIS=1 TIS_TYPE=tis LEARNING_RATE=8e-7 SMART_REPLAY=1 DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=1 REDUCE_OPTIMIZER=none TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=cispo bash train_grpo_tdc_gpt_oss.sh
 #   TOOL_VERSION=v12 TIS=1 TIS_TYPE=icepop LEARNING_RATE=9e-6 SMART_REPLAY=1 DEQUANT=unsloth EFFECTIVE_ROLLOUT_BATCH_SIZE=8 EFFECTIVE_MINI_GRADIENT_STEPS=2 REDUCE_OPTIMIZER=none USE_LORA=1 TRAIN_MAX_TOKENS_PER_GPU=32768 LIGER_GRPO_LOSS=0 LOSS_TYPE=cispo bash train_grpo_tdc_gpt_oss.sh
 # Distributed:
@@ -131,6 +135,9 @@ eval "$(conda shell.bash hook)"
 conda activate "$CONDA_ENV"
 set -euo pipefail
 export DS_SKIP_CUDA_CHECK=1
+# Prevent user-site packages from shadowing the activated env inside Ray CLI
+# and Ray worker processes.
+export PYTHONNOUSERSITE="${PYTHONNOUSERSITE:-1}"
 
 # Prevent corrupted torch inductor cache from crashing vLLM compilation.
 rm -rf ~/.cache/torch/inductor/ /tmp/torchinductor_${USER}/ ~/.cache/vllm/torch_compile_cache/ 2>/dev/null || true
@@ -156,10 +163,11 @@ MODE="${MODE:-colocated}"
 EFFECTIVE_ROLLOUT_BATCH_SIZE="${EFFECTIVE_ROLLOUT_BATCH_SIZE:-8}"
 EFFECTIVE_MINI_GRADIENT_STEPS="${EFFECTIVE_MINI_GRADIENT_STEPS:-2}"
 ASYNC_ADVANTAGE="${ASYNC_ADVANTAGE:-4}"
-TOOL_VERSION="${TOOL_VERSION:-v12}"
+TOOL_VERSION="${TOOL_VERSION:-v15}"
 STATIC_PHASE_TOOL_CURRICULUM="${STATIC_PHASE_TOOL_CURRICULUM:-0}"
 SMART_REPLAY="${SMART_REPLAY:-0}"
 MAX_REPLAY_ROUNDS="${MAX_REPLAY_ROUNDS:-2}"
+EPISODE1_STRUCTURE="${EPISODE1_STRUCTURE:-legacy}"
 
 LIGER_GRPO_LOSS="${LIGER_GRPO_LOSS:-0}"
 LIGER_GRPO_BACKEND="${LIGER_GRPO_BACKEND:-triton}"
@@ -189,10 +197,10 @@ VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE="${VLLM_CUDAGRAPH_MAX_CAPTURE_SIZE:-1024}"
 LENGTH_PENALTY_START="${LENGTH_PENALTY_START:-0}"
 MIN_RESPONSE_LEN="${MIN_RESPONSE_LEN:-}"
 UNDERLONG_PENALTY_FACTOR="${UNDERLONG_PENALTY_FACTOR:-1}"
-KNN_CORRECT_REVERSAL_BONUS="${KNN_CORRECT_REVERSAL_BONUS:-0.2}"
+KNN_CORRECT_REVERSAL_BONUS="${KNN_CORRECT_REVERSAL_BONUS:-0}"
 KNN_CORRECT_STICK_DELTA="${KNN_CORRECT_STICK_DELTA:-0}"
-TOOL_CALLING_REWARD_CAP="${TOOL_CALLING_REWARD_CAP:-0.2}"
-TOOL_CALLING_REWARD_MAX_REWARDED_CALLS="${TOOL_CALLING_REWARD_MAX_REWARDED_CALLS:-2}"
+TOOL_CALLING_REWARD_CAP="${TOOL_CALLING_REWARD_CAP:-0}"
+TOOL_CALLING_REWARD_MAX_REWARDED_CALLS="${TOOL_CALLING_REWARD_MAX_REWARDED_CALLS:-0}"
 
 if [[ "$TOOL_VERSION" == *no_neighbor* ]]; then
     ENABLE_KNN_TRACKING=0
@@ -205,7 +213,7 @@ export TORCH_DYNAMO_RECOMPILE_LIMIT=1024
 ### UNIFIED CONSTANTS ###
 AGENT_MAX_STEPS=10
 ZERO_STAGE=2
-PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-6144}"
+PROMPT_MAX_LEN="${PROMPT_MAX_LEN:-16384}"
 N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-24}"
 TRAIN_MAX_TOKENS_PER_GPU="${TRAIN_MAX_TOKENS_PER_GPU:-8192}"
 ROLLOUT_MAX_TOKENS_PER_GPU="${ROLLOUT_MAX_TOKENS_PER_GPU:-$(echo "$TRAIN_MAX_TOKENS_PER_GPU * 1.65" | bc | awk '{print int($1)}')}"
@@ -218,7 +226,7 @@ if [ "$MODE" = "colocated" ]; then
     VLLM_NUM_ENGINES="${VLLM_NUM_ENGINES:-$NUM_GPUS}"
     ROLLOUT_BATCH_SIZE=$(( EFFECTIVE_ROLLOUT_BATCH_SIZE * ASYNC_ADVANTAGE ))
     MINI_GRADIENT_STEPS=$(( EFFECTIVE_MINI_GRADIENT_STEPS))
-    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.675}"
+    VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.6}"
     VLLM_SYNC_BACKEND=nccl
     EVAL_STEPS="${EVAL_STEPS:-$COLO_EVAL_STEPS}"
 elif [ "$MODE" = "distributed" ]; then
@@ -301,7 +309,14 @@ if [ ! -d "$PROJECT_ROOT/openrlhf" ]; then
 fi 
 
 ### DATA ###
-if [ -z "${DATA_DIR:-}" ]; then
+DEFAULT_DUAL_DATA_DIR_A="$PROJECT_ROOT/data/tdc/openai_format_v15_no_sft_trim_5p4mini_comparison_only_b100pct_task_smiles_overlap"
+DEFAULT_DUAL_DATA_DIR_B="$PROJECT_ROOT/data/tdc/openai_format_v15"
+
+if [ "$EPISODE1_STRUCTURE" = "dual_dataset" ]; then
+    DATA_DIR_A="${DATA_DIR_A:-$DEFAULT_DUAL_DATA_DIR_A}"
+    DATA_DIR_B="${DATA_DIR_B:-$DEFAULT_DUAL_DATA_DIR_B}"
+    DATA_DIR="${DATA_DIR:-$DATA_DIR_A}"
+elif [ -z "${DATA_DIR:-}" ]; then
     if [ "$TOOL_VERSION" = "v10" ]; then
         DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v10"
     elif [ "$TOOL_VERSION" = "v11" ]; then
@@ -318,12 +333,10 @@ if [ -z "${DATA_DIR:-}" ]; then
         DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v14_no_neighbor"
     elif [ "$TOOL_VERSION" = "v14_consolidated_no_neighbor" ]; then
         DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v14_consolidated_no_neighbor"
-    elif [ "$TOOL_VERSION" = "v17" ] && [ ! -d "$PROJECT_ROOT/data/tdc/openai_format_v17" ]; then
-        # v17 reuses the v16 get_features surface; fall back to v16 cold-start
-        # data when no dedicated v17 dataset exists.
-        DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v16"
     elif [ -d "$PROJECT_ROOT/data/tdc/openai_format_${TOOL_VERSION}" ]; then
         DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_${TOOL_VERSION}"
+    elif [[ "$TOOL_VERSION" == v15_* ]] && [ -d "$PROJECT_ROOT/data/tdc/openai_format_v15" ]; then
+        DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v15"
     else
         DATA_DIR="$PROJECT_ROOT/data/tdc/openai_format_v10"
     fi
@@ -365,18 +378,33 @@ case "$DATA_DIR_BASENAME" in
 esac
 mkdir -p "$PROJECT_ROOT/logs"
 
-TRAIN_PARTS=()
-for t in "${TASK_NAMES[@]}"; do
-    f="$DATA_DIR/${t}_train.jsonl"
-    if [ ! -f "$f" ]; then
-        echo "Error: Training data not found: $f"
-        echo "Available tasks:"
-        ls "$DATA_DIR" 2>/dev/null | grep "_train.jsonl" | sed 's/_train.jsonl//' | sort
-        exit 1
-    fi
-    TRAIN_PARTS+=("$f")
-done
-IFS=,; TRAIN_DATA="${TRAIN_PARTS[*]}"; unset IFS
+build_train_data_csv() {
+    local data_dir="$1"
+    local train_parts=()
+    local t=""
+    local f=""
+    for t in "${TASK_NAMES[@]}"; do
+        f="$data_dir/${t}_train.jsonl"
+        if [ ! -f "$f" ]; then
+            echo "Error: Training data not found: $f"
+            echo "Available tasks:"
+            ls "$data_dir" 2>/dev/null | grep "_train.jsonl" | sed 's/_train.jsonl//' | sort
+            exit 1
+        fi
+        train_parts+=("$f")
+    done
+    local joined=""
+    IFS=,; joined="${train_parts[*]}"; unset IFS
+    printf '%s\n' "$joined"
+}
+
+if [ "$EPISODE1_STRUCTURE" = "dual_dataset" ]; then
+    TRAIN_DATA_A="$(build_train_data_csv "$DATA_DIR_A")"
+    TRAIN_DATA_B="$(build_train_data_csv "$DATA_DIR_B")"
+    TRAIN_DATA="$TRAIN_DATA_A"
+else
+    TRAIN_DATA="$(build_train_data_csv "$DATA_DIR")"
+fi
 
 ### RUN CONFIG ###
 N_TASKS=${#TASK_NAMES[@]}
@@ -401,11 +429,24 @@ else
 fi
 RUN_ID="${RUN_NAME}"
 HUB_NAME="grpo-tdc-gptoss-${QUANT_LABEL}-${N_TASKS}t-${TOOL_VERSION}-ep${MAX_EPOCHS}-${DATE_TAG}"
-# Mirror openrlhf.utils.run_paths.resolve_run_dir: runs/train/<Monday-of-week>/<run_name>
 source "$PROJECT_ROOT/scripts/lib/resolve_runs_dir.sh"
-LOCAL_SAVE_DIR="${LOCAL_SAVE_DIR:-/vast/projects/myatskar/design-documents/hf_home}"
+SAVE_BEST="${SAVE_BEST:-1}"
+BEST_METRIC_KEY="${BEST_METRIC_KEY:-eval_avg_macro_f1}"
+BEST_METRIC_MODE="${BEST_METRIC_MODE:-max}"
+LOCAL_SAVE_DIR="${LOCAL_SAVE_DIR:-/vast/projects/myatskar/design-documents/joseph}"
+BEST_LOCAL_SAVE_DIR="${BEST_LOCAL_SAVE_DIR:-$LOCAL_SAVE_DIR}"
 SAVE_PATH="$LOCAL_SAVE_DIR/$RUN_NAME"
+BEST_SAVE_PATH="$BEST_LOCAL_SAVE_DIR/${RUN_NAME}-best"
 HUB_REPO_ID="jiosephlee/${HUB_NAME}"
+
+BEST_FLAGS=()
+if [ "$SAVE_BEST" = "1" ]; then
+    BEST_FLAGS+=(
+        --save_best
+        --best_metric_key "$BEST_METRIC_KEY"
+        --best_metric_mode "$BEST_METRIC_MODE"
+    )
+fi
 
 ### TOOL-CALLING CONFIG ###
 AGENT_FUNC_PATH="$PROJECT_ROOT/openrlhf/utils/tool_calling_turn.py"
@@ -420,7 +461,8 @@ TEMPERATURE=1.0
 TOP_P=0.95
 
 ### ENVIRONMENT VARIABLES ###
-export RAY_TMPDIR="${RAY_TMPDIR:-/tmp/ray_${USER}}"
+RAY_LAUNCH_TAG="${SLURM_JOB_ID:-$$}"
+export RAY_TMPDIR="${RAY_TMPDIR:-/tmp/ray_${USER}_${RAY_LAUNCH_TAG}}"
 mkdir -p "$RAY_TMPDIR"
 
 export TRITON_CACHE_DIR="/vast/projects/myatskar/design-documents/.cache/triton"
@@ -448,21 +490,103 @@ export OPENRLHF_DEBUG_LOGITS=0
 export OPENRLHF_DEBUG_NAN_GUARD=0
 export OPENRLHF_VRAM_AUDIT="${OPENRLHF_VRAM_AUDIT:-1}"
 export OPENRLHF_SMILES_ERROR_LOG="$RUNS_DIR/smiles_errors.jsonl"
+RAY_READY_ATTEMPTS="${RAY_READY_ATTEMPTS:-12}"
+RAY_READY_TIMEOUT_SECONDS="${RAY_READY_TIMEOUT_SECONDS:-8}"
 
 ### RAY ###
-export RAY_NODE_IP_ADDRESS=$(hostname -I | awk '{print $1}')
+cleanup_ray_cluster() {
+    $CONDA_RAY stop --force >/dev/null 2>&1 || true
+    CONDA_PYTHON="$CONDA_PYTHON" RAY_TMPDIR="$RAY_TMPDIR" $CONDA_PYTHON - <<'PY'
+import os
+import signal
+import subprocess
+
+pattern = os.environ.get("RAY_TMPDIR", "")
+if not pattern:
+    raise SystemExit(0)
+
+current_pid = os.getpid()
+pids = []
+for line in subprocess.check_output(["ps", "-eo", "pid,args"], text=True).splitlines()[1:]:
+    parts = line.strip().split(None, 1)
+    if len(parts) < 2:
+        continue
+    pid = int(parts[0])
+    args = parts[1]
+    if pid == current_pid:
+        continue
+    if pattern in args:
+        pids.append(pid)
+
+for sig in (signal.SIGTERM, signal.SIGKILL):
+    for pid in sorted(set(pids), reverse=True):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+    if sig == signal.SIGTERM:
+        subprocess.run(["sleep", "2"], check=False)
+PY
+    rm -rf "$RAY_TMPDIR"/session_* "$RAY_TMPDIR"/ray/session_* 2>/dev/null || true
+}
+
+reset_ray_address_cache() {
+    $CONDA_PYTHON - <<'PY'
+import os
+from ray._common.utils import reset_ray_address
+
+for temp_dir in (None, os.environ.get("RAY_TMPDIR")):
+    reset_ray_address(temp_dir)
+PY
+}
+
+dump_ray_logs() {
+    local latest=""
+    latest="$(readlink -f "$RAY_TMPDIR/session_latest" 2>/dev/null || true)"
+    if [ -z "$latest" ]; then
+        echo "Ray diagnostics: no session_latest found under $RAY_TMPDIR" >&2
+        return
+    fi
+
+    echo "Ray diagnostics from $latest" >&2
+    for f in gcs_server.out gcs_server.err raylet.out raylet.err monitor.out monitor.err dashboard.log dashboard.err log_monitor.err; do
+        local p="$latest/logs/$f"
+        if [ -f "$p" ]; then
+            echo "===== $f =====" >&2
+            tail -n 120 "$p" >&2 || true
+        fi
+    done
+}
+
+resolve_ray_node_ip() {
+    local candidate
+    for cmd in "hostname -i" "hostname -I"; do
+        set -- $($cmd 2>/dev/null || true)
+        for candidate in "$@"; do
+            if [ -n "$candidate" ] && [[ "$candidate" != 127.* ]] && [ "$candidate" != "::1" ]; then
+                printf '%s\n' "$candidate"
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+
+RAY_NODE_IP_ADDRESS="${RAY_NODE_IP_ADDRESS:-$(resolve_ray_node_ip)}"
+export RAY_NODE_IP_ADDRESS
 ulimit -n 65535 2>/dev/null || true
 
 # Use the conda env's ray to avoid version mismatch
+CONDA_PYTHON="$(which python)"
 CONDA_RAY="$(which python) -m ray.scripts.scripts"
-echo "Using ray from: $(which python)"
+echo "Using python from: $CONDA_PYTHON"
 
 # Clear any stale RAY_ADDRESS from the environment to prevent
 # connecting to another user's cluster on shared nodes.
 unset RAY_ADDRESS
 
-$CONDA_RAY stop --force 2>/dev/null || true
-rm -rf "$RAY_TMPDIR"/ray/session_* 2>/dev/null || true
+cleanup_ray_cluster
+reset_ray_address_cache
 
 # Use a unique port to avoid collisions with other users on the same node.
 RAY_PORT=$(( 6379 + (RANDOM % 1000) ))
@@ -478,18 +602,39 @@ export RAY_ADDRESS="$RAY_NODE_IP_ADDRESS:$RAY_PORT"
 
 echo "Waiting for Ray..."
 RAY_READY=0
-for i in {1..90}; do
-    if $CONDA_RAY status >/dev/null 2>&1; then
-        RAY_READY=1
-        break
+RAY_READY_CONSECUTIVE=0
+for ((i=1; i<=RAY_READY_ATTEMPTS; i++)); do
+    echo "Ray readiness probe $i/$RAY_READY_ATTEMPTS (timeout ${RAY_READY_TIMEOUT_SECONDS}s)..."
+    if env RAY_gcs_server_request_timeout_seconds="$RAY_READY_TIMEOUT_SECONDS" \
+        timeout "${RAY_READY_TIMEOUT_SECONDS}s" \
+        $CONDA_PYTHON - <<'PY' >/dev/null 2>&1
+import os
+import ray
+
+ray.init(address=os.environ["RAY_ADDRESS"])
+ray.nodes()
+ray.shutdown()
+PY
+    then
+        RAY_READY_CONSECUTIVE=$((RAY_READY_CONSECUTIVE + 1))
+        if [ "$RAY_READY_CONSECUTIVE" -ge 3 ]; then
+            RAY_READY=1
+            break
+        fi
+    else
+        echo "Ray readiness probe $i failed." >&2
+        RAY_READY_CONSECUTIVE=0
     fi
     sleep 1
 done
 if [ "$RAY_READY" -ne 1 ]; then
-    echo "Error: Ray never came up after 90 seconds." >&2
+    echo "Error: Ray never became attachable at $RAY_ADDRESS after $RAY_READY_ATTEMPTS probes." >&2
+    dump_ray_logs
     exit 1
 fi
-$CONDA_RAY status
+if ! $CONDA_RAY status --address "$RAY_ADDRESS" >/dev/null 2>&1; then
+    echo "Warning: 'ray status' failed for $RAY_ADDRESS after attachability checks passed; continuing." >&2
+fi
 echo "Ray is ready."
 
 ### PRINT CONFIG ###
@@ -505,6 +650,13 @@ echo "Learning Rate: $LEARNING_RATE"
 echo "Run ID: $RUN_ID"
 echo "----------------------------------------"
 echo "Training Data: $TRAIN_DATA"
+echo "Episode1 Structure: $EPISODE1_STRUCTURE"
+if [ "$EPISODE1_STRUCTURE" = "dual_dataset" ]; then
+    echo "Dataset A: $DATA_DIR_A"
+    echo "Dataset B: $DATA_DIR_B"
+    echo "Training Data A: $TRAIN_DATA_A"
+    echo "Training Data B: $TRAIN_DATA_B"
+fi
 echo "Save Path: $SAVE_PATH"
 echo "----------------------------------------"
 if [ "$MODE" = "colocated" ]; then
@@ -590,6 +742,9 @@ fi
 if [ "$SMART_REPLAY" = "1" ]; then
     OPTIONAL_FLAGS+=" --smart_replay --max_replay_rounds $MAX_REPLAY_ROUNDS"
 fi
+if [ -n "$EPISODE1_STRUCTURE" ]; then
+    OPTIONAL_FLAGS+=" --episode1_structure $EPISODE1_STRUCTURE"
+fi
 if [ "$STATIC_PHASE_TOOL_CURRICULUM" = "1" ]; then
     OPTIONAL_FLAGS+=" --static_phase_tool_curriculum"
 fi
@@ -644,11 +799,12 @@ fi
 # inline neighbor pseudo-labels. Generate with:
 #   python scripts/build_knn_v10_pseudo_labels.py
 #   python scripts/build_knn_v11_pseudo_labels.py
+#   python scripts/build_knn_v15_pseudo_labels.py
 if [ "$ENABLE_KNN_TRACKING" = "1" ]; then
     if [ -z "${KNN_PL_PATH:-}" ]; then
-        if [ "$TOOL_VERSION" = "v15" ]; then
+        if [[ "$TOOL_VERSION" == v15* ]]; then
             KNN_PL_PATH="$PROJECT_ROOT/data/tdc/metadata/knn_v15_pseudo_labels.json"
-        elif [ "$TOOL_VERSION" = "v11" ] || [ "$TOOL_VERSION" = "v12" ] || [ "$TOOL_VERSION" = "v13" ] || [ "$TOOL_VERSION" = "v14" ] || [ "$TOOL_VERSION" = "v14_consolidated" ] || [ "$TOOL_VERSION" = "v16" ] || [ "$TOOL_VERSION" = "v17" ]; then
+        elif [ "$TOOL_VERSION" = "v11" ] || [ "$TOOL_VERSION" = "v12" ] || [ "$TOOL_VERSION" = "v13" ] || [ "$TOOL_VERSION" = "v14" ] || [ "$TOOL_VERSION" = "v14_consolidated" ]; then
             KNN_PL_PATH="$PROJECT_ROOT/data/tdc/metadata/knn_v11_pseudo_labels.json"
         else
             KNN_PL_PATH="$PROJECT_ROOT/data/tdc/metadata/knn_v10_pseudo_labels.json"
@@ -671,6 +827,12 @@ KNN_REWARD_FLAGS=""
 if [ "$ENABLE_KNN_TRACKING" = "1" ]; then
     KNN_REWARD_FLAGS+=" --knn_correct_reversal_bonus $KNN_CORRECT_REVERSAL_BONUS"
     KNN_REWARD_FLAGS+=" --knn_correct_stick_delta $KNN_CORRECT_STICK_DELTA"
+fi
+
+set +e
+PROMPT_DATA_ARGS=(--prompt_data "$TRAIN_DATA")
+if [ "$EPISODE1_STRUCTURE" = "dual_dataset" ]; then
+    PROMPT_DATA_ARGS=(--prompt_data_a "$TRAIN_DATA_A" --prompt_data_b "$TRAIN_DATA_B")
 fi
 
 python -m openrlhf.cli.train_ppo_ray \
@@ -701,7 +863,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --rollout_batch_size $ROLLOUT_BATCH_SIZE \
     --num_episodes $MAX_EPOCHS \
     --prompt_max_len $PROMPT_MAX_LEN \
-    --generate_max_len 3072 \
+    --generate_max_len 8192 \
     --max_samples 1000000 \
     --loss_type $LOSS_TYPE \
     --use_adaptive_batch \
@@ -711,7 +873,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --zero_stage $ZERO_STAGE \
     --param_dtype bf16 \
     --actor_learning_rate $LEARNING_RATE \
-    --prompt_data "$TRAIN_DATA" \
+    "${PROMPT_DATA_ARGS[@]}" \
     --eval_dataset "$EVAL_DATA" \
     --eval_steps $EVAL_STEPS \
     --eval_temperature 0.0 \
@@ -735,27 +897,36 @@ python -m openrlhf.cli.train_ppo_ray \
     --wandb_group "$WANDB_GROUP" \
     --wandb_run_name "$RUN_ID" \
     --save_path "$SAVE_PATH" \
+    --best_save_path "$BEST_SAVE_PATH" \
     --push_to_hub "$HUB_REPO_ID" \
     --delete_local_after_push \
     --constant_lr_with_warm_up \
     --warmup_steps $WARMUP_STEPS \
     --warm_steps_multiplier_for_correction $WARM_STEPS_MULTIPLIER \
     --attn_implementation "flex_attention" \
-    --length_penalty_start 6144 \
+    --length_penalty_start 12288 \
     --replace_discarded_prompts_ratio 2.0 \
     --enable_tool_calling_rewards \
     --tool_calling_reward_cap $TOOL_CALLING_REWARD_CAP \
     --tool_calling_reward_max_rewarded_calls $TOOL_CALLING_REWARD_MAX_REWARDED_CALLS \
-    --tool_calling_reward_until_step 64 \
+    --tool_calling_reward_until_step 0 \
     --freeze_router \
     --aux_loss_coef 0 \
     $KNN_REWARD_FLAGS \
     $QUANT_FLAGS \
     $MODE_FLAGS \
     $OPTIONAL_FLAGS \
+    "${BEST_FLAGS[@]}" \
     $EXTRA_ARGS \
     2>&1 | tee "$RUN_LOG"
+train_exit_code=$?
+set -e
+if [ "$train_exit_code" -ne 0 ]; then
+    echo "Training failed with exit code $train_exit_code" >&2
+    exit "$train_exit_code"
+fi
 
 ### CLEANUP ###
 echo "Training complete! Stopping Ray..."
-$CONDA_RAY stop --force || true
+cleanup_ray_cluster
+reset_ray_address_cache

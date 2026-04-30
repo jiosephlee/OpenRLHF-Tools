@@ -225,8 +225,7 @@ else
 fi
 RUN_ID="${RUN_NAME}"
 HUB_NAME="grpo-math-llama8b-openmathinstruct2-ep${MAX_EPOCHS}-${DATE_TAG}"
-RUNS_DIR="$PROJECT_ROOT/runs/${RUN_NAME}"
-mkdir -p "$RUNS_DIR"
+source "$PROJECT_ROOT/scripts/lib/resolve_runs_dir.sh"
 LOCAL_SAVE_DIR="${LOCAL_SAVE_DIR:-/vast/projects/myatskar/design-documents/hf_home}"
 SAVE_PATH="$LOCAL_SAVE_DIR/$RUN_NAME"
 HUB_REPO_ID="jiosephlee/${HUB_NAME}"
